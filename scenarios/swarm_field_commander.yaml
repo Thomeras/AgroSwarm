@@ -1,0 +1,3 @@
+name: "Swarm Field Commander"
+description: "Curses grid ovladani dronu (svet: swarm_field). Pred spustenim: 1) home_manager, 2) grid_generator"
+ros2_command: "ros2 run scout_control field_commander"

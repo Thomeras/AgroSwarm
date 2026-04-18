@@ -1,0 +1,430 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  obstacle_course.world — Gazebo Harmonic (gz-sim 8) / ROS2 Jazzy
+  Zemědělské pole s 4 testovacími překážkami pro obstacle avoidance test.
+  Přidána podpora pro 2 swarm drony (landing pads u originu).
+
+  Drone spawns (PX4 SITL):
+    drone_0: PX4_GZ_MODEL_POSE="0,0,0,0,0,0"    → Gz ENU(0,0) = NED(0,0)
+    drone_1: PX4_GZ_MODEL_POSE="4,0,0,0,0,0"    → Gz ENU(4,0) = NED(0,4)
+
+  4 Test obstacles (Gz ENU → PX4 NED):
+    wall_north:    Gz ENU(0, 12)  = NED(12,  0)   — zeď napříč severní cestou
+    poles_east:    Gz ENU(12, 0)  = NED( 0, 12)   — tyče napříč východní cestou
+    building_ne:   Gz ENU(9, 9)   = NED( 9,  9)   — budova na SV diagonále
+    fence_nnw:     Gz ENU(-8, 12) = NED(12, -8)   — plot na SSZ cestě
+
+  Letové cíle (za překážkami):
+    Mission 1 → North: NED(22,  0)   [wall_north]
+    Mission 2 → East:  NED( 0, 22)   [poles_east]
+    Mission 3 → NE:    NED(18, 18)   [building_ne]
+    Mission 4 → NNW:   NED(22, -12)  [fence_nnw]
+
+  Spuštění:
+    # Instalace world souboru (jednou):
+    cp obstacle_course.world ~/PX4-Autopilot/Tools/simulation/gz/worlds/
+    # Spuštění PX4:
+    PX4_GZ_WORLD=obstacle_course make px4_sitl gz_x500_mono_cam
+-->
+<sdf version="1.9">
+  <world name="obstacle_course">
+
+    <!-- ════════ FYZIKA ════════ -->
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <!-- ════════ SCÉNA + OBLOHA ════════ -->
+    <scene>
+      <sky><clouds><speed>6</speed></clouds></sky>
+      <grid>false</grid>
+      <ambient>0.6 0.6 0.55 1</ambient>
+      <background>0.53 0.77 0.92 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- ════════ SLUNCE ════════ -->
+    <light name="sun" type="directional">
+      <pose>0 0 500 0 0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>-0.5 0.3 -0.8</direction>
+      <diffuse>0.95 0.90 0.80 1</diffuse>
+      <specular>0.30 0.28 0.24 1</specular>
+      <attenuation>
+        <range>2000</range><linear>0</linear><constant>1</constant><quadratic>0</quadratic>
+      </attenuation>
+      <spot><inner_angle>0</inner_angle><outer_angle>0</outer_angle><falloff>0</falloff></spot>
+    </light>
+    <light name="sky_fill" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 100 0 0 0</pose>
+      <direction>0 0 -1</direction>
+      <diffuse>0.35 0.45 0.55 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation><range>2000</range><constant>1</constant><linear>0</linear><quadratic>0</quadratic></attenuation>
+    </light>
+
+    <!-- ════════ TRÁVA ════════ -->
+    <model name="grass_ground">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>1 1</size></plane></geometry>
+          <surface>
+            <friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry><plane><normal>0 0 1</normal><size>300 300</size></plane></geometry>
+          <material>
+            <ambient>0.28 0.45 0.12 1</ambient>
+            <diffuse>0.38 0.58 0.18 1</diffuse>
+            <specular>0.02 0.03 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <!-- ════════ GPS souřadnice ════════ -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg>8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- ════════ LANDING PAD 0 — drone_0 spawn (oranžový) ════════ -->
+    <!-- Gz ENU(0, 0) = NED(0, 0) -->
+    <model name="landing_pad_0">
+      <static>true</static>
+      <pose>0 0 0.005 0 0 0</pose>
+      <link name="link">
+        <visual name="vis_ring">
+          <geometry><cylinder><radius>0.9</radius><length>0.01</length></cylinder></geometry>
+          <material>
+            <ambient>0.9 0.4 0.0 1</ambient>
+            <diffuse>1.0 0.5 0.0 1</diffuse>
+          </material>
+        </visual>
+        <visual name="vis_inner">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry><cylinder><radius>0.6</radius><length>0.01</length></cylinder></geometry>
+          <material>
+            <ambient>0.0 0.0 0.0 1</ambient>
+            <diffuse>0.05 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+        <visual name="vis_label_n">
+          <pose>0 0.35 0.002 0 0 0</pose>
+          <geometry><box><size>0.06 0.3 0.01</size></box></geometry>
+          <material><ambient>0.9 0.9 0.9 1</ambient><diffuse>1 1 1 1</diffuse></material>
+        </visual>
+        <collision name="col">
+          <geometry><cylinder><radius>0.9</radius><length>0.01</length></cylinder></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ════════ LANDING PAD 1 — drone_1 spawn (modrý) ════════ -->
+    <!-- Gz ENU(4, 0) = NED(0, 4) -->
+    <model name="landing_pad_1">
+      <static>true</static>
+      <pose>4 0 0.005 0 0 0</pose>
+      <link name="link">
+        <visual name="vis_ring">
+          <geometry><cylinder><radius>0.9</radius><length>0.01</length></cylinder></geometry>
+          <material>
+            <ambient>0.0 0.3 0.9 1</ambient>
+            <diffuse>0.0 0.4 1.0 1</diffuse>
+          </material>
+        </visual>
+        <visual name="vis_inner">
+          <pose>0 0 0.001 0 0 0</pose>
+          <geometry><cylinder><radius>0.6</radius><length>0.01</length></cylinder></geometry>
+          <material>
+            <ambient>0.0 0.0 0.0 1</ambient>
+            <diffuse>0.05 0.05 0.05 1</diffuse>
+          </material>
+        </visual>
+        <collision name="col">
+          <geometry><cylinder><radius>0.9</radius><length>0.01</length></cylinder></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- ════════════════════════════════════════════════════════════ -->
+    <!--   TEST PŘEKÁŽKY  (výška 9 m — dron letí ve 5 m)             -->
+    <!-- ════════════════════════════════════════════════════════════ -->
+
+    <!--
+      PŘEKÁŽKA 1 — SEVERNÍ ZEĎ (wall_north)
+      Gz ENU: x=0, y=12  →  NED: x=12, y=0
+      Tvar: 6m × 0.4m × 9m  (sahá 3m na každou stranu od středu v ose ENU-X)
+      Blokuje cestu přímo na Sever od startovní pozice.
+      Červená.
+    -->
+    <model name="obstacle_wall_north">
+      <static>true</static>
+      <pose>0 12 4.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col">
+          <geometry><box><size>6.0 0.4 9.0</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis_body">
+          <geometry><box><size>6.0 0.4 9.0</size></box></geometry>
+          <material>
+            <ambient>0.70 0.10 0.10 1</ambient>
+            <diffuse>0.85 0.15 0.15 1</diffuse>
+            <specular>0.05 0.01 0.01 1</specular>
+          </material>
+        </visual>
+        <!-- Varovné pruhy — žluté pásy na zdi -->
+        <visual name="vis_stripe_0">
+          <pose>0 0.21 2.0 0 0 0</pose>
+          <geometry><box><size>6.0 0.01 0.4</size></box></geometry>
+          <material><ambient>0.9 0.7 0.0 1</ambient><diffuse>1.0 0.85 0.0 1</diffuse></material>
+        </visual>
+        <visual name="vis_stripe_1">
+          <pose>0 0.21 4.5 0 0 0</pose>
+          <geometry><box><size>6.0 0.01 0.4</size></box></geometry>
+          <material><ambient>0.9 0.7 0.0 1</ambient><diffuse>1.0 0.85 0.0 1</diffuse></material>
+        </visual>
+        <visual name="vis_stripe_2">
+          <pose>0 0.21 7.0 0 0 0</pose>
+          <geometry><box><size>6.0 0.01 0.4</size></box></geometry>
+          <material><ambient>0.9 0.7 0.0 1</ambient><diffuse>1.0 0.85 0.0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      PŘEKÁŽKA 2 — VÝCHODNÍ TYČE (poles_east)
+      Gz ENU: x=12, y=0  →  NED: x=0, y=12
+      3 cylindry r=0.35m h=9m, rozmístěny v ose ENU-Y (NED-X): y = {-1.5, 0, 1.5}
+      Blokuje cestu přímo na Východ.
+      Žlutá.
+    -->
+    <model name="obstacle_pole_east_0">
+      <static>true</static>
+      <pose>12 -1.5 4.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.80 0.65 0.00 1</ambient>
+            <diffuse>0.95 0.80 0.00 1</diffuse>
+            <specular>0.1 0.08 0.0 1</specular>
+          </material>
+        </visual>
+        <visual name="vis_top">
+          <pose>0 0 4.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.45</radius><length>0.2</length></cylinder></geometry>
+          <material><ambient>0.6 0.0 0.0 1</ambient><diffuse>0.8 0.0 0.0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="obstacle_pole_east_1">
+      <static>true</static>
+      <pose>12 0 4.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.80 0.65 0.00 1</ambient>
+            <diffuse>0.95 0.80 0.00 1</diffuse>
+            <specular>0.1 0.08 0.0 1</specular>
+          </material>
+        </visual>
+        <visual name="vis_top">
+          <pose>0 0 4.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.45</radius><length>0.2</length></cylinder></geometry>
+          <material><ambient>0.6 0.0 0.0 1</ambient><diffuse>0.8 0.0 0.0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="obstacle_pole_east_2">
+      <static>true</static>
+      <pose>12 1.5 4.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis">
+          <geometry><cylinder><radius>0.35</radius><length>9.0</length></cylinder></geometry>
+          <material>
+            <ambient>0.80 0.65 0.00 1</ambient>
+            <diffuse>0.95 0.80 0.00 1</diffuse>
+            <specular>0.1 0.08 0.0 1</specular>
+          </material>
+        </visual>
+        <visual name="vis_top">
+          <pose>0 0 4.6 0 0 0</pose>
+          <geometry><cylinder><radius>0.45</radius><length>0.2</length></cylinder></geometry>
+          <material><ambient>0.6 0.0 0.0 1</ambient><diffuse>0.8 0.0 0.0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      PŘEKÁŽKA 3 — SV BUDOVA (building_ne)
+      Gz ENU: x=9, y=9  →  NED: x=9, y=9
+      Tvar: 4m × 4m × 9m
+      Blokuje SV diagonálu.
+      Šedá s okny.
+    -->
+    <model name="obstacle_building_ne">
+      <static>true</static>
+      <pose>9 9 4.5 0 0 0</pose>
+      <link name="link">
+        <collision name="col">
+          <geometry><box><size>4.0 4.0 9.0</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis_walls">
+          <geometry><box><size>4.0 4.0 9.0</size></box></geometry>
+          <material>
+            <ambient>0.45 0.45 0.42 1</ambient>
+            <diffuse>0.60 0.60 0.56 1</diffuse>
+            <specular>0.08 0.08 0.08 1</specular>
+          </material>
+        </visual>
+        <!-- Okna (tmavá vrstva) -->
+        <visual name="vis_windows_n">
+          <pose>0 2.01 3.0 0 0 0</pose>
+          <geometry><box><size>3.6 0.05 2.5</size></box></geometry>
+          <material><ambient>0.1 0.15 0.25 1</ambient><diffuse>0.1 0.2 0.35 1</diffuse></material>
+        </visual>
+        <visual name="vis_windows_e">
+          <pose>2.01 0 3.0 0 0 0</pose>
+          <geometry><box><size>0.05 3.6 2.5</size></box></geometry>
+          <material><ambient>0.1 0.15 0.25 1</ambient><diffuse>0.1 0.2 0.35 1</diffuse></material>
+        </visual>
+        <!-- Střecha -->
+        <visual name="vis_roof">
+          <pose>0 0 4.6 0 0 0</pose>
+          <geometry><box><size>4.2 4.2 0.25</size></box></geometry>
+          <material><ambient>0.30 0.25 0.20 1</ambient><diffuse>0.40 0.33 0.26 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      PŘEKÁŽKA 4 — SSZ PLOT (fence_nnw)
+      Gz ENU: x=-8, y=12  →  NED: x=12, y=-8
+      Tvar: 0.3m × 7m × 9m  (7m dlouhý plot v ose ENU-X / NED-Y)
+      Blokuje SSZ cestu.
+      Oranžová / kovová.
+    -->
+    <model name="obstacle_fence_nnw">
+      <static>true</static>
+      <pose>-8 12 4.5 0 0 0</pose>
+      <link name="link">
+        <!-- Hlavní panel plotu -->
+        <collision name="col_panel">
+          <geometry><box><size>7.0 0.3 9.0</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+            <contact><collide_bitmask>65535</collide_bitmask></contact>
+          </surface>
+        </collision>
+        <visual name="vis_panel">
+          <geometry><box><size>7.0 0.3 9.0</size></box></geometry>
+          <material>
+            <ambient>0.70 0.35 0.05 1</ambient>
+            <diffuse>0.85 0.45 0.08 1</diffuse>
+            <specular>0.15 0.08 0.02 1</specular>
+          </material>
+        </visual>
+        <!-- Nosné tyče -->
+        <visual name="vis_post_l">
+          <pose>-3.2 0 0 0 0 0</pose>
+          <geometry><box><size>0.25 0.4 9.0</size></box></geometry>
+          <material><ambient>0.25 0.25 0.28 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material>
+        </visual>
+        <visual name="vis_post_c">
+          <pose>0 0 0 0 0 0</pose>
+          <geometry><box><size>0.25 0.4 9.0</size></box></geometry>
+          <material><ambient>0.25 0.25 0.28 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material>
+        </visual>
+        <visual name="vis_post_r">
+          <pose>3.2 0 0 0 0 0</pose>
+          <geometry><box><size>0.25 0.4 9.0</size></box></geometry>
+          <material><ambient>0.25 0.25 0.28 1</ambient><diffuse>0.35 0.35 0.38 1</diffuse></material>
+        </visual>
+        <!-- Varovné pruhy -->
+        <visual name="vis_stripe_a">
+          <pose>0 0.16 5.5 0 0 0</pose>
+          <geometry><box><size>7.0 0.02 0.35</size></box></geometry>
+          <material><ambient>0.9 0.7 0.0 1</ambient><diffuse>1.0 0.85 0.0 1</diffuse></material>
+        </visual>
+        <visual name="vis_stripe_b">
+          <pose>0 0.16 3.0 0 0 0</pose>
+          <geometry><box><size>7.0 0.02 0.35</size></box></geometry>
+          <material><ambient>0.9 0.7 0.0 1</ambient><diffuse>1.0 0.85 0.0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ════════ VZDÁLENÉ STROMY (dekorace, mimo letovou zónu) ════════ -->
+    <include>
+      <name>oak_tree_0</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-28 20 0 0 0 0.52</pose>
+    </include>
+    <include>
+      <name>oak_tree_1</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>32 -18 0 0 0 1.05</pose>
+    </include>
+    <include>
+      <name>oak_tree_2</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-30 -20 0 0 0 2.09</pose>
+    </include>
+    <include>
+      <name>oak_tree_3</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>28 28 0 0 0 3.66</pose>
+    </include>
+
+  </world>
+</sdf>

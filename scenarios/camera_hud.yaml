@@ -1,0 +1,3 @@
+name: Camera HUD
+description: "Camera bridge + crosshair + NED pozice + mini-mapa rohů. Bridge i HUD v jednom."
+ros2_command: "ros2 launch scout_control camera_hud.launch.py world:={world} model:={gz_model}"

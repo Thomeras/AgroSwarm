@@ -1,0 +1,3 @@
+name: "Camera View (rqt)"
+description: "Zobrazi live kamerovy feed z dronu pres rqt_image_view"
+ros2_command: "ros2 run rqt_image_view rqt_image_view /camera/image_raw"

@@ -1,0 +1,3 @@
+name: "Field Commander"
+description: "Interaktivni curses UI pro manualni rizeni dronu po bunkach mrizky"
+ros2_command: "ros2 run scout_control field_commander"

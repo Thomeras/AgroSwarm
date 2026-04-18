@@ -1,0 +1,3 @@
+name: "Swarm Mission"
+description: "E2E swarm spray mise (task_allocator + 2x swarm_agent). Pred spustenim: home_manager + grid_generator"
+ros2_command: "ros2 launch scout_control swarm_mission.launch.py"

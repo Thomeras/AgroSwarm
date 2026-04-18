@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Agricultural Field World — Gazebo Harmonic (gz-sim 8) / ROS2 Jazzy
+  25x25m zemědělská půda na trávnatém podkladu
+  Použití:
+    PX4_GZ_WORLD=agricultural_field make px4_sitl gz_x500_mono_cam
+-->
+<sdf version="1.9">
+  <world name="agricultural_field">
+
+    <!-- ════════ FYZIKA ════════ -->
+    <physics type="ode">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>250</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <!-- ════════ SCÉNA + OBLOHA ════════ -->
+    <scene>
+      <sky>
+        <clouds>
+          <speed>6</speed>
+        </clouds>
+      </sky>
+      <grid>false</grid>
+      <ambient>0.6 0.6 0.55 1</ambient>
+      <background>0.53 0.77 0.92 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- ════════ SLUNCE ════════ -->
+    <light name="sun" type="directional">
+      <pose>0 0 500 0 0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <intensity>1</intensity>
+      <direction>-0.5 0.3 -0.8</direction>
+      <diffuse>0.95 0.90 0.80 1</diffuse>
+      <specular>0.30 0.28 0.24 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <linear>0</linear>
+        <constant>1</constant>
+        <quadratic>0</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0</inner_angle>
+        <outer_angle>0</outer_angle>
+        <falloff>0</falloff>
+      </spot>
+    </light>
+
+    <!-- Ambient fill (obloha) -->
+    <light name="sky_fill" type="directional">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 100 0 0 0</pose>
+      <direction>0 0 -1</direction>
+      <diffuse>0.35 0.45 0.55 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation>
+        <range>2000</range>
+        <constant>1</constant>
+        <linear>0</linear>
+        <quadratic>0</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- ════════ TRÁVA — velká plocha (300×300 m) ════════ -->
+    <model name="grass_ground">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.8</mu>
+                <mu2>0.8</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <collide_bitmask>65535</collide_bitmask>
+            </contact>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>300 300</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.28 0.45 0.12 1</ambient>
+            <diffuse>0.38 0.58 0.18 1</diffuse>
+            <specular>0.02 0.03 0.01 1</specular>
+            <emissive>0 0 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <!-- ════════ ZEMĚDĚLSKÁ PŮDA (25×25 m) — tenká vrstva nad trávou ════════ -->
+    <model name="field_soil">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <pose>0 0 0 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>25 25 0.02</size>
+            </box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>1.0</mu2>
+              </ode>
+            </friction>
+            <contact>
+              <collide_bitmask>65535</collide_bitmask>
+            </contact>
+          </surface>
+        </collision>
+        <visual name="visual_soil">
+          <cast_shadows>false</cast_shadows>
+          <pose>0 0 0.01 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>25 25 0.001</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.38 0.24 0.10 1</ambient>
+            <diffuse>0.50 0.32 0.14 1</diffuse>
+            <specular>0.02 0.01 0.01 1</specular>
+            <emissive>0 0 0 1</emissive>
+          </material>
+        </visual>
+        <!-- Středový tmavší pruh (simulace zorané řádky) -->
+        <visual name="visual_rows">
+          <cast_shadows>false</cast_shadows>
+          <pose>0 0 0.012 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>23 2 0.001</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.28 0.16 0.06 1</ambient>
+            <diffuse>0.36 0.22 0.09 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+            <emissive>0 0 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <!-- ════════ GPS souřadnice ════════ -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>47.397971057728974</latitude_deg>
+      <longitude_deg>8.546163739800146</longitude_deg>
+      <elevation>0</elevation>
+    </spherical_coordinates>
+
+    <!-- ════════ STROMY (10× Oak tree — Fuel) ════════ -->
+    <include>
+      <name>oak_tree_0</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-25 18 0 0 0 0.52</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_1</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>30 -15 0 0 0 1.05</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_2</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-10 35 0 0 0 2.09</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_3</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>22 24 0 0 0 3.66</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_4</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-36 -18 0 0 0 0.87</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_5</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>16 -32 0 0 0 4.19</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_6</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-19 -12 0 0 0 5.24</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_7</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>37 8 0 0 0 1.57</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_8</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>-6 -40 0 0 0 2.62</pose>
+    </include>
+
+    <include>
+      <name>oak_tree_9</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Oak tree</uri>
+      <static>true</static>
+      <pose>28 -42 0 0 0 4.71</pose>
+    </include>
+
+    <!-- ════════ UTILITY POLES (4× Lamp Post — Fuel) ════════ -->
+    <include>
+      <name>lamp_post_0</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Lamp Post</uri>
+      <static>true</static>
+      <pose>-20 -20 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>lamp_post_1</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Lamp Post</uri>
+      <static>true</static>
+      <pose>20 -20 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>lamp_post_2</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Lamp Post</uri>
+      <static>true</static>
+      <pose>-20 20 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>lamp_post_3</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Lamp Post</uri>
+      <static>true</static>
+      <pose>20 20 0 0 0 0</pose>
+    </include>
+
+    <!-- ════════ BARIÉRY (2× Jersey Barrier — Fuel) ════════ -->
+    <include>
+      <name>barrier_0</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier</uri>
+      <static>true</static>
+      <pose>-30 5 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>barrier_1</name>
+      <uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier</uri>
+      <static>true</static>
+      <pose>5 32 0 0 0 1.5708</pose>
+    </include>
+
+  </world>
+</sdf>

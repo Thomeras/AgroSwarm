@@ -1,0 +1,3 @@
+name: "Grid Generator"
+description: "Z perimeter.json → field_grid.json (cell_size=1m). Pro sim: grid_generator_sim.yaml"
+ros2_command: "ros2 run scout_control grid_generator --ros-args -p cell_size:=1.0"

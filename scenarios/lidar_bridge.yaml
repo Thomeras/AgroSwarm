@@ -1,0 +1,3 @@
+name: "Lidar Bridge"
+description: "Downward lidar bridge — funguje s jakoliv modelem s lidarem (model je dán výběrem v launcheru)"
+ros2_command: "ros2 launch scout_control lidar_bridge.launch.py world:={world} model:={gz_model}"

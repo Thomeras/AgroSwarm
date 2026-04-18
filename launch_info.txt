@@ -1,0 +1,88 @@
+========================================
+  scout_ws — Návod ke spuštění
+========================================
+
+PREFEROVANÝ ZPŮSOB: scout_launcher.py
+----------------------------------------------
+
+  cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+  python3 scout_launcher.py
+
+Launcher (curses TUI) automaticky:
+  1. Spustí PX4 SITL + Gazebo (world dle výběru)
+  2. Spustí MicroXRCE-DDS bridge
+  3. Spustí QGroundControl
+  4. Nabídne menu scénářů (loop — více scénářů za sebou)
+
+========================================
+  MANUÁLNÍ SPUŠTĚNÍ (záloha)
+========================================
+
+Spusť každý blok ve vlastním terminálu, v tomto pořadí.
+
+----------------------------------------
+TERMINÁL 1 — PX4 SITL + Gazebo
+----------------------------------------
+
+cd ~/PX4-Autopilot
+PX4_GZ_WORLD=agricultural_field make px4_sitl gz_x500_mono_cam
+
+(bez PX4_GZ_WORLD se načte default.sdf)
+Počkej dokud Gazebo a PX4 plně nastartují (~15 s).
+
+----------------------------------------
+TERMINÁL 2 — MicroXRCE-DDS bridge (PX4 ↔ ROS2)
+----------------------------------------
+
+MicroXRCEAgent udp4 -p 8888
+
+----------------------------------------
+TERMINÁL 3 — QGroundControl
+----------------------------------------
+
+~/QGroundControl-x86_64.AppImage
+
+QGC se automaticky připojí přes UDP 14550 (PX4 default).
+
+----------------------------------------
+TERMINÁL 4 — Build + Launch scénáře
+----------------------------------------
+
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+colcon build --packages-select scout_control
+source install/setup.bash
+
+# Perimeter survey 25×25 m:
+ros2 run scout_control perimeter_flight
+# → ~/scout_ws/field_perimeter.json
+
+# Grid generator (potřebuje field_perimeter.json):
+ros2 run scout_control grid_generator
+# → ~/scout_ws/field_grid.json
+
+# Interaktivní grid control:
+ros2 run scout_control field_commander
+
+# Waypoint mise + kamera bridge:
+ros2 launch scout_control camera_bridge.launch.py
+
+----------------------------------------
+OVĚŘENÍ KAMERY
+----------------------------------------
+
+source /opt/ros/jazzy/setup.bash
+source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash
+ros2 run rqt_image_view rqt_image_view /camera/image_raw
+
+----------------------------------------
+RESET
+----------------------------------------
+
+SOFT RESET (Gazebo zůstane, dron se vrátí na start):
+  ./reset.sh
+
+HARD RESET (zabij vše):
+  ./reset.sh hard
+
+Gazebo "already running" bug:
+  pkill -9 -f "gz" ; pkill -9 -f "px4" ; pkill -9 -f "gzserver"
