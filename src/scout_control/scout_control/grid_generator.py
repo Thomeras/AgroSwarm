@@ -43,9 +43,11 @@ class GridGenerator(Node):
     def __init__(self) -> None:
         super().__init__("grid_generator")
 
-        self.declare_parameter("cell_size",      5.0)   # metres per cell
-        self.declare_parameter("sim_mode",       False)  # True = no perimeter needed
-        self.declare_parameter("sim_field_size", 100.0)  # m — square field side
+        self.declare_parameter("cell_size",        5.0)   # metres per cell
+        self.declare_parameter("sim_mode",         False)  # True = no perimeter needed
+        self.declare_parameter("sim_field_size",   100.0)  # m — square field side (fallback)
+        self.declare_parameter("sim_field_width_m",  0.0)  # m — rectangular width  (East/y)
+        self.declare_parameter("sim_field_height_m", 0.0)  # m — rectangular height (North/x)
         # NED origin of the synthetic field (bottom-left corner)
         # swarm_field: field_soil at Gazebo(0,20) = NED(20,0), 100×100 m square
         self.declare_parameter("sim_origin_x",   20.0)   # NED North
@@ -124,11 +126,19 @@ class GridGenerator(Node):
     # ── Bounding box helpers ──────────────────────────────────────────────────
 
     def _sim_bbox(self) -> tuple[float, float, float, float]:
-        """Return (x_min, y_min, width_m, height_m) for synthetic square field."""
-        size     = self.get_parameter("sim_field_size").value
+        """Return (x_min, y_min, width_m, height_m) for synthetic field.
+
+        Uses sim_field_width_m / sim_field_height_m when set (non-zero),
+        otherwise falls back to sim_field_size (square).
+        """
         origin_x = self.get_parameter("sim_origin_x").value
         origin_y = self.get_parameter("sim_origin_y").value
-        return origin_x, origin_y, size, size
+        w = self.get_parameter("sim_field_width_m").value
+        h = self.get_parameter("sim_field_height_m").value
+        if w <= 0.0 or h <= 0.0:
+            sq = self.get_parameter("sim_field_size").value
+            w, h = sq, sq
+        return origin_x, origin_y, w, h
 
     def _perimeter_bbox(self) -> tuple[float, float, float, float] | None:
         """Parse field_perimeter.json and return bounding box tuple."""

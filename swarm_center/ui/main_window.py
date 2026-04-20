@@ -1,0 +1,447 @@
+"""
+main_window.py — Top-level QMainWindow
+
+Wires together:
+  • SwarmMavlinkManager (threaded MAVLink per drone)
+  • Ros2BridgeClient    (threaded TCP client for scout_ws)
+  • SwarmManager        (central state)
+  • FieldView           (grid + drone positions + cell status)
+  • DroneListPanel      (telemetry + assigned cell)
+  • ControlPanel        (mission progress, bridge status, controls)
+  • CameraView          (M4 — live JPEG stream per drone)
+  • Viewport3D          (M4 — drone trails + field grid in 3D)
+
+Data flow:
+
+  MAVLink (per-drone threads) ──┐
+                                ├──► SwarmManager ──► FieldView / DroneListPanel / Viewport3D
+  ROS2 bridge (task_status,     │
+               setup_status,    │
+               drone_status,    │
+               camera_frame) ───┘
+                                └──► MissionState ──► ControlPanel
+
+  ControlPanel (mode / RTH buttons) ──► Ros2BridgeClient ──► scout_ws
+  SwarmManager (peer cells) ──► periodic broadcast ──► Ros2BridgeClient
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtWidgets import (
+    QMainWindow, QMessageBox, QSplitter, QStatusBar, QTabWidget,
+    QVBoxLayout, QWidget,
+)
+
+from core.bridge_protocol import DEFAULT_HOST, DEFAULT_PORT
+from core.field_manager import FieldGrid, find_default_grid_file
+from core.mavlink_manager import DroneTelemetry, SwarmMavlinkManager
+from core.ros2_bridge import Ros2BridgeThreadRunner
+from core.swarm_manager import MissionState, SwarmManager
+
+from ui.camera_view import CameraView
+from ui.control_panel import ControlPanel
+from ui.drone_list import DroneListPanel
+from ui.field_view import FieldView
+from ui.manual_control import ManualControlWidget
+from ui.viewport_3d import Viewport3D
+
+
+# How often to broadcast peer-cell awareness to the ROS2 side.
+# Drones don't need sub-second updates for grid-level presence.
+PEER_CELLS_INTERVAL_MS = 1000
+
+
+class MainWindow(QMainWindow):
+
+    def __init__(
+        self,
+        drone_count: int,
+        base_port: int,
+        host: str,
+        grid_file: Optional[str],
+        default_cell_size: float,
+        bridge_host: str = DEFAULT_HOST,
+        bridge_port: int = DEFAULT_PORT,
+        world_image: Optional[str] = None,
+    ) -> None:
+        super().__init__()
+
+        self.setWindowTitle("Scout Swarm Center")
+        self.resize(1400, 900)
+
+        # ── Grid ────────────────────────────────────────────────────────────
+        grid = self._load_initial_grid(grid_file, default_cell_size)
+
+        # ── Core state ──────────────────────────────────────────────────────
+        self._swarm = SwarmManager(grid)
+
+        # ── MAVLink ─────────────────────────────────────────────────────────
+        self._mav = SwarmMavlinkManager(
+            drone_count=drone_count, host=host, base_port=base_port)
+        self._mav.telemetry_updated.connect(self._on_telemetry)
+        self._mav.connection_changed.connect(self._on_connection_changed)
+        self._mav.log.connect(self._on_mav_log)
+
+        # ── ROS2 bridge ─────────────────────────────────────────────────────
+        self._bridge_runner = Ros2BridgeThreadRunner(
+            host=bridge_host, port=bridge_port)
+        br = self._bridge_runner.client
+        br.connected.connect(lambda: self._control.set_bridge_status(True))
+        br.disconnected.connect(lambda: self._control.set_bridge_status(False))
+        br.connected.connect(lambda: self._manual_control.set_bridge_connected(True))
+        br.disconnected.connect(lambda: self._manual_control.set_bridge_connected(False))
+        br.log.connect(self._on_bridge_log)
+
+        br.task_status.connect(self._swarm.apply_task_status)
+        br.drone_status.connect(self._swarm.apply_drone_status)
+        br.mission_ready.connect(self._swarm.apply_mission_ready)
+        br.mission_complete.connect(self._swarm.apply_mission_complete)
+        br.setup_status.connect(self._swarm.apply_setup_status)
+        br.setup_complete.connect(self._on_setup_complete)
+        br.grid_reload.connect(self._on_grid_reload)
+        br.hello.connect(self._on_bridge_hello)
+
+        # ── UI ──────────────────────────────────────────────────────────────
+        self._field_view = FieldView(self._swarm)
+        self._drone_list = DroneListPanel(self._swarm)
+        self._control = ControlPanel()
+        self._manual_control = ManualControlWidget(
+            self._swarm,
+            drone_count=drone_count,
+            send_manual_control=self._bridge_runner.client.send_manual_control,
+        )
+
+        # M4 — Camera feed (must be created before connecting bridge signals)
+        self._camera_view = CameraView(
+            drone_count=drone_count,
+            send_camera_control=self._bridge_runner.client.send_camera_control,
+        )
+
+        # M4 — camera bridge signals (wired after _camera_view exists)
+        br.camera_frame.connect(self._camera_view.on_camera_frame)
+        br.camera_frame.connect(self._manual_control.on_camera_frame)
+        br.depth_frame.connect(self._camera_view.on_depth_frame)
+
+        # M4 — 3D viewport
+        self._viewport_3d = Viewport3D()
+        self._swarm.add_listener(self._viewport_3d.on_drone_record)
+        self._viewport_3d.set_grid(grid)
+
+        if world_image:
+            self._field_view.load_overhead_image(world_image)
+            self._manual_control.load_overhead_image(world_image)
+
+        self._control.reset_view_clicked.connect(self._field_view.reset_view)
+        self._control.load_grid_clicked.connect(self._load_grid)
+        self._control.cell_size_changed.connect(self._on_cell_size_changed)
+        self._control.mode_changed.connect(self._on_mode_changed)
+        self._control.rth_all_clicked.connect(self._on_rth_all)
+        self._control.start_mission_clicked.connect(self._on_start_mission)
+        self._control.emergency_stop_clicked.connect(self._on_emergency_stop)
+
+        # DroneList signals
+        self._drone_list.arm_clicked.connect(self._on_arm)
+        self._drone_list.disarm_clicked.connect(self._on_disarm)
+        self._drone_list.drone_selected.connect(self._on_drone_selected)
+        self._manual_control.drone_selected.connect(self._on_drone_selected)
+
+        # FieldView signals
+        self._field_view.drone_clicked.connect(self._on_drone_selected)
+        self._field_view.cell_right_clicked.connect(self._on_cell_right_clicked)
+
+        # Mission state → control panel
+        self._swarm.add_mission_listener(self._control.update_mission)
+
+        # Right column: control panel (top) + drone list (bottom)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self._control, stretch=2)
+        right_layout.addWidget(self._drone_list, stretch=1)
+
+        # Left tabs: Mission / Camera / 3D
+        self._left_tabs = QTabWidget()
+        self._left_tabs.addTab(self._field_view, "Mission")
+        self._left_tabs.addTab(self._manual_control, "Manual")
+        self._left_tabs.addTab(self._camera_view, "Camera")
+        self._left_tabs.addTab(self._viewport_3d, "3D Map")
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._left_tabs)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([1000, 400])
+        self.setCentralWidget(splitter)
+
+        # ── Menu ────────────────────────────────────────────────────────────
+        self._build_menu()
+
+        # ── Status bar ──────────────────────────────────────────────────────
+        self.setStatusBar(QStatusBar())
+        self.statusBar().showMessage(
+            f"MAVLink: {host}:{base_port}–{base_port + drone_count - 1} · "
+            f"Bridge: {bridge_host}:{bridge_port}")
+        self._control.set_mav_status(
+            f"waiting for HEARTBEAT on {host}:{base_port}")
+        self._control.set_bridge_status(False)
+
+        # ── Start background workers ────────────────────────────────────────
+        self._mav.start_all()
+        self._bridge_runner.start()
+
+        # Soft repaint timer — smooths trails even if no new telemetry arrived
+        self._tick = QTimer(self)
+        self._tick.setInterval(50)   # 20 fps
+        self._tick.timeout.connect(self._field_view.update)
+        self._tick.start()
+
+        # Periodic peer-cell broadcast — grid-level swarm awareness
+        self._peer_tick = QTimer(self)
+        self._peer_tick.setInterval(PEER_CELLS_INTERVAL_MS)
+        self._peer_tick.timeout.connect(self._broadcast_peer_cells)
+        self._peer_tick.start()
+
+    # ── Grid handling ───────────────────────────────────────────────────────
+
+    def _load_initial_grid(
+        self, grid_file: Optional[str], cell_size: float,
+    ) -> FieldGrid:
+        if grid_file:
+            try:
+                return FieldGrid.from_file(grid_file)
+            except Exception as exc:
+                print(f"[main_window] Failed to load grid {grid_file}: {exc}")
+        found = find_default_grid_file()
+        if found:
+            try:
+                print(f"[main_window] Loaded grid from {found}")
+                return FieldGrid.from_file(found)
+            except Exception as exc:
+                print(f"[main_window] Failed to load default grid: {exc}")
+        print("[main_window] Falling back to synthetic 100×100 m grid")
+        return FieldGrid.synthetic(cell_size_m=cell_size)
+
+    def _load_grid(self, path: str) -> None:
+        try:
+            grid = FieldGrid.from_file(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Load grid", f"Failed:\n{exc}")
+            return
+        self._apply_grid(grid)
+        self.statusBar().showMessage(
+            f"Grid loaded: {grid.cols}×{grid.rows} cells "
+            f"({grid.cell_size_m:.1f} m each)",
+            5000,
+        )
+
+    def _apply_grid(self, grid: FieldGrid) -> None:
+        self._swarm.set_grid(grid)
+        self._field_view.reset_view()
+        self._viewport_3d.set_grid(grid)
+        self._control.set_cell_size(grid.cell_size_m)
+
+    def _on_cell_size_changed(self, cell_size: float) -> None:
+        new_grid = self._swarm.grid.regrid(cell_size)
+        self._swarm.set_grid(new_grid)
+        self._field_view.reset_view()
+        self._viewport_3d.set_grid(new_grid)
+        self.statusBar().showMessage(
+            f"Grid regridded: {new_grid.cols}×{new_grid.rows} cells "
+            f"({cell_size:.1f} m each) — "
+            f"field {new_grid.x_max - new_grid.x_min:.0f}×"
+            f"{new_grid.y_max - new_grid.y_min:.0f} m",
+            5000,
+        )
+
+    # ── MAVLink signal handlers ─────────────────────────────────────────────
+
+    def _on_telemetry(self, telem: DroneTelemetry) -> None:
+        self._swarm.update_telemetry(telem)
+        live = sum(1 for r in self._swarm.drones()
+                   if r.telemetry.connected)
+        total = sum(1 for r in self._swarm.drones()
+                    if r.telemetry.drone_id is not None)
+        self._control.set_mav_status(f"{live}/{total} drone(s) connected")
+
+    def _on_connection_changed(self, drone_id: int, connected: bool) -> None:
+        self._swarm.set_connection(drone_id, connected)
+
+    def _on_mav_log(self, drone_id: int, msg: str) -> None:
+        self._control.append_log(f"drone_{drone_id}", msg)
+
+    # ── Bridge signal handlers ──────────────────────────────────────────────
+
+    def _on_bridge_log(self, msg: str) -> None:
+        self._control.append_log("bridge", msg)
+
+    def _on_bridge_hello(self, data: dict) -> None:
+        ver = data.get("bridge_version", "?")
+        distro = data.get("ros_distro", "?")
+        self.statusBar().showMessage(
+            f"Bridge v{ver} on ROS2 {distro}", 5000)
+
+    def _on_setup_complete(self, data: dict) -> None:
+        # Field setup finished — try to reload grid from the canonical path.
+        # The bridge won't send a grid_reload for the initial setup, so do it here.
+        cells = data.get("cells")
+        if cells:
+            self.statusBar().showMessage(
+                f"Field setup complete: {cells} cells "
+                f"({data.get('field_size', '?')})", 5000)
+        self._try_reload_default_grid()
+
+    def _on_grid_reload(self, data: dict) -> None:
+        path = data.get("path")
+        if not path:
+            self._try_reload_default_grid()
+            return
+        try:
+            grid = FieldGrid.from_file(path)
+        except Exception as exc:
+            self._control.append_log("bridge", f"grid_reload failed: {exc}")
+            return
+        self._apply_grid(grid)
+        self.statusBar().showMessage(f"Grid reloaded: {path}", 5000)
+
+    def _try_reload_default_grid(self) -> None:
+        found = find_default_grid_file()
+        if not found:
+            return
+        try:
+            grid = FieldGrid.from_file(found)
+        except Exception as exc:
+            self._control.append_log("bridge", f"grid auto-reload failed: {exc}")
+            return
+        self._apply_grid(grid)
+        self.statusBar().showMessage(f"Grid reloaded: {found}", 5000)
+
+    # ── UI actions ──────────────────────────────────────────────────────────
+
+    def _on_mode_changed(self, mode: str) -> None:
+        self._bridge_runner.client.send_set_mode(mode)
+        self.statusBar().showMessage(f"Mission mode → {mode}", 3000)
+
+    def _on_rth_all(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "RTH all drones",
+            "Send all drones back to their home pads now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._bridge_runner.client.send_rth_all(reason="operator_gui")
+            self.statusBar().showMessage("RTH sent to all drones", 3000)
+
+    def _on_start_mission(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Start Mission",
+            "Confirm mission start?\n(publishes /field/mission_confirm)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._bridge_runner.client.send_start_mission()
+            self.statusBar().showMessage("Mission confirmed — starting", 3000)
+
+    def _on_emergency_stop(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "EMERGENCY STOP",
+            "RTH ALL DRONES IMMEDIATELY?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._bridge_runner.client.send_emergency_stop()
+            self.statusBar().showMessage("EMERGENCY STOP sent", 3000)
+
+    def _on_arm(self, drone_id: int) -> None:
+        self._mav.arm(drone_id)
+        self.statusBar().showMessage(f"ARM → drone_{drone_id}", 3000)
+
+    def _on_disarm(self, drone_id: int) -> None:
+        reply = QMessageBox.question(
+            self,
+            "DISARM",
+            f"DISARM drone_{drone_id}? (force disarm — unsafe in flight)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._mav.disarm(drone_id)
+            self.statusBar().showMessage(f"DISARM → drone_{drone_id}", 3000)
+
+    def _on_drone_selected(self, drone_id: int) -> None:
+        self._swarm.select_drone(drone_id)
+        self._drone_list.highlight_selected(drone_id)
+        self._field_view.update()
+        self.statusBar().showMessage(
+            f"drone_{drone_id} selected — right-click field cell to GOTO", 3000)
+
+    def _on_cell_right_clicked(self, cell_id: str) -> None:
+        selected = self._swarm.selected_drone_id
+        if selected is None:
+            self.statusBar().showMessage(
+                "Select a drone first (click row in drone list or drone on map)", 4000)
+            return
+        reply = QMessageBox.question(
+            self,
+            "GOTO cell",
+            f"Send drone_{selected} to cell {cell_id}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._bridge_runner.client.send_goto_cell(f"drone_{selected}", cell_id)
+            self.statusBar().showMessage(
+                f"GOTO {cell_id} → drone_{selected}", 3000)
+
+    def _broadcast_peer_cells(self) -> None:
+        """Send cell-granularity swarm awareness to scout_ws."""
+        if not self._bridge_runner.client.is_connected():
+            return
+        cells: dict[str, Optional[str]] = {}
+        for rec in self._swarm.drones():
+            cells[rec.did] = rec.cell.id if rec.cell is not None else None
+        if cells:
+            self._bridge_runner.client.send_peer_cells(cells)
+
+    # ── Menu ────────────────────────────────────────────────────────────────
+
+    def _build_menu(self) -> None:
+        menubar = self.menuBar()
+
+        file_menu = menubar.addMenu("&File")
+        act_load = QAction("Load grid JSON…", self)
+        act_load.setShortcut(QKeySequence("Ctrl+O"))
+        act_load.triggered.connect(
+            lambda: self._control._on_load_grid())
+        file_menu.addAction(act_load)
+
+        file_menu.addSeparator()
+        act_quit = QAction("&Quit", self)
+        act_quit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_quit.triggered.connect(self.close)
+        file_menu.addAction(act_quit)
+
+        view_menu = menubar.addMenu("&View")
+        act_reset = QAction("Reset view", self)
+        act_reset.setShortcut(QKeySequence("Ctrl+0"))
+        act_reset.triggered.connect(self._field_view.reset_view)
+        view_menu.addAction(act_reset)
+
+    # ── Shutdown ────────────────────────────────────────────────────────────
+
+    def closeEvent(self, ev) -> None:
+        self._tick.stop()
+        self._peer_tick.stop()
+        self._mav.stop_all()
+        self._bridge_runner.stop()
+        super().closeEvent(ev)

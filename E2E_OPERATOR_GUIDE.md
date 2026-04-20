@@ -119,6 +119,20 @@ Mission launcher logs at 10% intervals:
 [MISSION]  40% — 40/100 cells | rebalances=1
 ```
 
+### Swarm Center (PyQt6 GCS)
+
+For a visual overview, you can launch the **Swarm Center** GCS:
+1. Open a new terminal.
+2. Run: `ros2 run scout_control gcs_bridge` (if not already running via launch).
+3. Run: `cd swarm_center && python3 main.py`.
+
+The Swarm Center provides:
+- Live top-down map with drone trails.
+- Real-time grid cell status (visited, assigned, remaining).
+- Mission progress bar and telemetry table.
+- Mode selection (Mapping/Spraying/Checking).
+- RTH All button for emergency return.
+
 ### Spray log
 
 Live spray events written to `spray_log.json`:

@@ -1,0 +1,41 @@
+#usda 1.0
+(
+    defaultPrim = "Environment"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "Environment"
+{
+    def Xform "FieldAsset" (
+        prepend references = @./agro_field.usd@
+    )
+    {
+    }
+
+    def DomeLight "DomeLight"
+    {
+        float inputs:intensity = 900
+        color3f inputs:color = (1, 1, 1)
+        token inputs:texture:format = "latlong"
+    }
+
+    def DistantLight "SunLight"
+    {
+        float inputs:intensity = 3500
+        float inputs:angle = 0.53
+        color3f inputs:color = (1, 0.98, 0.95)
+        double3 xformOp:rotateXYZ = (-55, 0, -35)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    def Camera "OverviewCamera"
+    {
+        float focalLength = 18
+        float horizontalAperture = 20.955
+        float verticalAperture = 15.2908
+        double3 xformOp:translate = (0, -140, 95)
+        double3 xformOp:rotateXYZ = (-28, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

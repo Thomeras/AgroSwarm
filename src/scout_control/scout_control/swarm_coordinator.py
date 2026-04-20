@@ -80,6 +80,8 @@ class SwarmCoordinator(Node):
             self.get_logger().fatal(f"Cannot load {GRID_FILE}: {exc}")
             raise RuntimeError(f"Cannot load {GRID_FILE}") from exc
 
+        self._cell_by_id: dict = {c["id"]: c for c in grid_data["cells"]}
+
         # ── Publishers ────────────────────────────────────────────────────────
         self._next_cell_pubs: dict[str, rclpy.publisher.Publisher] = {
             f"drone_{i}": self.create_publisher(
@@ -110,6 +112,8 @@ class SwarmCoordinator(Node):
         # ── Subscriptions ─────────────────────────────────────────────────────
         self.create_subscription(
             String, "/swarm/drone_status", self._drone_status_cb, QOS_VOLATILE)
+        self.create_subscription(
+            String, "/swarm/cell_override", self._cell_override_cb, QOS_VOLATILE)
 
         for i in range(self._n_drones):
             ns = "" if i == 0 else f"/px4_{i}"
@@ -161,6 +165,22 @@ class SwarmCoordinator(Node):
         except json.JSONDecodeError:
             return
         self._allocator.handle_drone_status(data)
+
+    def _cell_override_cb(self, msg: String) -> None:
+        """GCS manual GOTO: publish cell directly to drone bypassing allocator queue."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        drone_id = str(data.get("drone_id", ""))
+        cell_id = str(data.get("cell_id", ""))
+        cell = self._cell_by_id.get(cell_id)
+        if not cell or drone_id not in self._next_cell_pubs:
+            self.get_logger().warn(
+                f"cell_override: unknown drone_id='{drone_id}' or cell_id='{cell_id}'")
+            return
+        self._alloc_publish_next_cell(drone_id, cell)
+        self.get_logger().info(f"GCS override: {drone_id} → {cell_id}")
 
     def _mission_ready_cb(self, msg: String) -> None:
         """Start the ready-timeout countdown in TaskAllocator.

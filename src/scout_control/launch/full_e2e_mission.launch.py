@@ -201,6 +201,17 @@ def generate_launch_description() -> LaunchDescription:
         )],
     )
 
+    # 8. GCS bridge — TCP bridge for Swarm Center (PyQt6 GCS)
+    gcs_bridge = TimerAction(
+        period=2.0,
+        actions=[Node(
+            package="scout_control",
+            executable="gcs_bridge",
+            name="gcs_bridge",
+            output="screen",
+        )],
+    )
+
     # ── Sensor bridges ────────────────────────────────────────────────────────
     # World: tilted_field  (this launch file is dedicated to this world)
     # Model instance names (PX4 SITL convention):
@@ -303,6 +314,7 @@ def generate_launch_description() -> LaunchDescription:
         spray_ctrl,
         ml_iface,
         mission_launch,
+        gcs_bridge,
         # Sensor bridges
         lidar_d0,
         lidar_d1,

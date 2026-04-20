@@ -1,0 +1,8 @@
+PyQt6>=6.5
+pymavlink>=2.4
+numpy>=1.24
+# M4 — camera feed decoder
+Pillow>=10.0
+# M4 — 3D viewport (required for the "3D Map" tab)
+pyqtgraph>=0.13
+PyOpenGL>=3.1

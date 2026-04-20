@@ -141,7 +141,9 @@ class FieldSetupCoordinator(Node):
         # 1 Hz status heartbeat
         self.create_timer(1.0, self._status_timer)
 
-        self._publish_status("IDLE — waiting for pad assignments (H and J in manual_controller)")
+        self._publish_status(
+            "IDLE — waiting for pad assignments in Swarm Center Manual tab"
+        )
         self.get_logger().info(
             f"FieldSetupCoordinator ready | cell_size={self._cell_size} m"
         )
@@ -236,7 +238,7 @@ class FieldSetupCoordinator(Node):
             self._state = SetupState.READY_FOR_MISSION
             self.get_logger().info("drone_0 landed — ready for mission, waiting for M")
             self._publish_status(
-                "READY_FOR_MISSION — Drone_0 na padu. Press M in manual_controller to start mission."
+                "READY_FOR_MISSION — Drone_0 na padu. Start the mission from Swarm Center Manual tab."
             )
 
     # ── State transitions ─────────────────────────────────────────────────────
@@ -249,7 +251,7 @@ class FieldSetupCoordinator(Node):
         )
         self._state = SetupState.MAP_FIELD
         self._publish_status(
-            "MAP_FIELD — mark 4 corners with C+[1/2/3/4] in manual_controller"
+            "MAP_FIELD — mark 4 corners in Swarm Center Manual tab"
         )
 
     def _enter_generate_grid(self) -> None:
@@ -378,7 +380,7 @@ class FieldSetupCoordinator(Node):
         self.get_logger().info("Published /swarm/mission_ready")
 
     def _mission_confirm_cb(self, msg: String) -> None:
-        """Operator pressed M in manual_controller — start the mission now.
+        """Operator confirmed mission start from the manual control UI.
 
         Only accepted in READY_FOR_MISSION state (i.e. after drone_0 landing
         confirmed).  If M is pressed while drone_0 is still airborne
@@ -401,24 +403,31 @@ class FieldSetupCoordinator(Node):
 
     # ── Status helpers ────────────────────────────────────────────────────────
     def _publish_status(self, text: str) -> None:
+        """Publish JSON status with current field metadata for GCS UI."""
         msg = String()
-        msg.data = text
+        # Pack everything GCS needs to visualize the setup progress
+        payload = {
+            "text": text,
+            "state": self._state.name,
+            "corners": self._corners,
+            "pads": self._pads,
+        }
+        msg.data = json.dumps(payload)
         self._status_pub.publish(msg)
         self.get_logger().info(f"[STATUS] {text}")
 
     def _status_timer(self) -> None:
         """1 Hz heartbeat for late-joining UI subscribers."""
         state_hints = {
-            SetupState.IDLE:                "Waiting for pad assignments (H=pad_0, J=pad_1 in manual_controller)",
-            SetupState.MAP_FIELD:           f"Mark 4 corners with C — done: {'/'.join(sorted(self._corners)) or 'none'}",
+            SetupState.IDLE:                "Waiting for pad assignments in Swarm Center Manual tab",
+            SetupState.ASSIGN_PADS:         "Saving pads and switching to field mapping",
+            SetupState.MAP_FIELD:           f"Mark 4 corners in Swarm Center — done: {'/'.join(sorted(self._corners)) or 'none'}",
             SetupState.GENERATE_GRID:       "Generating grid…",
-            SetupState.WAITING_FOR_LANDING: "Drone_0 přistává — čekej na potvrzení před stiskem M",
-            SetupState.READY_FOR_MISSION:   "Drone_0 na padu — press M in manual_controller to start mission",
+            SetupState.WAITING_FOR_LANDING: "Drone_0 is landing — wait before starting the mission",
+            SetupState.READY_FOR_MISSION:   "Drone_0 na padu — start mission from Swarm Center Manual tab",
         }
         hint = state_hints.get(self._state, self._state.name)
-        msg = String()
-        msg.data = f"[{self._state.name}] {hint}"
-        self._status_pub.publish(msg)
+        self._publish_status(hint)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

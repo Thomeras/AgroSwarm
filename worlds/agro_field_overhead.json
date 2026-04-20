@@ -1,0 +1,7 @@
+{
+  "ned_x_min": 0.0,
+  "ned_x_max": 500.0,
+  "ned_y_min": 0.0,
+  "ned_y_max": 412.0,
+  "description": "agro_field real aerial photo — NED: x=North 500m, y=East 412m, origin SW corner of field"
+}

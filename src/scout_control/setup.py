@@ -16,6 +16,7 @@ setup(
             'launch/lidar_bridge.launch.py',
             'launch/swarm_mission.launch.py',
             'launch/full_e2e_mission.launch.py',
+            'launch/isaac_e2e_mission.launch.py',
             'launch/obstacle_avoidance_test.launch.py',
         ]),
         ('share/' + package_name + '/worlds', [
@@ -60,6 +61,7 @@ setup(
             'obstacle_avoidance_mission   = scout_control.obstacle_avoidance_mission:main',
             'obstacle_viz                 = scout_control.obstacle_viz:main',
             'gimbal_cam_viz               = scout_control.gimbal_cam_viz:main',
+            'gcs_bridge = scout_control.gcs_bridge:main',
         ],
     },
 )

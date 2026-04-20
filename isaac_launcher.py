@@ -28,6 +28,9 @@ WS_DIR        = "/home/tj/_Data/_Projekty/TJlabs/scout_ws"
 PX4_DIR       = os.path.expanduser("~/PX4-Autopilot")
 ISAAC_VENV    = os.path.expanduser("~/isaac_env_511")
 CONFIG_FILE   = os.path.expanduser("~/.isaac_launcher_config.json")
+ROS2_SETUP    = "/opt/ros/jazzy/setup.bash"
+WS_SETUP      = f"{WS_DIR}/install/setup.bash"
+SWARM_CENTER_DIR = f"{WS_DIR}/swarm_center"
 
 # PX4 model for Pegasus (MAVLink TCP 4560, autostart 10015)
 PX4_MODEL  = "gazebo-classic_iris"
@@ -177,6 +180,7 @@ _LAUNCH_MODES: list[tuple[str, str]] = [
     ("isaac_only",   "Isaac Sim only          — GUI, no PX4"),
     ("isaac_px4",    "Isaac Sim + PX4 SITL    — MAVLink TCP 4560, Pegasus"),
     ("isaac_px4_ros","Isaac Sim + PX4 + ROS2  — MAVLink + MicroXRCE bridge"),
+    ("isaac_e2e",    "Isaac Full E2E Mission  — PX4 + Isaac + ROS2 mission + GCS"),
 ]
 
 def _screen_launch_mode(stdscr, default: str) -> Optional[str]:
@@ -207,6 +211,7 @@ def _screen_launch_mode(stdscr, default: str) -> Optional[str]:
                 "isaac_only":    "Isaac Sim GUI spustí se v novém terminálu. PX4 nespouštíme.",
                 "isaac_px4":     "PX4 SITL → 20s čekání → Isaac Sim. MAVLink TCP 4560.",
                 "isaac_px4_ros": "PX4 SITL → Isaac Sim → MicroXRCE bridge (port 8888) pro ROS2.",
+                "isaac_e2e":     "PX4 SITL → Isaac Sim → MicroXRCE → ROS2 E2E mise → manual_controller → Swarm Center.",
             }
             stdscr.addstr(h - 4, 4, info[_LAUNCH_MODES[sel][0]][:w - 8],
                           curses.color_pair(6) | curses.A_DIM)
@@ -388,6 +393,72 @@ def _launch_isaac_px4_ros(headless: bool) -> None:
     print(f"{YLW}  Nezapomeňte:     source /opt/ros/jazzy/setup.bash{RST}")
 
 
+def _ros2_env_prefix() -> str:
+    return f"source {ROS2_SETUP} && source {WS_SETUP}"
+
+
+def _launch_isaac_e2e(headless: bool) -> None:
+    print(f"\n{BOLD}{BLU}{'━' * 50}{RST}")
+    print(f"{BOLD}{BLU}  Isaac Full E2E Mission{RST}")
+    print(f"{BOLD}{BLU}{'━' * 50}{RST}\n")
+
+    _kill_stale_px4()
+
+    T = 8
+    isaac_cmd = ISAAC_CMD_HEADLESS if headless else ISAAC_CMD
+    ros_env = _ros2_env_prefix()
+
+    print(_step(1, T, f"Spouštím PX4 SITL (model: {CYN}{PX4_MODEL}{RST})..."))
+    _open_terminal(
+        "PX4 SITL — Pegasus",
+        f"cd {PX4_DIR} && PX4_SIM_MODEL={PX4_MODEL} "
+        f"{PX4_BIN} {PX4_ROMFS} -s {PX4_INIT}",
+    )
+    print(_dim("Čekat na: INFO [commander] Ready for takeoff!"))
+
+    _countdown(2, T, "Čekám na PX4 inicializaci", 20)
+
+    mode_label = "headless" if headless else "GUI"
+    print(_step(3, T, f"Spouštím Isaac Sim ({mode_label})..."))
+    _open_terminal("Isaac Sim", isaac_cmd)
+    print(_dim("terminál otevřen"))
+
+    _countdown(4, T, "Čekám na Isaac Sim", 15)
+
+    print(_step(5, T, "Spouštím MicroXRCE-DDS bridge (port 8888)..."))
+    _open_terminal("MicroXRCE-DDS", "MicroXRCEAgent udp4 -p 8888")
+    print(_dim("terminál otevřen"))
+
+    _countdown(6, T, "Čekám na DDS bridge", 3)
+
+    print(_step(7, T, "Spouštím ROS2 E2E mission backend..."))
+    _open_terminal(
+        "ROS2 — Isaac E2E Mission",
+        f"cd {WS_DIR} && {ros_env} && ros2 launch scout_control isaac_e2e_mission.launch.py",
+    )
+    print(_dim("launch terminál otevřen"))
+
+    print(_step(8, T, "Spouštím manual_controller a Swarm Center..."))
+    _open_terminal(
+        "manual_controller",
+        f"cd {WS_DIR} && {ros_env} && ros2 run scout_control manual_controller",
+    )
+    _open_terminal(
+        "Swarm Center",
+        f"cd {SWARM_CENTER_DIR} && python3 main.py --drones 1 --base-port 14540 "
+        f"--world-image ../worlds/agro_field_overlay.png",
+    )
+    print(_dim("extra terminály otevřeny"))
+
+    print(f"\n{GRN}{BOLD}Isaac Full E2E stack spuštěn!{RST}")
+    _print_px4_hint()
+    _print_isaac_hint()
+    print(f"{GRY}  ROS2 launch:      isaac_e2e_mission.launch.py{RST}")
+    print(f"{GRY}  Manual control:   manual_controller{RST}")
+    print(f"{GRY}  GCS:              Swarm Center (1 drone, overlay map){RST}")
+    print(f"{YLW}  Další krok:       V Isaac Sim otevři agro_field.usd, nahraj Iris a dej Play ▶{RST}")
+
+
 def _print_px4_hint() -> None:
     print(f"{GRY}  PX4 model:       {PX4_MODEL}  (MAVLink TCP 4560){RST}")
     print(f"{GRY}  Test příkazy:    commander takeoff / commander land{RST}")
@@ -413,6 +484,23 @@ def _check_px4_bin() -> bool:
         return True
     print(f"{YLW}[WARN]{RST} PX4 binary nenalezen: {PX4_BIN}")
     print(f"       Spusť nejdřív:  cd {PX4_DIR} && make px4_sitl_default\n")
+    return False
+
+
+def _check_ws_setup() -> bool:
+    if Path(WS_SETUP).exists():
+        print(f"{_ok(f'ROS2 workspace setup: {CYN}{WS_SETUP}{RST}')}")
+        return True
+    print(f"{YLW}[WARN]{RST} Workspace setup nenalezen: {WS_SETUP}")
+    print(f"       Spusť nejdřív:  cd {WS_DIR} && colcon build --packages-select scout_control\n")
+    return False
+
+
+def _check_swarm_center() -> bool:
+    if Path(SWARM_CENTER_DIR).exists():
+        print(f"{_ok(f'Swarm Center dir: {CYN}{SWARM_CENTER_DIR}{RST}')}")
+        return True
+    print(f"{YLW}[WARN]{RST} Swarm Center dir nenalezen: {SWARM_CENTER_DIR}\n")
     return False
 
 
@@ -452,6 +540,8 @@ def main() -> None:
     # ── Preflight ─────────────────────────────────────────────────────────────
     venv_ok = _check_venv()
     px4_ok  = _check_px4_bin()
+    ws_ok   = _check_ws_setup()
+    gcs_ok  = _check_swarm_center()
     print()
 
     if not venv_ok:
@@ -470,8 +560,12 @@ def main() -> None:
     print(f"{_ok(f'Mode: {CYN}{label.strip()}{RST}')}\n")
 
     # Warn if PX4 needed but missing
-    if launch_mode in ("isaac_px4", "isaac_px4_ros") and not px4_ok:
+    if launch_mode in ("isaac_px4", "isaac_px4_ros", "isaac_e2e") and not px4_ok:
         print(f"{YLW}[WARN]{RST} PX4 binary chybí — launcher pokračuje, ale PX4 terminál selže.\n")
+    if launch_mode == "isaac_e2e" and not ws_ok:
+        print(f"{YLW}[WARN]{RST} ROS2 workspace není buildnutý — E2E launch terminál pravděpodobně selže.\n")
+    if launch_mode == "isaac_e2e" and not gcs_ok:
+        print(f"{YLW}[WARN]{RST} Swarm Center adresář chybí — GCS terminál pravděpodobně selže.\n")
 
     # ── Step 2: Isaac mode ────────────────────────────────────────────────────
     isaac_mode = curses.wrapper(_screen_isaac_mode, last_isaac)
@@ -489,8 +583,10 @@ def main() -> None:
         _launch_isaac_only(headless)
     elif launch_mode == "isaac_px4":
         _launch_isaac_px4(headless)
-    else:
+    elif launch_mode == "isaac_px4_ros":
         _launch_isaac_px4_ros(headless)
+    else:
+        _launch_isaac_e2e(headless)
 
     # ── Done — wait ───────────────────────────────────────────────────────────
     print(f"\n{GRY}Terminály běží. Stiskni ENTER pro ukončení launcheru (terminály zůstanou otevřené)...{RST}")

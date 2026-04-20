@@ -31,6 +31,7 @@ import curses
 import json
 import math
 import os
+import sys
 import threading
 import time
 from enum import Enum, auto
@@ -82,14 +83,14 @@ QOS_LATCHED = QoSProfile(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 DEFAULT_ALT  = 5.0
-MANUAL_SPEED = 2.0   # m/s
+MANUAL_SPEED = 2.0   # m/s XY velocity while key held
 ALT_SPEED    = 1.0   # m/s altitude change
-ARM_TICKS    = 10
+ARM_TICKS    = 20   # 20 ticks × 0.05 s = 1 s before auto-arm
 ALT_TOL      = 0.4
-DT           = 0.1
+DT           = 0.05  # 20 Hz timer — halved for lower command latency
 UI_FPS       = 20
-UI_STEP      = MANUAL_SPEED / UI_FPS
 ALT_STEP     = ALT_SPEED / UI_FPS
+VEL_TIMEOUT  = 0.15  # s — clear velocity if no key received within this window
 
 CORNER_LABELS = {ord('1'): 'NE', ord('2'): 'NW', ord('3'): 'SE', ord('4'): 'SW'}
 
@@ -147,6 +148,12 @@ class DroneCtrl:
         self.phase     = Phase.IDLE
         self.ticks     = 0
 
+        # Velocity command from key input — [vx, vy] NED m/s; 0 = hold position
+        self.vel_cmd: list[float] = [0.0, 0.0]
+        self.vel_cmd_time: float  = 0.0   # monotonic time of last vel command
+        self.vz_cmd: float        = 0.0
+        self.vz_cmd_time: float   = 0.0
+
         # Landing sequence: stop offboard heartbeat, then switch to AUTO.LAND
         self.landing:       bool = False
         self.landing_ticks: int  = 0
@@ -154,6 +161,8 @@ class DroneCtrl:
         # Autonomous RTH state (triggered by home_manager /drone_N/rth_target)
         self.rth_active:    bool = False
         self.rth_vsp:       list[float] = [0.0, 0.0, 0.0]
+        # Suppress self-RTH after H/J pad assignment publish
+        self.rth_suppress_until: float = 0.0
 
 
 # ── Node ──────────────────────────────────────────────────────────────────────
@@ -163,7 +172,9 @@ class ManualController(Node):
         super().__init__("manual_controller")
 
         self.declare_parameter("altitude", DEFAULT_ALT)
+        self.declare_parameter("ui", True)
         self._altitude: float = float(self.get_parameter("altitude").value)
+        self._ui_enabled: bool = bool(self.get_parameter("ui").value)
         self._target_z: float = -self._altitude
 
         self._lock = threading.Lock()
@@ -254,11 +265,15 @@ class ManualController(Node):
         self.create_subscription(
             String, "/swarm/landed_confirmation",
             self._landed_cb, QOS_SWARM)
+        self.create_subscription(
+            String, "/swarm/manual_control",
+            self._manual_control_cb, QOS_SWARM)
 
         self.create_timer(DT, self._timer_cb)
 
         self.get_logger().info(
-            f"ManualController ready | altitude={self._altitude} m | 2 drones"
+            f"ManualController ready | altitude={self._altitude} m | "
+            f"2 drones | ui={'on' if self._ui_enabled else 'off'}"
         )
 
     # ── Position callbacks ────────────────────────────────────────────────────
@@ -287,6 +302,9 @@ class ManualController(Node):
                 d = self._d[idx]
                 if d.rth_active:
                     return
+                # Ignore the echo of our own pad-assignment publish (H/J key)
+                if time.monotonic() < d.rth_suppress_until:
+                    return
                 d.rth_vsp    = [msg.x, msg.y, msg.z]
                 d.rth_active = True
                 self.get_logger().info(
@@ -308,6 +326,82 @@ class ManualController(Node):
                     d.rth_active = False
                     self.get_logger().info(f"{d.did}: landed confirmation received — unlocking input")
                     self._flash(f"{d.did.upper()} landed — manual input unlocked")
+
+    def _manual_control_cb(self, msg: String) -> None:
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn("manual_control: invalid JSON payload")
+            return
+
+        action = str(data.get("action", "")).strip().lower()
+        if not action:
+            return
+
+        drone_id = str(data.get("drone_id", "drone_0")).strip()
+        idx = self._drone_idx(drone_id)
+
+        if action == "move":
+            if idx is None:
+                return
+            self._apply_remote_motion(
+                idx,
+                vx=float(data.get("vx", 0.0)),
+                vy=float(data.get("vy", 0.0)),
+                vz=float(data.get("vz", 0.0)),
+            )
+            return
+
+        if action == "stop":
+            if idx is None:
+                return
+            self._apply_remote_motion(idx, vx=0.0, vy=0.0, vz=0.0)
+            return
+
+        if action == "assign_pad":
+            pad_id = str(data.get("pad_id", "")).strip()
+            if idx is None or pad_id not in ("pad_0", "pad_1"):
+                return
+            self._assign_pad(idx, pad_id)
+            return
+
+        if action == "mark_corner":
+            label = str(data.get("corner", "")).upper()
+            if label in CORNER_LABELS.values():
+                self._mark_corner(label)
+            return
+
+        if action == "land":
+            if idx is not None:
+                self._land(idx)
+            return
+
+        if action == "start_mission":
+            self._confirm_mission(source=str(data.get("source", "gcs_manual")))
+
+    def _drone_idx(self, drone_id: str) -> Optional[int]:
+        if drone_id == "drone_0":
+            return 0
+        if drone_id == "drone_1":
+            return 1
+        self.get_logger().warn(f"manual_control: unknown drone_id '{drone_id}'")
+        return None
+
+    def _apply_remote_motion(self, idx: int, vx: float, vy: float, vz: float) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if self._mission_started:
+                return
+            d = self._d[idx]
+            if d.rth_active or d.landing or d.phase != Phase.FLY:
+                return
+            d.vel_cmd = [
+                max(-MANUAL_SPEED, min(MANUAL_SPEED, vx)),
+                max(-MANUAL_SPEED, min(MANUAL_SPEED, vy)),
+            ]
+            d.vel_cmd_time = now
+            d.vz_cmd = max(-ALT_SPEED, min(ALT_SPEED, vz))
+            d.vz_cmd_time = now
 
     def _mission_ready_cb(self, msg: String) -> None:
         """Mission is starting — swarm_agents are taking over.
@@ -379,7 +473,22 @@ class ManualController(Node):
                             self._land(i)
                             self.get_logger().info(f"{d.did}: at RTH target — triggering AUTO.LAND")
 
+            now = time.monotonic()
+            for d in self._d:
+                if now - d.vel_cmd_time > VEL_TIMEOUT:
+                    if d.vel_cmd[0] != 0.0 or d.vel_cmd[1] != 0.0:
+                        # Key released — latch current real position so hold is stable
+                        if d.pos_valid:
+                            d.vsp[0] = d.x
+                            d.vsp[1] = d.y
+                    d.vel_cmd = [0.0, 0.0]
+                if now - d.vz_cmd_time > VEL_TIMEOUT:
+                    d.vz_cmd = 0.0
+                if d.vz_cmd != 0.0 and not d.rth_active and not d.landing:
+                    d.vsp[2] += d.vz_cmd * DT
+
             vsps           = [list(d.vsp) for d in self._d]
+            vel_cmds       = [list(d.vel_cmd) for d in self._d]
             phases         = [d.phase for d in self._d]
             landing_ticks  = [d.landing_ticks for d in self._d]
             landing_active = [d.landing for d in self._d]
@@ -388,36 +497,42 @@ class ManualController(Node):
         for i in range(len(self._d)):
             if landing_active[i]:
                 # Heartbeat is intentionally NOT published for this drone so PX4
-                # exits offboard mode (~0.5 s).  After 3 ticks (0.3 s) we can
-                # safely send the AUTO.LAND mode switch.
-                if landing_ticks[i] == 3:
+                # exits offboard mode (~0.5 s).  After 6 ticks × 0.05 s = 0.3 s
+                # we can safely send the AUTO.LAND mode switch.
+                if landing_ticks[i] == 6:
                     self._send_command(
                         i, VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
                         param1=1.0, param2=4.0, param3=6.0)
                     self.get_logger().info(
                         f"drone_{i}: AUTO.LAND sent (offboard heartbeat stopped)")
-                    
-                    # Notify other nodes (and ourselves via callback) that we've committed to landing
+
                     lc_msg = String()
                     lc_msg.data = json.dumps({"drone_id": drone_ids[i]})
                     self._landed_pub.publish(lc_msg)
                 continue
-            self._pub_offboard(i)
-            self._pub_setpoint(i, vsps[i], phases[i])
+            vel_mode = vel_cmds[i][0] != 0.0 or vel_cmds[i][1] != 0.0
+            self._pub_offboard(i, vel_mode=vel_mode)
+            self._pub_setpoint(i, vsps[i], phases[i], vel_cmd=vel_cmds[i])
 
     # ── Publisher helpers ─────────────────────────────────────────────────────
-    def _pub_offboard(self, idx: int) -> None:
+    def _pub_offboard(self, idx: int, vel_mode: bool = False) -> None:
         msg = OffboardControlMode()
-        msg.position  = True
-        msg.velocity  = False
+        msg.position  = not vel_mode   # position hold when no keys pressed
+        msg.velocity  = vel_mode       # velocity control while key held
         msg.timestamp = self._now_us()
         self._offboard_pubs[idx].publish(msg)
 
-    def _pub_setpoint(self, idx: int, vsp: list[float], phase: Phase) -> None:
+    def _pub_setpoint(self, idx: int, vsp: list[float], phase: Phase,
+                      vel_cmd: list[float] | None = None) -> None:
         nan = float("nan")
         msg = TrajectorySetpoint()
-        msg.position     = [vsp[0], vsp[1], vsp[2]]
-        msg.velocity     = [nan, nan, nan]
+        if vel_cmd and (vel_cmd[0] != 0.0 or vel_cmd[1] != 0.0):
+            # Velocity mode: XY from keys, Z still position-controlled
+            msg.position     = [nan, nan, vsp[2]]
+            msg.velocity     = [vel_cmd[0], vel_cmd[1], nan]
+        else:
+            msg.position     = [vsp[0], vsp[1], vsp[2]]
+            msg.velocity     = [nan, nan, nan]
         msg.acceleration = [nan, nan, nan]
         msg.yaw          = nan
         msg.timestamp    = self._now_us()
@@ -488,7 +603,14 @@ class ManualController(Node):
         msg_s.data = json.dumps(payload)
         self._pad_assign_pub.publish(msg_s)
 
-        # /drone_N/rth_target — geometry_msgs/Point
+        # /drone_N/rth_target — geometry_msgs/Point (for swarm_agent home position)
+        # Suppress the loopback and cancel any stale RTH: manual_controller
+        # subscribes to this topic too, so the new publish would immediately
+        # re-trigger RTH. Silence the callback for 1 s and clear any active RTH.
+        with self._lock:
+            d = self._d[drone_idx]
+            d.rth_suppress_until = time.monotonic() + 1.0
+            d.rth_active         = False   # new pad supersedes old RTH target
         pt = Point()
         pt.x = x
         pt.y = y
@@ -551,6 +673,13 @@ class ManualController(Node):
         self._flash_msg  = msg
         self._flash_time = time.monotonic()
 
+    def _confirm_mission(self, source: str = "manual_controller") -> None:
+        confirm_msg = String()
+        confirm_msg.data = json.dumps({"source": source, "confirmed": True})
+        self._mission_confirm_pub.publish(confirm_msg)
+        self._flash("Mission confirmed — starting spray mission!")
+        self.get_logger().info(f"Mission confirm published from {source}")
+
     # =========================================================================
     # ── Curses UI ─────────────────────────────────────────────────────────────
     # =========================================================================
@@ -606,11 +735,7 @@ class ManualController(Node):
             self._flash("Mark corner: [1]NE  [2]NW  [3]SE  [4]SW")
 
         elif key in (ord('m'), ord('M')):
-            confirm_msg = String()
-            confirm_msg.data = json.dumps({"operator": "confirmed"})
-            self._mission_confirm_pub.publish(confirm_msg)
-            self._flash("Mission confirmed — starting spray mission!")
-            self.get_logger().info("Operator pressed M — mission confirm published")
+            self._confirm_mission(source="manual_controller")
 
         elif key in (ord('l'), ord('L')):
             with self._lock:
@@ -632,26 +757,26 @@ class ManualController(Node):
                 if not locked:
                     self._d[active].vsp[2] += ALT_STEP
 
-        # ── WSAD movement ─────────────────────────────────────────────────
+        # ── WSAD movement — velocity setpoints for instant response ───────
         else:
             with self._lock:
                 active = self._active
                 fly    = self._d[active].phase == Phase.FLY
                 locked = self._d[active].rth_active
             if fly and not locked:
-                dx, dy = 0.0, 0.0
+                vx, vy = 0.0, 0.0
                 if key in (ord('w'), ord('W')):
-                    dx = +UI_STEP   # North (+x NED)
+                    vx = +MANUAL_SPEED   # North (+x NED)
                 elif key in (ord('s'), ord('S')):
-                    dx = -UI_STEP   # South (-x NED)
+                    vx = -MANUAL_SPEED   # South (-x NED)
                 elif key in (ord('a'), ord('A')):
-                    dy = -UI_STEP   # West  (-y NED)
+                    vy = -MANUAL_SPEED   # West  (-y NED)
                 elif key in (ord('d'), ord('D')):
-                    dy = +UI_STEP   # East  (+y NED)
-                if dx != 0.0 or dy != 0.0:
+                    vy = +MANUAL_SPEED   # East  (+y NED)
+                if vx != 0.0 or vy != 0.0:
                     with self._lock:
-                        self._d[active].vsp[0] += dx
-                        self._d[active].vsp[1] += dy
+                        self._d[active].vel_cmd      = [vx, vy]
+                        self._d[active].vel_cmd_time = time.monotonic()
 
     # ── Drawing ───────────────────────────────────────────────────────────────
     @staticmethod
@@ -758,7 +883,15 @@ def main(args=None) -> None:
     spin_thread.start()
 
     try:
-        curses.wrapper(node.run_ui)
+        if node._ui_enabled and sys.stdin.isatty() and sys.stdout.isatty():
+            curses.wrapper(node.run_ui)
+        else:
+            if node._ui_enabled:
+                node.get_logger().warn(
+                    "UI requested but no TTY detected — running headless backend mode"
+                )
+            while rclpy.ok() and not node._quit:
+                time.sleep(0.2)
     finally:
         node.destroy_node()
         rclpy.try_shutdown()

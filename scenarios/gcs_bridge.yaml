@@ -1,0 +1,5 @@
+name: "GCS Bridge"
+description: "TCP bridge for Swarm Center (PyQt6 GCS). Enables mission monitoring and mode selection."
+ros2_command: "ros2 run scout_control gcs_bridge"
+extra_terminal_commands:
+  - "cd swarm_center && python3 main.py"

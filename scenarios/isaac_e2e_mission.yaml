@@ -1,0 +1,15 @@
+name: "Full E2E Mission — Isaac Sim (agro_field)"
+description: >
+  Swarm spray E2E mise s Isaac Sim / Pegasus backendem.
+  Bez Gazebo sensor bridges — Isaac Sim publikuje ROS2 topicy přímo.
+  Spusť PX4 SITL + MicroXRCE + Isaac Sim RUČNĚ před spuštěním tohoto scénáře.
+
+  Prerekvizity (spustit manuálně):
+    T1: cd ~/PX4-Autopilot && PX4_SIM_MODEL=gazebo-classic_iris ./build/px4_sitl_default/bin/px4 ROMFS/px4fmu_common/ -s ROMFS/px4fmu_common/init.d-posix/rcS
+    T2: MicroXRCEAgent udp4 -p 8888
+    T3: isaac  (otevři agro_field.usd → Load Iris Vehicle → Play ▶)
+
+ros2_command: "ros2 launch scout_control isaac_e2e_mission.launch.py"
+extra_terminal_commands:
+  - "ros2 run scout_control manual_controller"
+  - "cd swarm_center && python3 main.py --drones 1 --base-port 14540 --world-image ../worlds/agro_field_overlay.png"

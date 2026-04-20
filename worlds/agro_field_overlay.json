@@ -1,0 +1,7 @@
+{
+  "ned_x_min": -247.0,
+  "ned_x_max": 252.0,
+  "ned_y_min": -208.0,
+  "ned_y_max": 204.0,
+  "description": "agro_field real aerial photo — NED bounds from Isaac Sim scene"
+}
