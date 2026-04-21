@@ -96,6 +96,7 @@ MSG_PONG               = "pong"
 
 # Milestone 3 — Mission control
 MSG_START_MISSION      = "start_mission"   # {} → /field/mission_confirm
+MSG_GENERATE_GRID      = "generate_grid"   # {} → /field/generate_grid
 MSG_EMERGENCY_STOP     = "emergency_stop"  # {reason?} → RTH all drones
 MSG_GOTO_CELL          = "goto_cell"       # {drone_id, cell_id} → /swarm/cell_override
 MSG_MANUAL_CONTROL     = "manual_control"  # {action, ...} → /swarm/manual_control
@@ -103,6 +104,7 @@ MSG_MANUAL_CONTROL     = "manual_control"  # {action, ...} → /swarm/manual_con
 # Milestone 4 — Camera & 3D
 MSG_CAMERA_FRAME       = "camera_frame"    # {drone_id, seq, jpeg_b64, width, height}
 MSG_DEPTH_FRAME        = "depth_frame"     # {drone_id, seq, data_b64, width, height, encoding}
+MSG_CAMERA_INFO        = "camera_info"     # {drone_id, width, height, k}
 MSG_CAMERA_CONTROL     = "camera_control"  # GCS→ROS2: {drone_id|"all", enabled, fps_limit}
 
 # Protocol version — bump when an incompatible change is made.

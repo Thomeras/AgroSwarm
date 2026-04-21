@@ -1,116 +1,81 @@
-## Codex Log — 2026-04-19
+## Codex Log — 2026-04-20
 
 ### Kontext
 
-- Prosel jsem `CLAUDE.md` a workflow kolem `launch_sim_e2e.txt`.
-- Resila se Isaac Sim / Pegasus E2E cesta, kde nefungoval camera bridge a 3D mapa pole.
+- Resila se Isaac Sim / Pegasus kamera a depth pipeline pro Isaac E2E workflow.
+- Cilem bylo dostat RGB + depth do ROS2 bez uprav funkcnich ROS nodek v `scout_control`.
+- Ukazalo se, ze nejcistsi cesta neni poustet novou Isaac instanci ze standalone
+  Python skriptu, ale poustet helper skript az uvnitr uz bezici Isaac + Pegasus
+  session.
 
 ### Co bylo upraveno
 
-- `src/scout_control/scout_control/gcs_bridge.py`
-  - pridan parametr `camera_topic_template`
-  - pridan parametr `depth_topic_template`
-  - `gcs_bridge` uz nema natvrdo jen `/{drone_id}/camera/image_raw`, ale umi topic templaty
+- `Pegasus_scenarios/simulation_cam.py`
+  - puvodne z nej byl pokus o standalone launcher nove Isaac appky
+  - to se ukazalo jako slepa cesta:
+    - jina instance
+    - jina extension state
+    - chyby kolem `rclpy`, `ROS2Backend`, world lifecycle a UI
+  - soubor byl nakonec prepsan na in-session helper skript
+  - finalni chovani:
+    - nevytvari `SimulationApp`
+    - nenacita world
+    - nespawnuje dron
+    - jen najde existujici kamerovy prim na uz rucne nactenem Pegasus dronu
+      a pripoji ROS2 publishery
+  - publikuje:
+    - `/drone_0/camera/image_raw`
+    - `/drone_0/depth/image_raw`
+  - script je urceny ke spusteni z Isaac `Window > Script Editor`
+  - quick run:
 
-- `src/scout_control/launch/isaac_e2e_mission.launch.py`
-  - launch ted predava do `gcs_bridge`:
-    - `camera_topic_template`
-    - `depth_topic_template`
-  - default zustava:
-    - `/drone_{index}/camera/image_raw`
-    - `/drone_{index}/depth/image_raw`
-
-- `swarm_center/ui/main_window.py`
-  - opraven start 3D mapy pole
-  - `Viewport3D` dostane grid hned po startu pres `set_grid(grid)`
-
-- `src/scout_control/setup.py`
-  - doplnen `launch/isaac_e2e_mission.launch.py` do instalovanych launch souboru
+```python
+exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+```
 
 - `launch_sim_e2e.txt`
-  - byl prubezne aktualizovan podle noveho stavu projektu
-  - pozor: pozdeji ho menil i dalsi agent, tak pri dalsi praci znovu overit obsah
+  - dokumentace byla narovnana na realne funkcni workflow
+  - Isaac se spousti rucne v ROS2-ready envu
+  - world i dron se nacitaji rucne pres Pegasus UI
+  - `simulation_cam.py` se pousti az potom ze Script Editoru uvnitr bezici session
+  - doplnena diagnostika k duplicitnim publisherum (`Publisher count: 2`)
+
+- `CLAUDE.md`
+  - dopsan aktualni, overeny Isaac/Pegasus camera workflow
 
 ### Ověřené skutečnosti
 
-- `colcon build --packages-select scout_control` probehl uspesne.
-- Build spam z `~` nebyl chyba `scout_control`, ale tim, ze `colcon` prochazel cizi virtualenvy:
-  - `isaac_env`
-  - `isaac_env_511`
-  - dalsi `venv` mimo workspace
-- Spravne spousteni buildu:
+- V aktualnim Isaac workflow po rucnim nacteni sveta a dronu a po spusteni
+  `simulation_cam.py` uvnitr Isaac session existuji topicy:
 
-```bash
-cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
-source /opt/ros/jazzy/setup.bash
-colcon build --base-paths src --packages-select scout_control
-source install/setup.bash
-```
-
-### Stav kamery v Isaac vetvi
-
-Bylo overeno:
-
-- `gcs_bridge` bezi:
-
-```bash
-ros2 node list | grep gcs_bridge
-```
-
-- topicy existuji:
-
-```bash
+```text
 /drone_0/camera/image_raw
 /drone_0/depth/image_raw
-/drone_1/camera/image_raw
 ```
 
-- ale `ros2 topic info /drone_0/camera/image_raw -v` ukazal:
+- `ros2 topic info` ukazal publishery z Isaac/Replicator pipeline.
+- Pokud se helper skript spusti dvakrat v jedne session, vzniknou duplicitni
+  publishery a `Publisher count` bude `2`.
+- `camera_info` neni v aktualnim workflow povinny a muze se lisit podle
+  konkretniho Isaac build/runtime helperu.
 
-```text
-Publisher count: 0
-Subscription count: 4
-```
+### Důležité závěry
 
-Zaver:
+- Problem nebyl v `gcs_bridge`, ale v tom, ze Isaac/Pegasus session puvodne
+  nepublikovala kameru/depth na kompatibilni ROS2 topicy.
+- Pro tenhle projekt se nema pouzivat standalone `simulation_cam.py` jako
+  launcher nove Isaac instance.
+- Spravna cesta je:
+  1. spustit Isaac normalne
+  2. rucne nacist world
+  3. rucne nacist dron pres Pegasus UI
+  4. pustit `simulation_cam.py` uvnitr bezici session
 
-- problem neni v `gcs_bridge`
-- problem neni v topic name na ROS2 strane
-- problem je na Isaac / Pegasus strane
-- kamera jako prim ve scene existuje (`/World/quadrotor/body/camera`), ale z dostupnych testu nevyplyva, ze je napojena na aktivni ROS2 publisher pipeline
-- samotne `Type = Camera` nestaci; chybi nebo neni aktivni ROS2 camera publisher / helper / render pipeline
+### Co zůstává důležité při další práci
 
-### Stav 3D mapy pole
-
-- puvodni problem ve `Swarm Center` byl, ze `Viewport3D` nedostal grid hned pri startu
-- to bylo opraveno
-- pokud 3D viewport stale nefunguje, dalsi podezreni:
-  - neexistuje `perimeters/field_grid.json`
-  - chybi `pyqtgraph` nebo `PyOpenGL` v `swarm_center`
-
-### Co zatim NEBYLO vyreseno
-
-- Isaac kamera stale realne nepublikuje do ROS2
-- v repu nebyl nalezen zadny skript nebo config, ktery by pro `agro_field.usd` automaticky aktivoval ROS2 camera helper
-- `isaac_launcher.py` jen otevre Isaac a navadi operatora:
-  - otevrit `agro_field.usd`
-  - loadnout Iris
-  - dat Play
-
-### Doporuceny dalsi krok
-
-Pri dalsim sezeni jit uz po Isaac Sim / Pegasus konfiguraci:
-
-1. V Isaac UI dohledat, jak je `/World/quadrotor/body/camera` napojena na render product.
-2. Najit Action Graph / OmniGraph / ROS2 helper pro kameru.
-3. Ověřit, že po `Play` vznikne realny publisher:
-
-```bash
-ros2 topic info /drone_0/camera/image_raw -v
-```
-
-Cilovy stav:
-
-```text
-Publisher count: 1
-```
+- Nepredelavat znovu `simulation_cam.py` na launcher nove appky, pokud k tomu
+  neni velmi silny duvod.
+- Pri dalsi praci v Isaac vetvi pocitat s tim, ze `simulation_cam.py` je
+  session helper, ne bootstrap cele simulace.
+- Pokud nekdo hlasi `Publisher count: 2`, prvni podezreni je dvojite spusteni
+  helper skriptu v jedne Isaac session.

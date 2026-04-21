@@ -1,0 +1,239 @@
+#usda 1.0
+(
+    doc = """Scout WS — Obstacle Avoidance Test World
+
+    Coordinate system: Z-up ENU  (X=East, Y=North, Z=Up)
+    NED → world: world_x = ned_y, world_y = ned_x
+
+    Drone spawns at world origin (0, 0, 0) via Pegasus UI.
+    All obstacles match obstacle_avoidance_mission.py layout.
+
+    Usage:
+      1. Open this file in Isaac Sim as the world
+      2. Load PX4 drone via Pegasus UI at origin
+      3. Run Pegasus_scenarios/simulation_cam.py from Script Editor
+      4. Play simulation
+      5. ros2 run scout_control obstacle_avoidance_mission
+    """
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    # ── Physics scene ─────────────────────────────────────────────────────────
+    def PhysicsScene "PhysicsScene" (
+        prepend apiSchemas = ["PhysxSceneAPI"]
+    )
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+        bool physxScene:enableCCD = 1
+        token physxScene:broadphaseType = "GPU"
+    }
+
+    # ── Ground plane — 120×120 m grass surface ────────────────────────────────
+    def Xform "Ground"
+    {
+        def Mesh "Surface" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
+        )
+        {
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-60, -60, 0), (60, -60, 0), (60, 60, 0), (-60, 60, 0)]
+            normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+            uniform token subdivisionScheme = "none"
+            float3[] primvars:displayColor = [(0.28, 0.42, 0.22)]
+        }
+    }
+
+    # ── Lighting ──────────────────────────────────────────────────────────────
+    def DomeLight "Sky"
+    {
+        float inputs:intensity = 600
+        color3f inputs:color = (0.72, 0.82, 1.0)
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:intensity = 3500
+        float inputs:angle = 0.53
+        color3f inputs:color = (1.0, 0.97, 0.90)
+        double3 xformOp:rotateXYZ = (-55, 0, -35)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+
+    # ── Overview camera (for Stage view) ──────────────────────────────────────
+    def Camera "OverviewCamera"
+    {
+        float focalLength = 18
+        float horizontalAperture = 20.955
+        double3 xformOp:translate = (0, -50, 40)
+        double3 xformOp:rotateXYZ = (-38, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    # ── Drone spawn marker — shows where Pegasus places the drone ─────────────
+    def Xform "DroneSpawnZone"
+    {
+        def Cylinder "Marker"
+        {
+            double radius = 0.5
+            double height = 0.05
+            token axis = "Z"
+            double3 xformOp:translate = (0, 0, 0.03)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            float3[] primvars:displayColor = [(1.0, 1.0, 1.0)]
+        }
+    }
+
+    # ── Obstacle course ───────────────────────────────────────────────────────
+    #
+    #  All positions: world(x=ned_y, y=ned_x)
+    #
+    #  Drone altitude during test: 5 m
+    #  Depth camera HFOV: 71.9° (OakD-Lite)
+    #  warn_distance: 4.0 m    stop_distance: 2.0 m
+    #
+    def Xform "ObstacleCourse"
+    {
+        # ── 1. wall_north — NED(12, 0) → world(0, 12) ────────────────────────
+        # 6 m wide (East) × 0.4 m thick (North) × 6 m tall
+        # Drone must detour left or right to pass
+        def Xform "wall_north"
+        {
+            double3 xformOp:translate = (0, 12, 3)
+            float3 xformOp:scale = (3, 0.2, 3)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+            def Cube "Shape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3[] primvars:displayColor = [(0.75, 0.70, 0.55)]
+            }
+        }
+
+        # ── 2. poles_east — NED(0, 12) → world(12, 0) ────────────────────────
+        # 3 steel poles Ø 0.3 m × 8 m tall, spaced 1.5 m apart in North
+        # Drone must thread between poles or go around
+        def Xform "poles_east"
+        {
+            def Xform "pole_0"
+            {
+                double3 xformOp:translate = (12, -1.5, 4)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Cylinder "Shape" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {
+                    double radius = 0.15
+                    double height = 8
+                    token axis = "Z"
+                    float3[] primvars:displayColor = [(0.35, 0.35, 0.75)]
+                }
+            }
+            def Xform "pole_1"
+            {
+                double3 xformOp:translate = (12, 0, 4)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Cylinder "Shape" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {
+                    double radius = 0.15
+                    double height = 8
+                    token axis = "Z"
+                    float3[] primvars:displayColor = [(0.35, 0.35, 0.75)]
+                }
+            }
+            def Xform "pole_2"
+            {
+                double3 xformOp:translate = (12, 1.5, 4)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Cylinder "Shape" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI"]
+                )
+                {
+                    double radius = 0.15
+                    double height = 8
+                    token axis = "Z"
+                    float3[] primvars:displayColor = [(0.35, 0.35, 0.75)]
+                }
+            }
+        }
+
+        # ── 3. building_ne — NED(9, 9) → world(9, 9) ─────────────────────────
+        # 4 m × 4 m × 10 m concrete block
+        # Tall enough to block camera at all practical altitudes
+        def Xform "building_ne"
+        {
+            double3 xformOp:translate = (9, 9, 5)
+            float3 xformOp:scale = (2, 2, 5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+            def Cube "Shape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3[] primvars:displayColor = [(0.50, 0.50, 0.58)]
+            }
+        }
+
+        # ── 4. fence_nnw — NED(12, -8) → world(-8, 12) ───────────────────────
+        # 7 m wide (East) × 0.15 m thin (North) × 5 m tall wooden fence
+        # bypass direction: −1 (drone must go East/right to avoid)
+        def Xform "fence_nnw"
+        {
+            double3 xformOp:translate = (-8, 12, 2.5)
+            float3 xformOp:scale = (3.5, 0.075, 2.5)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+
+            def Cube "Shape" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {
+                float3[] primvars:displayColor = [(0.55, 0.38, 0.22)]
+            }
+        }
+
+        # ── Mission target markers (ground discs, no physics) ─────────────────
+        # Shows where each of the 4 avoidance runs is heading
+        def Xform "Targets"
+        {
+            # North Wall target — NED(22, 0) → world(0, 22)
+            def Xform "t_north"
+            {
+                double3 xformOp:translate = (0, 22, 0.03)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cylinder "Disc" { double radius = 1.5; double height = 0.05; token axis = "Z"; float3[] primvars:displayColor = [(1.0, 0.3, 0.3)] }
+            }
+            # East Poles target — NED(0, 22) → world(22, 0)
+            def Xform "t_east"
+            {
+                double3 xformOp:translate = (22, 0, 0.03)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cylinder "Disc" { double radius = 1.5; double height = 0.05; token axis = "Z"; float3[] primvars:displayColor = [(0.3, 0.7, 1.0)] }
+            }
+            # NE Building target — NED(18, 18) → world(18, 18)
+            def Xform "t_ne"
+            {
+                double3 xformOp:translate = (18, 18, 0.03)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cylinder "Disc" { double radius = 1.5; double height = 0.05; token axis = "Z"; float3[] primvars:displayColor = [(0.3, 1.0, 0.5)] }
+            }
+            # NNW Fence target — NED(22, -12) → world(-12, 22)
+            def Xform "t_nnw"
+            {
+                double3 xformOp:translate = (-12, 22, 0.03)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Cylinder "Disc" { double radius = 1.5; double height = 0.05; token axis = "Z"; float3[] primvars:displayColor = [(1.0, 0.9, 0.2)] }
+            }
+        }
+    }
+}

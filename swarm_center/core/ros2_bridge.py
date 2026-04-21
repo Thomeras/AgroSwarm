@@ -29,9 +29,9 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from core.bridge_protocol import (
     BRIDGE_VERSION, DEFAULT_HOST, DEFAULT_PORT,
-    MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_DEPTH_FRAME,
+    MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
-    MSG_HELLO, MSG_MANUAL_CONTROL, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
+    MSG_GENERATE_GRID, MSG_HELLO, MSG_MANUAL_CONTROL, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_PING, MSG_PONG, MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE,
     MSG_SETUP_STATUS, MSG_START_MISSION, MSG_TASK_STATUS,
 )
@@ -82,8 +82,10 @@ class Ros2BridgeClient(QObject):
     # M4 — camera & 3D
     # camera_frame payload: {drone_id, seq, jpeg_bytes (bytes), width, height}
     # depth_frame  payload: {drone_id, seq, png_bytes  (bytes), width, height, encoding}
+    # camera_info payload: {drone_id, width, height, k}
     camera_frame = pyqtSignal(dict)
     depth_frame = pyqtSignal(dict)
+    camera_info = pyqtSignal(dict)
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         super().__init__()
@@ -115,6 +117,10 @@ class Ros2BridgeClient(QObject):
     def send_start_mission(self) -> None:
         """Triggers /field/mission_confirm on the ROS2 side."""
         self._send(MSG_START_MISSION, {})
+
+    def send_generate_grid(self) -> None:
+        """Triggers explicit grid generation from the currently marked corners."""
+        self._send(MSG_GENERATE_GRID, {})
 
     def send_emergency_stop(self, reason: str = "operator_emergency") -> None:
         """RTH all drones immediately via ROS2 bridge."""
@@ -281,6 +287,7 @@ class Ros2BridgeClient(QObject):
             MSG_SETUP_STATUS:     self.setup_status,
             MSG_SETUP_COMPLETE:   self.setup_complete,
             MSG_GRID_RELOAD:      self.grid_reload,
+            MSG_CAMERA_INFO:      self.camera_info,
         }
         sig = signal_map.get(msg_type)
         if sig is None:

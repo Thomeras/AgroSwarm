@@ -105,7 +105,9 @@ class FieldSetupCoordinator(Node):
         super().__init__("field_setup_coordinator")
 
         self.declare_parameter("cell_size_m", 5.0)
+        self.declare_parameter("drone_count", 2)
         self._cell_size: float = float(self.get_parameter("cell_size_m").value)
+        self._drone_count: int = max(1, int(self.get_parameter("drone_count").value))
 
         self._state = SetupState.IDLE
 
@@ -137,6 +139,9 @@ class FieldSetupCoordinator(Node):
         self.create_subscription(
             String, "/field/mission_confirm",
             self._mission_confirm_cb, QOS_VOL)
+        self.create_subscription(
+            String, "/field/generate_grid",
+            self._generate_grid_cb, QOS_VOL)
 
         # 1 Hz status heartbeat
         self.create_timer(1.0, self._status_timer)
@@ -145,8 +150,12 @@ class FieldSetupCoordinator(Node):
             "IDLE — waiting for pad assignments in Swarm Center Manual tab"
         )
         self.get_logger().info(
-            f"FieldSetupCoordinator ready | cell_size={self._cell_size} m"
+            f"FieldSetupCoordinator ready | cell_size={self._cell_size} m | "
+            f"drone_count={self._drone_count}"
         )
+
+    def _required_pad_ids(self) -> list[str]:
+        return [f"pad_{i}" for i in range(self._drone_count)]
 
     # ── Pad assignment callback ───────────────────────────────────────────────
     def _pad_assign_cb(self, msg: String) -> None:
@@ -176,13 +185,12 @@ class FieldSetupCoordinator(Node):
             f"Pad assigned: {pad_id} → {drone_id} NED({x:.2f},{y:.2f})"
         )
         self._publish_status(
-            f"ASSIGN_PADS — {len(self._pads)}/2 pads received "
-            f"({'pad_0' if 'pad_0' in self._pads else '---'}, "
-            f"{'pad_1' if 'pad_1' in self._pads else '---'})"
+            f"ASSIGN_PADS — {len(self._pads)}/{len(self._required_pad_ids())} pads received "
+            f"({', '.join(pid if pid in self._pads else '---' for pid in self._required_pad_ids())})"
         )
 
-        # Advance once both pads are set
-        if "pad_0" in self._pads and "pad_1" in self._pads:
+        # Advance once all required pads are set for the configured drone count.
+        if all(pad_id in self._pads for pad_id in self._required_pad_ids()):
             self._enter_assign_pads()
 
     # ── Corner callback ───────────────────────────────────────────────────────
@@ -221,6 +229,26 @@ class FieldSetupCoordinator(Node):
 
         if not remaining:
             self._enter_generate_grid()
+
+    def _generate_grid_cb(self, msg: String) -> None:
+        if self._state == SetupState.MAP_FIELD:
+            remaining = self.REQUIRED_CORNERS - set(self._corners.keys())
+            if remaining:
+                self._publish_status(
+                    f"MAP_FIELD — can't generate grid yet, missing corners: {', '.join(sorted(remaining))}"
+                )
+                self.get_logger().warn(
+                    f"generate_grid ignored — missing corners: {sorted(remaining)}"
+                )
+                return
+            self._enter_generate_grid()
+            return
+        if self._state in (SetupState.GENERATE_GRID, SetupState.WAITING_FOR_LANDING, SetupState.READY_FOR_MISSION):
+            self.get_logger().info(f"generate_grid ignored in state {self._state.name}")
+            return
+        self._publish_status(
+            "IDLE — assign required landing pads before generating the grid"
+        )
 
     # ── Landed callback ───────────────────────────────────────────────────────
     def _landed_cb(self, msg: String) -> None:
@@ -372,7 +400,9 @@ class FieldSetupCoordinator(Node):
     # ── Mission ready ─────────────────────────────────────────────────────────
     def _publish_mission_ready(self) -> None:
         msg = String()
-        msg.data = json.dumps({"drones": ["drone_0", "drone_1"]})
+        msg.data = json.dumps({
+            "drones": [f"drone_{i}" for i in range(self._drone_count)]
+        })
         self._ready_pub.publish(msg)
         self._publish_status(
             "READY_FOR_MISSION — /swarm/mission_ready published! Mission starting…"

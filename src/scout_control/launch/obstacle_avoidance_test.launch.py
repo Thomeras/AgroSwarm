@@ -2,7 +2,8 @@
 obstacle_avoidance_test.launch.py — Obstacle avoidance test mise.
 
 Spustí všechny potřebné nody pro testování obstacle avoidance:
-  - obstacle_avoidance_mission  — řídicí mise (APF avoidance)
+  - obstacle_detector           — depth kamera → sektorové obstacle info
+  - obstacle_avoidance_mission  — řídicí mise nad detector outputem
   - obstacle_viz                — RViz2 marker + PointCloud2 publisher
   - camera_bridge               — Gz Image → /camera/image_raw
 
@@ -42,9 +43,6 @@ def generate_launch_description() -> LaunchDescription:
     speed_arg = DeclareLaunchArgument(
         "cruise_speed", default_value="2.5",
         description="Horizontální rychlost [m/s]")
-    obs_gain_arg = DeclareLaunchArgument(
-        "obs_gain", default_value="6.0",
-        description="APF odpudivý zisk [m/s]")
     world_arg = DeclareLaunchArgument(
         "world", default_value="obstacle_course",
         description="Gazebo world name")
@@ -54,9 +52,18 @@ def generate_launch_description() -> LaunchDescription:
 
     altitude    = LaunchConfiguration("altitude_m")
     cruise      = LaunchConfiguration("cruise_speed")
-    obs_gain    = LaunchConfiguration("obs_gain")
     world       = LaunchConfiguration("world")
     model       = LaunchConfiguration("model")
+
+    detector_node = Node(
+        package="scout_control",
+        executable="obstacle_detector",
+        name="obstacle_detector",
+        parameters=[{
+            "drone_id": 0,
+        }],
+        output="screen",
+    )
 
     # ── 1. Obstacle avoidance mission node ────────────────────────────────────
     mission_node = Node(
@@ -66,8 +73,8 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             "altitude_m":      altitude,
             "cruise_speed":    cruise,
-            "obs_gain":        obs_gain,
-            "obs_influence_r": 5.5,
+            "drone_id":        0,
+            "avoid_offset_m":  3.0,
             "clear_dist":      2.5,
             "home_dist":       1.5,
         }],
@@ -105,7 +112,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     return LaunchDescription([
-        alt_arg, speed_arg, obs_gain_arg, world_arg, model_arg,
+        alt_arg, speed_arg, world_arg, model_arg,
+        detector_node,
         mission_node,
         viz_node,
         camera_bridge,

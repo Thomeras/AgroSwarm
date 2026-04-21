@@ -51,9 +51,9 @@ from std_msgs.msg import String
 
 from scout_control.bridge_protocol import (
     BRIDGE_VERSION, DEFAULT_HOST, DEFAULT_PORT,
-    MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_DEPTH_FRAME,
+    MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
-    MSG_HELLO, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
+    MSG_GENERATE_GRID, MSG_HELLO, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_PING, MSG_PONG, MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE,
     MSG_SETUP_STATUS, MSG_START_MISSION, MSG_TASK_STATUS,
     MSG_MANUAL_CONTROL,
@@ -66,6 +66,7 @@ try:
     import numpy as np
     import cv2
     from sensor_msgs.msg import Image as SensorImage
+    from sensor_msgs.msg import CameraInfo
     _HAS_CV = True
 except ImportError:
     pass
@@ -139,6 +140,7 @@ class GcsBridge(Node):
         self.declare_parameter("depth_fps_limit", 2.0)
         self.declare_parameter("camera_topic_template", "/{drone_id}/camera/image_raw")
         self.declare_parameter("depth_topic_template", "/{drone_id}/depth/image_raw")
+        self.declare_parameter("camera_info_topic_template", "/{drone_id}/camera/camera_info")
 
         self._host: str = self.get_parameter("host").value
         self._port: int = int(self.get_parameter("port").value)
@@ -149,11 +151,14 @@ class GcsBridge(Node):
             self.get_parameter("camera_topic_template").value)
         self._depth_topic_template: str = str(
             self.get_parameter("depth_topic_template").value)
+        self._camera_info_topic_template: str = str(
+            self.get_parameter("camera_info_topic_template").value)
 
         # ── Camera state ─────────────────────────────────────────────────────
         self._cam_seq: dict[str, int] = {}
         self._last_cam_t: dict[str, float] = {}
         self._last_depth_t: dict[str, float] = {}
+        self._camera_info_sent: set[str] = set()
         self._cam_enabled: set[str] = set(f"drone_{i}" for i in range(self._n_drones))
 
         # ── TCP state ────────────────────────────────────────────────────────
@@ -174,6 +179,8 @@ class GcsBridge(Node):
         # Milestone 3
         self._mission_confirm_pub = self.create_publisher(
             String, "/field/mission_confirm", QOS_LATCHED_RELIABLE)
+        self._generate_grid_pub = self.create_publisher(
+            String, "/field/generate_grid", QOS_VOLATILE_RELIABLE)
         self._cell_override_pub = self.create_publisher(
             String, "/swarm/cell_override", QOS_VOLATILE_RELIABLE)
         self._manual_control_pub = self.create_publisher(
@@ -207,6 +214,8 @@ class GcsBridge(Node):
                     self._camera_topic_template, did, i)
                 depth_topic = self._expand_topic_template(
                     self._depth_topic_template, did, i)
+                info_topic = self._expand_topic_template(
+                    self._camera_info_topic_template, did, i)
                 self.create_subscription(
                     SensorImage, camera_topic,
                     lambda msg, d=did: self._camera_cb(d, msg),
@@ -214,6 +223,10 @@ class GcsBridge(Node):
                 self.create_subscription(
                     SensorImage, depth_topic,
                     lambda msg, d=did: self._depth_cb(d, msg),
+                    QOS_IMAGE)
+                self.create_subscription(
+                    CameraInfo, info_topic,
+                    lambda msg, d=did: self._camera_info_cb(d, msg),
                     QOS_IMAGE)
             self.get_logger().info(
                 f"Camera bridge enabled ({self._n_drones} drones, "
@@ -312,6 +325,18 @@ class GcsBridge(Node):
             "height": msg.height,
             "encoding": msg.encoding,
         })
+
+    def _camera_info_cb(self, drone_id: str, msg: "CameraInfo") -> None:
+        if drone_id in self._camera_info_sent:
+            return
+        k = [float(x) for x in msg.k]
+        self._enqueue(MSG_CAMERA_INFO, {
+            "drone_id": drone_id,
+            "width": int(msg.width),
+            "height": int(msg.height),
+            "k": k,
+        })
+        self._camera_info_sent.add(drone_id)
 
     # ── Enqueue helpers ─────────────────────────────────────────────────────
 
@@ -505,6 +530,13 @@ class GcsBridge(Node):
             out.data = json.dumps({"source": "gcs", "confirmed": True})
             self._mission_confirm_pub.publish(out)
             self.get_logger().info("/field/mission_confirm ← GCS start mission")
+            return
+
+        if msg_type == MSG_GENERATE_GRID:
+            out = String()
+            out.data = json.dumps({"source": "gcs", "requested": True})
+            self._generate_grid_pub.publish(out)
+            self.get_logger().info("/field/generate_grid ← GCS generate grid")
             return
 
         if msg_type == MSG_GOTO_CELL:

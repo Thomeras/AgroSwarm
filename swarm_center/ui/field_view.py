@@ -342,20 +342,50 @@ class FieldView(QWidget):
                 p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"H{i}")
 
     def _paint_overhead_image(self, p: QPainter) -> None:
-        """Draw overhead aerial image aligned to NED coordinates."""
-        if self._overhead_ned is not None:
-            x_min, x_max, y_min, y_max = self._overhead_ned
-        else:
-            grid = self._swarm.grid
-            x_min, x_max = grid.x_min, grid.x_max
-            y_min, y_max = grid.y_min, grid.y_max
+        """Draw overhead aerial image aligned to NED coordinates.
 
-        # NW corner = max North (x_max), min East (y_min)
-        # SE corner = min North (x_min), max East (y_max)
-        tl = self._ned_to_screen(x_max, y_min)
-        br = self._ned_to_screen(x_min, y_max)
-        target = QRectF(tl, br)
-        p.drawPixmap(target.toAlignedRect(), self._overhead_pixmap)
+        Uses source-rect clipping so only the visible portion of the image is
+        rendered — avoids creating multi-thousand-pixel virtual rects when the
+        image covers a large area but the view is zoomed into a small field.
+        SmoothPixmapTransform gives bilinear quality at any zoom level.
+        """
+        if self._overhead_ned is not None:
+            ix_min, ix_max, iy_min, iy_max = self._overhead_ned
+        else:
+            g = self._swarm.grid
+            ix_min, ix_max, iy_min, iy_max = g.x_min, g.x_max, g.y_min, g.y_max
+
+        img_w = self._overhead_pixmap.width()
+        img_h = self._overhead_pixmap.height()
+        ned_w = iy_max - iy_min   # East span in metres
+        ned_h = ix_max - ix_min   # North span in metres
+        if ned_w <= 0 or ned_h <= 0 or img_w <= 0 or img_h <= 0:
+            return
+
+        # Full image maps to this (potentially huge) screen rect
+        # NW corner (x_max N, y_min E) → screen top-left
+        # SE corner (x_min N, y_max E) → screen bottom-right
+        tl = self._ned_to_screen(ix_max, iy_min)
+        br = self._ned_to_screen(ix_min, iy_max)
+        dst = QRectF(tl, br)
+        if dst.width() <= 0 or dst.height() <= 0:
+            return
+
+        # Clip dst to the widget viewport — avoids Qt allocating a ~20 000 px rect
+        widget_rect = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+        clipped = dst.intersected(widget_rect)
+        if clipped.isEmpty():
+            return
+
+        # Map clipped screen rect back to the corresponding source pixels
+        sx = (clipped.left()   - dst.left()) / dst.width()
+        sy = (clipped.top()    - dst.top())  / dst.height()
+        sw = clipped.width()  / dst.width()
+        sh = clipped.height() / dst.height()
+        src = QRectF(sx * img_w, sy * img_h, sw * img_w, sh * img_h)
+
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawPixmap(clipped, self._overhead_pixmap, src)
 
     def _paint_field_bg(self, p: QPainter, grid: FieldGrid) -> None:
         tl = self._ned_to_screen(grid.x_max, grid.y_min)   # NW of field
@@ -439,56 +469,74 @@ class FieldView(QWidget):
 
             colour = DRONE_COLORS[rec.drone_id % len(DRONE_COLORS)]
             centre = self._ned_to_screen(t.x_ned, t.y_ned)
+            rad = DRONE_RADIUS_PX
 
-            # Selection ring — white halo around the selected drone
+            # ── Crosshair (black shadow then colour) ─────────────────────────
+            cross_len = rad + 14
+            cross_lines = [
+                (QPointF(centre.x() - cross_len, centre.y()),
+                 QPointF(centre.x() + cross_len, centre.y())),
+                (QPointF(centre.x(), centre.y() - cross_len),
+                 QPointF(centre.x(), centre.y() + cross_len)),
+            ]
+            p.setPen(QPen(QColor(0, 0, 0, 160), 3))
+            for a, b in cross_lines:
+                p.drawLine(a, b)
+            p.setPen(QPen(colour, 1.5))
+            for a, b in cross_lines:
+                p.drawLine(a, b)
+
+            # ── Selection ring ───────────────────────────────────────────────
             if rec.drone_id == selected:
-                p.setPen(QPen(QColor(255, 255, 255), 3))
+                p.setPen(QPen(QColor(255, 255, 255, 220), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(centre, DRONE_RADIUS_PX + 7, DRONE_RADIUS_PX + 7)
+                p.drawEllipse(centre, rad + 9, rad + 9)
 
-            # Heading triangle
-            r = DRONE_RADIUS_PX + 6
-            # In NED, yaw=0 is North (screen up), yaw=+π/2 is East (screen right).
-            # Qt y increases downward, so we convert accordingly.
-            tip_screen = QPointF(
-                centre.x() + r * math.sin(t.yaw),
-                centre.y() - r * math.cos(t.yaw),
+            # ── Heading arrow ────────────────────────────────────────────────
+            # yaw=0 → North = screen up; Qt y increases downward
+            arrow_r = rad + 10
+            tip = QPointF(
+                centre.x() + arrow_r * math.sin(t.yaw),
+                centre.y() - arrow_r * math.cos(t.yaw),
             )
-            # Base points of triangle — 90° on each side of heading
-            base_left = QPointF(
-                centre.x() + (r * 0.45) * math.sin(t.yaw + math.radians(130)),
-                centre.y() - (r * 0.45) * math.cos(t.yaw + math.radians(130)),
+            bl = QPointF(
+                centre.x() + (rad * 0.5) * math.sin(t.yaw + math.radians(140)),
+                centre.y() - (rad * 0.5) * math.cos(t.yaw + math.radians(140)),
             )
-            base_right = QPointF(
-                centre.x() + (r * 0.45) * math.sin(t.yaw - math.radians(130)),
-                centre.y() - (r * 0.45) * math.cos(t.yaw - math.radians(130)),
+            br_pt = QPointF(
+                centre.x() + (rad * 0.5) * math.sin(t.yaw - math.radians(140)),
+                centre.y() - (rad * 0.5) * math.cos(t.yaw - math.radians(140)),
             )
-            tri = QPolygonF([tip_screen, base_left, base_right])
+            tri = QPolygonF([tip, bl, br_pt])
             p.setBrush(QBrush(colour))
-            p.setPen(QPen(colour.darker(140), 1))
+            p.setPen(QPen(QColor(0, 0, 0, 200), 1.5))
             p.drawPolygon(tri)
 
-            # Body circle
-            rad = DRONE_RADIUS_PX
+            # ── Body circle — black outline for contrast on any BG ───────────
             p.setBrush(QBrush(colour))
-            p.setPen(QPen(Qt.GlobalColor.black, 1.5))
+            p.setPen(QPen(QColor(0, 0, 0), 2))
             p.drawEllipse(centre, rad, rad)
+            # Inner white dot for GPS-marker feel
+            p.setBrush(QBrush(QColor(255, 255, 255, 200)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(centre, 3, 3)
 
-            # Label
-            p.setPen(COL_TEXT)
+            # ── Armed ring (red) ─────────────────────────────────────────────
+            if t.armed:
+                p.setPen(QPen(QColor(255, 60, 60), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(centre, rad + 5, rad + 5)
+
+            # ── Label with shadow ────────────────────────────────────────────
             label = f"D{rec.drone_id}"
             if rec.cell is not None:
                 label += f" [{rec.cell.id}]"
-            p.drawText(
-                QPointF(centre.x() + rad + 4, centre.y() - rad - 2),
-                label,
-            )
-
-            # Armed badge
-            if t.armed:
-                p.setPen(QPen(QColor(255, 80, 80), 2))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(centre, rad + 4, rad + 4)
+            lx = centre.x() + rad + 5
+            ly = centre.y() - rad - 3
+            p.setPen(QPen(QColor(0, 0, 0, 180), 3))
+            p.drawText(QPointF(lx + 1, ly + 1), label)
+            p.setPen(COL_TEXT)
+            p.drawText(QPointF(lx, ly), label)
 
     def _paint_scale_bar(self, p: QPainter, grid: FieldGrid) -> None:
         # Pick a round number of metres that's ~10% of screen width

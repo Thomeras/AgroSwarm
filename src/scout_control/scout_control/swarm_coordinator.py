@@ -72,16 +72,6 @@ class SwarmCoordinator(Node):
         self._ready_timeout: float = self.get_parameter("ready_timeout").value
         self._nfz_radius:    float = self.get_parameter("nfz_radius").value
 
-        # ── Load grid ────────────────────────────────────────────────────────
-        try:
-            with open(GRID_FILE) as f:
-                grid_data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as exc:
-            self.get_logger().fatal(f"Cannot load {GRID_FILE}: {exc}")
-            raise RuntimeError(f"Cannot load {GRID_FILE}") from exc
-
-        self._cell_by_id: dict = {c["id"]: c for c in grid_data["cells"]}
-
         # ── Publishers ────────────────────────────────────────────────────────
         self._next_cell_pubs: dict[str, rclpy.publisher.Publisher] = {
             f"drone_{i}": self.create_publisher(
@@ -96,18 +86,9 @@ class SwarmCoordinator(Node):
         self._rth_pub              = self.create_publisher(
             String, "/swarm/rth_request",      QOS_VOLATILE)
 
-        # ── TaskAllocator ─────────────────────────────────────────────────────
-        self._allocator = TaskAllocator(
-            grid_data           = grid_data,
-            n_drones            = self._n_drones,
-            ready_timeout       = self._ready_timeout,
-            logger              = self.get_logger(),
-            on_next_cell        = self._alloc_publish_next_cell,
-            on_task_status      = self._alloc_publish_task_status,
-            on_mission_complete = self._alloc_publish_mission_complete,
-            on_rth              = self._alloc_publish_rth,
-            nfz_radius          = self._nfz_radius,
-        )
+        # ── Initial allocator (placeholder grid — reloaded on mission_ready) ──
+        self._cell_by_id: dict = {}
+        self._allocator = self._build_allocator_from_file()
 
         # ── Subscriptions ─────────────────────────────────────────────────────
         self.create_subscription(
@@ -140,15 +121,53 @@ class SwarmCoordinator(Node):
             String, "/swarm/mission_ready",
             self._mission_ready_cb, _qos_mission_ready)
 
-        # ── Timers — drive allocator tick methods ─────────────────────────────
-        self.create_timer(1.0,  self._allocator.tick_ready_watchdog)
-        self.create_timer(1.0,  self._allocator.tick_status_publish)
-        self.create_timer(30.0, self._allocator.tick_progress_log)
+        # ── Timers — use wrapper methods so allocator can be hot-swapped ──────
+        self.create_timer(1.0,  self._tick_ready_watchdog)
+        self.create_timer(1.0,  self._tick_status_publish)
+        self.create_timer(30.0, self._tick_progress_log)
 
         self.get_logger().info(
             f"SwarmCoordinator ready | {self._n_drones} drones | "
-            f"{len(grid_data['cells'])} cells"
+            "grid will be reloaded from disk on /swarm/mission_ready"
         )
+
+    # ── Allocator helpers ─────────────────────────────────────────────────────
+
+    def _build_allocator_from_file(self) -> TaskAllocator:
+        """Load field_grid.json and return a fresh TaskAllocator instance."""
+        try:
+            with open(GRID_FILE) as f:
+                grid_data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            self.get_logger().fatal(f"Cannot load {GRID_FILE}: {exc}")
+            raise RuntimeError(f"Cannot load {GRID_FILE}") from exc
+
+        self._cell_by_id = {c["id"]: c for c in grid_data["cells"]}
+        self.get_logger().info(
+            f"Grid loaded: {len(grid_data['cells'])} cells from {GRID_FILE}"
+        )
+        return TaskAllocator(
+            grid_data           = grid_data,
+            n_drones            = self._n_drones,
+            ready_timeout       = self._ready_timeout,
+            logger              = self.get_logger(),
+            on_next_cell        = self._alloc_publish_next_cell,
+            on_task_status      = self._alloc_publish_task_status,
+            on_mission_complete = self._alloc_publish_mission_complete,
+            on_rth              = self._alloc_publish_rth,
+            nfz_radius          = self._nfz_radius,
+        )
+
+    # ── Timer wrappers — indirection so _allocator can be hot-swapped ─────────
+
+    def _tick_ready_watchdog(self) -> None:
+        self._allocator.tick_ready_watchdog()
+
+    def _tick_status_publish(self) -> None:
+        self._allocator.tick_status_publish()
+
+    def _tick_progress_log(self) -> None:
+        self._allocator.tick_progress_log()
 
     # ── Subscription callbacks ────────────────────────────────────────────────
 
@@ -183,16 +202,18 @@ class SwarmCoordinator(Node):
         self.get_logger().info(f"GCS override: {drone_id} → {cell_id}")
 
     def _mission_ready_cb(self, msg: String) -> None:
-        """Start the ready-timeout countdown in TaskAllocator.
+        """Reload grid from disk, build a fresh allocator, then start countdown.
 
-        Called once when /swarm/mission_ready is published by
-        field_setup_coordinator.  Before this arrives, the allocator's
-        ready-watchdog is a no-op so the timeout cannot fire prematurely.
+        field_setup_coordinator writes field_grid.json *before* publishing
+        /swarm/mission_ready, so reloading here guarantees the allocator
+        uses the grid that was just surveyed — not whatever was on disk at
+        node startup.
         """
+        self._allocator = self._build_allocator_from_file()
         self._allocator.start_ready_timeout()
         self.get_logger().info(
             "SwarmCoordinator: /swarm/mission_ready received — "
-            "ready-timeout countdown started"
+            "grid reloaded, ready-timeout countdown started"
         )
 
     # ── TaskAllocator publish callbacks ───────────────────────────────────────

@@ -38,6 +38,15 @@ MicroXRCEAgent udp4 -p 8888
 
 TERMINAL 3 — Isaac Sim
 ----------------------
+source /opt/ros/jazzy/setup.bash
+source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash
+export ROS_DISTRO=jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ISAAC_ROS2=~/isaac_env_511/lib/python3.11/site-packages/isaacsim/exts/isaacsim.ros2.bridge
+export LD_LIBRARY_PATH=${ISAAC_ROS2}/jazzy/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=${ISAAC_ROS2}/jazzy/rclpy:$PYTHONPATH
+unset AMENT_PREFIX_PATH
+unset COLCON_PREFIX_PATH
 source ~/isaac_env_511/bin/activate
 isaacsim
 
@@ -54,9 +63,22 @@ V ISAAC SIM UDELEJ PRESNE TOHLE
 
 4. Teprve potom klikni na Load Vehicle.
 
-5. Potom dej Play.
+5. Otevri `Window > Script Editor`.
 
-6. Sleduj TERMINAL 1 s PX4.
+6. Spust v nem:
+   exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+
+7. Zkontroluj v Isaac logu, ze skript nasel kameru a nainstaloval publishery.
+   Ocekavany vysledek je publish na:
+   - `/drone_0/camera/image_raw`
+   - `/drone_0/depth/image_raw`
+
+8. Script pust jen jednou za session.
+   Pokud ho pustis opakovane, muzes vytvorit duplikatni publishery.
+
+9. Potom dej Play.
+
+10. Sleduj TERMINAL 1 s PX4.
    Jakmile zmizi:
    "Waiting for simulator to accept connection on TCP port 4560"
    a PX4 zacne normalne komunikovat se simulatorem,
@@ -106,17 +128,19 @@ Poznamky:
 - `swarm_agent_1` se spusti taky, ale realny vyznam ma az pri `drone_count:=2`
 - launch nepouziva `ros_gz_bridge` ani `ros_gz_image`
 - kamera v Isaac vetvi jde primo z ROS2 topicu do `gcs_bridge`
--
+- `Pegasus_scenarios/simulation_cam.py` uz neni standalone launcher nove Isaac instance
+- ten skript se pousti az uvnitr beziciho Isaac Sim ze Script Editoru
+
 Default topicy pro kameru/depth, ktere `gcs_bridge` standardne odebira, jsou:
 - `/drone_{index}/camera/image_raw`
 - `/drone_{index}/depth/image_raw`
 
-Pokud Isaac publikuje kameru jinam, nejdriv si over realny topic:
-ros2 topic list | grep -E 'image|camera|depth'
-
-A podle toho pak uprav bridge / relay tak, aby data tekla do:
+Aktualni overeny single-drone stav po spusteni `simulation_cam.py` v Isaac session:
 - `/drone_0/camera/image_raw`
 - `/drone_0/depth/image_raw`
+
+`/drone_0/camera/camera_info` se muze objevit podle konkretniho Isaac build/runtime helperu,
+ale pro aktualni workflow neni nutny.
 
 
 TERMINAL 6 — Swarm Center
@@ -127,6 +151,8 @@ python3 main.py --drones 1 --base-port 14540 --world-image ../worlds/agro_field_
 Poznamky:
 - Camera tab funguje jen kdyz Isaac opravdu publikuje kameru na topic,
   ktery `gcs_bridge` odebira
+- obstacle avoidance z depth kamery predpoklada, ze opravdu tece
+  `/drone_0/depth/image_raw`
 - 3D Map ted nacita grid hned pri startu; pokud chybi 3D viewport uplne,
   doinstaluj zalezlosti ze `swarm_center/requirements.txt`
 
@@ -147,14 +173,27 @@ RYCHLA DIAGNOSTIKA KDYZ NEFUNGUJE KAMERA
 1. Over, ze backend launch bezi:
    ros2 node list | grep gcs_bridge
 
-2. Over, jaky topic Isaac publikuje:
+2. Over, jake topicy Isaac publikuje:
    ros2 topic list | grep -E 'image|camera|depth'
 
-3. Over, ze na nem opravdu tecou data:
-   ros2 topic echo <camera_topic> --once
+3. Ocekavany stav pro aktualni `simulation_cam.py` je:
+   /drone_0/camera/image_raw
+   /drone_0/depth/image_raw
 
-4. Pokud topic nesouhlasi s defaultem `/drone_0/camera/image_raw`,
-   uprav bridge / relay tak, aby kamera tekla do tohoto topicu
+4. Over, ze na nich opravdu tecou data:
+   ros2 topic echo /drone_0/camera/image_raw --once
+   ros2 topic echo /drone_0/depth/image_raw --once
+
+5. Over publisher count:
+   ros2 topic info /drone_0/camera/image_raw -v
+   ros2 topic info /drone_0/depth/image_raw -v
+
+6. Pokud vidis `Publisher count: 2`, skript byl v te same Isaac session spusten
+   dvakrat. Pro cisty stav restartuj Isaac a pust `simulation_cam.py` jen jednou.
+
+7. Pokud topic nesouhlasi s defaultem `/drone_0/camera/image_raw` a
+   `/drone_0/depth/image_raw`, uprav Pegasus scenar nebo launch parametry
+   `camera_topic_template` / `depth_topic_template`
 
 
 RYCHLA DIAGNOSTIKA KDYZ NEFUNGUJE 3D MAPA POLE

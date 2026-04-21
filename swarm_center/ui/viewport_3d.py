@@ -1,219 +1,300 @@
 """
-viewport_3d.py — Mini 3D viewport (Milestone 4)
+viewport_3d.py — Software-rendered 3D field view
 
-Shows drone position trails and the field grid in a 3D scene.
-Uses pyqtgraph.opengl when available, falls back to a placeholder label.
-
-Coordinate mapping (NED → GL):
-    NED x (North)  →  GL +X  (right)
-    NED y (East)   →  GL +Z  (into screen)
-    NED z (Down)   →  GL -Y  (altitude up)
-
-The viewport is updated by SwarmManager listeners and a 10 Hz timer.
+Draws a lightweight isometric 3D view using QPainter instead of OpenGL.
+This keeps the 3D map functional even on systems where pyqtgraph.opengl
+cannot obtain a stable GL context.
 """
 
 from __future__ import annotations
 
-import time
+import math
 from collections import deque
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, Optional
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt6.QtCore import QPointF, QTimer, Qt
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt6.QtWidgets import QWidget
 
-# ── Optional pyqtgraph import ────────────────────────────────────────────────
-_HAS_GL = False
-try:
-    import numpy as np
-    import pyqtgraph as pg
-    import pyqtgraph.opengl as gl
-    pg.setConfigOption("background", "#1a1a2e")
-    pg.setConfigOption("foreground", "#e0e0e0")
-    _HAS_GL = True
-except ImportError:
-    pass
+from core.depth_mapper import DepthMapper
+from core.field_manager import FieldGrid
 
-# Drone trail colours (RGB 0..1) — index matches drone_id int
-_DRONE_COLOURS: list[Tuple[float, float, float, float]] = [
-    (0.2, 0.8, 1.0, 1.0),   # drone_0 — cyan
-    (1.0, 0.5, 0.1, 1.0),   # drone_1 — orange
-    (0.5, 1.0, 0.3, 1.0),   # drone_2 — green
-    (1.0, 0.3, 0.5, 1.0),   # drone_3 — rose
+
+COL_BG = QColor(14, 18, 24)
+COL_GRID = QColor(70, 130, 95, 150)
+COL_GRID_BACK = QColor(35, 55, 44, 120)
+COL_TEXT = QColor(220, 228, 236)
+COL_AXES_X = QColor(255, 120, 120)
+COL_AXES_Y = QColor(120, 210, 255)
+COL_AXES_Z = QColor(170, 170, 170)
+COL_SHADOW = QColor(0, 0, 0, 70)
+COL_TERRAIN_FRESH = QColor(80, 220, 170, 180)
+COL_TERRAIN_STALE = QColor(70, 110, 95, 90)
+
+DRONE_COLORS = [
+    QColor(110, 220, 255),
+    QColor(255, 170, 90),
+    QColor(150, 235, 120),
+    QColor(255, 130, 180),
 ]
-_TRAIL_LEN = 2000   # max NED points per drone in the trail
-_REFRESH_MS = 100   # 10 Hz
-_TRAIL_MIN_DIST_M = 0.2
 
+TRAIL_MAX = 2000
+TRAIL_MIN_DIST_M = 0.2
+REFRESH_MS = 80
 
-def _ned_to_gl(x: float, y: float, z: float) -> Tuple[float, float, float]:
-    """Convert NED coordinates to pyqtgraph GL space."""
-    return x, -z, y   # GL: right=North, up=Alt, depth=East
+# Simple fixed isometric projection.
+ISO_X = 0.92
+ISO_Y = 0.46
+ISO_Z = 0.85
 
 
 class Viewport3D(QWidget):
     """
-    3D scene: drone trails + field grid outline.
+    Software 3D scene: grid, drone trails and altitude columns.
 
-    Usage:
-        vp = Viewport3D()
-        swarm_manager.add_listener(vp.on_drone_record)
-        # Pass grid via vp.set_grid(field_grid) when it changes
+    Public API is intentionally kept compatible with the previous OpenGL
+    widget so MainWindow does not need to change.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, depth_mapper: Optional[DepthMapper] = None) -> None:
         super().__init__()
+        self.setMinimumSize(400, 300)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        self._grid: Optional[FieldGrid] = None
+        self._depth_mapper = depth_mapper
+        self._trails: Dict[int, Deque[tuple[float, float, float]]] = {}
+        self._latest: Dict[int, tuple[float, float, float]] = {}
 
-        if not _HAS_GL:
-            lbl = QLabel(
-                "3D viewer requires pyqtgraph.\n\n"
-                "Install with:  pip install pyqtgraph PyOpenGL\n\n"
-                "Drone trails and field grid will appear here."
-            )
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("color: #888; font-size: 13px; background: #111;")
-            layout.addWidget(lbl)
-            return
+        self._tick = QTimer(self)
+        self._tick.setInterval(REFRESH_MS)
+        self._tick.timeout.connect(self.update)
+        self._tick.start()
 
-        self._view = gl.GLViewWidget()
-        self._view.setMinimumSize(400, 300)
-        self._view.setCameraPosition(distance=60, elevation=30, azimuth=-60)
-        layout.addWidget(self._view)
-
-        # Grid axes
-        axis = gl.GLAxisItem()
-        axis.setSize(10, 10, 10)
-        self._view.addItem(axis)
-
-        # Ground grid (XZ plane in GL = North/East plane)
-        ground = gl.GLGridItem()
-        ground.setSize(100, 100, 1)
-        ground.setSpacing(5, 5, 1)
-        ground.setColor((0.25, 0.25, 0.25, 1.0))
-        self._view.addItem(ground)
-
-        # Per-drone trail lines and current position markers
-        self._trails: Dict[int, gl.GLLinePlotItem] = {}
-        self._markers: Dict[int, gl.GLScatterPlotItem] = {}
-        self._trail_pts: Dict[int, Deque[Tuple[float, float, float]]] = {}
-
-        # Field grid outline (GLLinePlotItem)
-        self._grid_outline: Optional[gl.GLLinePlotItem] = None
-
-        # Refresh timer
-        self._timer = QTimer(self)
-        self._timer.setInterval(_REFRESH_MS)
-        self._timer.timeout.connect(self._refresh)
-        self._timer.start()
-
-    # ── Public API ───────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────────
 
     def on_drone_record(self, record) -> None:
-        """SwarmManager listener — called on every telemetry update."""
-        if not _HAS_GL:
-            return
         telem = record.telemetry
         if not telem.connected:
             return
 
-        # Filter out (0,0) which is often the default before EKF settles
-        if abs(telem.x_ned) < 1e-4 and abs(telem.y_ned) < 1e-4:
+        x, y, z = telem.x_ned, telem.y_ned, telem.z_ned
+        if abs(x) < 1e-4 and abs(y) < 1e-4:
             return
 
-        did = telem.drone_id
+        trail = self._trails.setdefault(telem.drone_id, deque(maxlen=TRAIL_MAX))
+        if trail:
+            lx, ly, lz = trail[-1]
+            dist_sq = (x - lx) ** 2 + (y - ly) ** 2 + (z - lz) ** 2
+            if dist_sq >= TRAIL_MIN_DIST_M ** 2:
+                trail.append((x, y, z))
+        else:
+            trail.append((x, y, z))
 
-        # Distance filtering: only add if we moved enough
-        if did in self._trail_pts and self._trail_pts[did]:
-            lx, lz_neg, ly = self._trail_pts[did][-1]
-            # We check against raw NED for distance to match field_view
-            dist_sq = (telem.x_ned - lx)**2 + (telem.y_ned - ly)**2
-            if dist_sq < _TRAIL_MIN_DIST_M**2:
-                return
+        self._latest[telem.drone_id] = (x, y, z)
 
-        pt = _ned_to_gl(telem.x_ned, telem.y_ned, telem.z_ned)
+    def set_grid(self, field_grid: FieldGrid) -> None:
+        self._grid = field_grid
+        self.update()
 
-        if did not in self._trail_pts:
-            self._trail_pts[did] = deque(maxlen=_TRAIL_LEN)
-            colour = _DRONE_COLOURS[did % len(_DRONE_COLOURS)]
-            line = gl.GLLinePlotItem(antialias=True, width=2)
-            line.setData(color=colour)
-            self._view.addItem(line)
-            self._trails[did] = line
+    # ── Painting ─────────────────────────────────────────────────────────
 
-            marker = gl.GLScatterPlotItem(
-                size=8,
-                color=colour,
-                pxMode=True,
-            )
-            self._view.addItem(marker)
-            self._markers[did] = marker
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), COL_BG)
 
-        self._trail_pts[did].append(pt)
-
-    def set_grid(self, field_grid) -> None:
-        """Redraw the field perimeter / cell grid when the grid changes."""
-        if not _HAS_GL:
+        if self._grid is None or not self._grid.cells:
+            p.setPen(COL_TEXT)
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No grid loaded")
+            p.end()
             return
-        if self._grid_outline is not None:
-            self._view.removeItem(self._grid_outline)
-            self._grid_outline = None
 
-        pts = self._build_grid_lines(field_grid)
-        if pts is None:
-            return
-        outline = gl.GLLinePlotItem(
-            pos=pts,
-            color=(0.4, 0.8, 0.3, 0.6),
-            width=1,
-            antialias=True,
-            mode="lines",
+        origin, scale = self._projection_params()
+        self._paint_ground_shadow(p, origin, scale)
+        self._paint_grid(p, origin, scale)
+        self._paint_terrain(p, origin, scale)
+        self._paint_axes(p, origin, scale)
+        self._paint_trails(p, origin, scale)
+        self._paint_drones(p, origin, scale)
+        self._paint_overlay(p)
+        p.end()
+
+    # ── Projection helpers ───────────────────────────────────────────────
+
+    def _project(self, x: float, y: float, z: float, origin: QPointF, scale: float) -> QPointF:
+        # NED → pseudo-3D screen:
+        # +x north to the right/up, +y east to the left/up, altitude upwards.
+        sx = origin.x() + scale * (x * ISO_X - y * ISO_X)
+        sy = origin.y() - scale * (x * ISO_Y + y * ISO_Y) - scale * ((-z) * ISO_Z)
+        return QPointF(sx, sy)
+
+    def _projection_params(self) -> tuple[QPointF, float]:
+        assert self._grid is not None
+        g = self._grid
+        span_x = max(5.0, g.x_max - g.x_min)
+        span_y = max(5.0, g.y_max - g.y_min)
+
+        width_units = (span_x + span_y) * ISO_X
+        height_units = (span_x + span_y) * ISO_Y + 12.0
+        scale = min(
+            max(1.0, (self.width() - 80) / width_units),
+            max(1.0, (self.height() - 80) / height_units),
         )
-        self._view.addItem(outline)
-        self._grid_outline = outline
 
-    # ── Private ──────────────────────────────────────────────────────────────
+        cx = (g.x_min + g.x_max) / 2.0
+        cy = (g.y_min + g.y_max) / 2.0
+        origin = QPointF(
+            self.width() / 2.0 - scale * (cx * ISO_X - cy * ISO_X),
+            self.height() * 0.78 + scale * (cx * ISO_Y + cy * ISO_Y),
+        )
+        return origin, scale
 
-    def _refresh(self) -> None:
-        """Push buffered trail data to GL items (10 Hz)."""
-        if not _HAS_GL:
-            return
-        for did, pts_dq in self._trail_pts.items():
-            pts = list(pts_dq)
-            if len(pts) < 2:
-                continue
-            arr = np.array(pts, dtype=np.float32)
-            self._trails[did].setData(pos=arr)
-            # Current position marker (last point)
-            self._markers[did].setData(pos=arr[-1:])
+    # ── Primitive painters ────────────────────────────────────────────────
 
-    def _build_grid_lines(self, field_grid) -> Optional["np.ndarray"]:
-        """Build a (N,3) array of line segment vertices from the cell grid."""
-        try:
-            cells = list(field_grid.cells())
-        except Exception:
-            return None
-        if not cells:
-            return None
+    def _paint_ground_shadow(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        assert self._grid is not None
+        g = self._grid
+        poly = QPolygonF([
+            self._project(g.x_min, g.y_min, 0.0, origin, scale),
+            self._project(g.x_max, g.y_min, 0.0, origin, scale),
+            self._project(g.x_max, g.y_max, 0.0, origin, scale),
+            self._project(g.x_min, g.y_max, 0.0, origin, scale),
+        ])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(COL_SHADOW)
+        p.drawPolygon(poly)
 
-        segments = []
-        cs = field_grid.cell_size_m
-        for cell in cells:
-            # cell.ned_center is (x, y) NED; draw a square at z=0 (ground)
-            cx, cy = cell.ned_center
+    def _paint_grid(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        assert self._grid is not None
+        g = self._grid
+        half = g.cell_size_m / 2.0
+
+        back_pen = QPen(COL_GRID_BACK, 1)
+        front_pen = QPen(COL_GRID, 1.2)
+
+        for cell in g.cells:
             corners = [
-                (cx - cs / 2, cy - cs / 2, 0.0),
-                (cx + cs / 2, cy - cs / 2, 0.0),
-                (cx + cs / 2, cy + cs / 2, 0.0),
-                (cx - cs / 2, cy + cs / 2, 0.0),
+                self._project(cell.x - half, cell.y - half, 0.0, origin, scale),
+                self._project(cell.x + half, cell.y - half, 0.0, origin, scale),
+                self._project(cell.x + half, cell.y + half, 0.0, origin, scale),
+                self._project(cell.x - half, cell.y + half, 0.0, origin, scale),
             ]
-            for i in range(4):
-                a = _ned_to_gl(*corners[i])
-                b = _ned_to_gl(*corners[(i + 1) % 4])
-                segments.append(a)
-                segments.append(b)
+            path = QPainterPath(corners[0])
+            for pt in corners[1:]:
+                path.lineTo(pt)
+            path.closeSubpath()
+            p.setPen(back_pen)
+            p.drawPath(path)
 
-        if not segments:
-            return None
-        return np.array(segments, dtype=np.float32)
+        outline = QPolygonF([
+            self._project(g.x_min, g.y_min, 0.0, origin, scale),
+            self._project(g.x_max, g.y_min, 0.0, origin, scale),
+            self._project(g.x_max, g.y_max, 0.0, origin, scale),
+            self._project(g.x_min, g.y_max, 0.0, origin, scale),
+        ])
+        p.setPen(front_pen)
+        p.drawPolygon(outline)
+
+    def _paint_axes(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        assert self._grid is not None
+        g = self._grid
+        base = self._project(g.x_min, g.y_min, 0.0, origin, scale)
+        north = self._project(g.x_min + 8.0, g.y_min, 0.0, origin, scale)
+        east = self._project(g.x_min, g.y_min + 8.0, 0.0, origin, scale)
+        up = self._project(g.x_min, g.y_min, -4.0, origin, scale)
+
+        p.setFont(QFont("Sans", 9, QFont.Weight.Bold))
+
+        p.setPen(QPen(COL_AXES_X, 2))
+        p.drawLine(base, north)
+        p.drawText(north + QPointF(6, -4), "N")
+
+        p.setPen(QPen(COL_AXES_Y, 2))
+        p.drawLine(base, east)
+        p.drawText(east + QPointF(6, -4), "E")
+
+        p.setPen(QPen(COL_AXES_Z, 2))
+        p.drawLine(base, up)
+        p.drawText(up + QPointF(6, -4), "Alt")
+
+    def _paint_terrain(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        if self._depth_mapper is None:
+            return
+        cells = self._depth_mapper.iter_surface_cells()
+        if not cells:
+            return
+
+        half = self._depth_mapper.resolution_m() / 2.0
+        for x, y, elev, age_s in cells:
+            z_ned = -elev
+            corners = [
+                self._project(x - half, y - half, z_ned, origin, scale),
+                self._project(x + half, y - half, z_ned, origin, scale),
+                self._project(x + half, y + half, z_ned, origin, scale),
+                self._project(x - half, y + half, z_ned, origin, scale),
+            ]
+            poly = QPolygonF(corners)
+            freshness = max(0.0, min(1.0, 1.0 - age_s / 12.0))
+            fill = _lerp_color(COL_TERRAIN_STALE, COL_TERRAIN_FRESH, freshness)
+            p.setPen(QPen(fill.darker(160), 0.7))
+            p.setBrush(fill)
+            p.drawPolygon(poly)
+
+    def _paint_trails(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        for drone_id, samples in self._trails.items():
+            if len(samples) < 2:
+                continue
+            color = QColor(DRONE_COLORS[drone_id % len(DRONE_COLORS)])
+            color.setAlpha(150)
+            p.setPen(QPen(color, 2))
+            poly = QPolygonF(
+                [self._project(x, y, z, origin, scale) for (x, y, z) in samples]
+            )
+            p.drawPolyline(poly)
+
+    def _paint_drones(self, p: QPainter, origin: QPointF, scale: float) -> None:
+        for drone_id, (x, y, z) in sorted(self._latest.items()):
+            color = DRONE_COLORS[drone_id % len(DRONE_COLORS)]
+            ground = self._project(x, y, 0.0, origin, scale)
+            air = self._project(x, y, z, origin, scale)
+
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1.5, Qt.PenStyle.DashLine))
+            p.drawLine(ground, air)
+
+            radius = 6.5
+            p.setPen(QPen(QColor(0, 0, 0, 180), 2))
+            p.setBrush(color)
+            p.drawEllipse(air, radius, radius)
+
+            p.setPen(COL_TEXT)
+            p.setFont(QFont("Sans", 9, QFont.Weight.Bold))
+            p.drawText(air + QPointF(8, -8), f"drone_{drone_id}")
+            p.setFont(QFont("Sans", 8))
+            p.drawText(air + QPointF(8, 8), f"{-z:.1f} m")
+
+    def _paint_overlay(self, p: QPainter) -> None:
+        assert self._grid is not None
+        p.setPen(COL_TEXT)
+        p.setFont(QFont("Sans", 10, QFont.Weight.Bold))
+        p.drawText(16, 24, "3D Map")
+
+        g = self._grid
+        dims = f"{g.cols}x{g.rows} cells  |  cell {g.cell_size_m:.1f} m"
+        p.setFont(QFont("Sans", 9))
+        p.drawText(16, 44, dims)
+        if self._depth_mapper is not None:
+            p.drawText(
+                16, 62,
+                f"depth map: {self._depth_mapper.mapped_cells_count()} cells"
+                f" / {self._depth_mapper.mapped_points_count()} samples"
+            )
+
+
+def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
+    t = max(0.0, min(1.0, t))
+    return QColor(
+        int(a.red()   + (b.red()   - a.red())   * t),
+        int(a.green() + (b.green() - a.green()) * t),
+        int(a.blue()  + (b.blue()  - a.blue())  * t),
+        int(a.alpha() + (b.alpha() - a.alpha()) * t),
+    )

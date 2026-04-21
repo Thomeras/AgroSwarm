@@ -55,6 +55,7 @@ class MissionState:
     rebalance_count: int = 0
     setup_status: str = ""                 # latest /field/setup_status text
     field_ready: bool = False              # field_setup_coordinator reached READY_FOR_MISSION
+    setup_state: str = ""                  # raw setup state from coordinator
 
 
 class SwarmManager:
@@ -266,9 +267,10 @@ class SwarmManager:
 
     def apply_setup_status(self, data: dict) -> None:
         text = str(data.get("text", ""))
+        state = str(data.get("state", ""))
         self._mission.setup_status = text
-        if "READY_FOR_MISSION" in text:
-            self._mission.field_ready = True
+        self._mission.setup_state = state
+        self._mission.field_ready = state == "READY_FOR_MISSION"
         
         # Extract metadata (corners, pads) for visualisation
         corners = data.get("corners", {})

@@ -223,9 +223,9 @@ class ObstacleDetector(Node):
         )
 
     def _depth_cb(self, msg: Image) -> None:
-        if not self._grid_ready or not self._pos_valid:
-            return
-
+        # Sector detection (left/center/right distances) works without field grid
+        # or valid position — process unconditionally.  The occupancy-grid projection
+        # inside _process_depth already short-circuits when self._grid is None.
         try:
             depth = self.get_bridge_image(msg)
         except Exception as e:
@@ -310,6 +310,7 @@ class ObstacleDetector(Node):
 
         payload = json.dumps({
             "drone_id":        f"drone_{self._drone_id}",
+            "closest":         round(closest, 2),
             "closest_m":       round(closest, 2),
             "sectors":         {k: round(v, 2) for k, v in sd.items()},
             "free_directions": free,

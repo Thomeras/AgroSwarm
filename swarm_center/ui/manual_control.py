@@ -35,12 +35,14 @@ class ManualControlWidget(QWidget):
         swarm: SwarmManager,
         drone_count: int,
         send_manual_control: Callable[[dict], None],
+        send_generate_grid: Callable[[], None],
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._swarm = swarm
         self._drone_count = drone_count
         self._send_manual_control = send_manual_control
+        self._send_generate_grid = send_generate_grid
         self._bridge_connected = False
         self._pressed_keys: set[int] = set()
         self._selected_drone_id = 0
@@ -87,6 +89,10 @@ class ManualControlWidget(QWidget):
                 {"action": "mark_corner", "corner": corner, "drone_id": "drone_0"}))
             corners.addWidget(btn, row // 2, row % 2)
         setup_layout.addLayout(corners)
+
+        self._grid_btn = QPushButton("Generate Grid")
+        self._grid_btn.clicked.connect(self._send_generate_grid)
+        setup_layout.addWidget(self._grid_btn)
 
         self._start_btn = QPushButton("Start Mission")
         self._start_btn.setStyleSheet("font-weight: bold;")
@@ -181,7 +187,10 @@ class ManualControlWidget(QWidget):
         else:
             text = "Waiting for field setup"
         self._status_label.setText(text)
-        self._start_btn.setEnabled(self._bridge_connected and not ms.ready and not ms.complete)
+        self._grid_btn.setEnabled(self._bridge_connected and not ms.ready and not ms.complete)
+        self._start_btn.setEnabled(
+            self._bridge_connected and ms.field_ready and not ms.ready and not ms.complete
+        )
 
     def keyPressEvent(self, ev) -> None:
         if ev.isAutoRepeat():
@@ -302,4 +311,5 @@ class ManualControlWidget(QWidget):
         self._pad0_btn.setEnabled(self._bridge_connected)
         self._pad1_btn.setEnabled(self._bridge_connected and self._drone_count > 1)
         self._land_btn.setEnabled(self._bridge_connected)
-        self._start_btn.setEnabled(self._bridge_connected)
+        self._grid_btn.setEnabled(self._bridge_connected)
+        self._start_btn.setEnabled(False)

@@ -39,7 +39,8 @@ Nodes launched here (ROS2 side):
   swarm_agent uses fixed-altitude mode (fallback when /drone_N/downward_lidar/scan
   is absent; TAKEOFF transitions after MAX_TAKEOFF_TICKS = 200 ticks / 20 s).
 
-  Camera: if Isaac Sim is configured to publish /drone_N/camera/image_raw,
+  Camera: if Isaac Sim is configured to publish /drone_N/camera/image_raw
+  and /drone_N/depth/image_raw,
   gcs_bridge will stream it automatically (cv2 required).
 
 Usage:
@@ -85,12 +86,14 @@ def generate_launch_description() -> LaunchDescription:
         default_value="/drone_{index}/camera/image_raw",
         description=(
             "ROS2 camera topic template used by gcs_bridge. "
+            "Default matches Pegasus simulation_cam.py output. "
             "Available placeholders: {index}, {drone_id}"))
     depth_topic_arg = DeclareLaunchArgument(
         "depth_topic_template",
         default_value="/drone_{index}/depth/image_raw",
         description=(
             "ROS2 depth topic template used by gcs_bridge. "
+            "Default matches Pegasus simulation_cam.py output. "
             "Available placeholders: {index}, {drone_id}"))
 
     drone_count      = LaunchConfiguration("drone_count")
@@ -109,7 +112,10 @@ def generate_launch_description() -> LaunchDescription:
         package="scout_control",
         executable="field_setup_coordinator",
         name="field_setup_coordinator",
-        parameters=[{"cell_size_m": cell_size_m}],
+        parameters=[{
+            "cell_size_m": cell_size_m,
+            "drone_count": drone_count,
+        }],
         output="screen",
     )
 
@@ -242,6 +248,9 @@ def generate_launch_description() -> LaunchDescription:
     # camera_fps_limit: max fps sent over TCP (default 5 — plenty for GCS preview)
     # camera_topic_template/depth_topic_template let Isaac/Pegasus publish on
     # its native topic names without needing an external relay node.
+    # Current expected default from Pegasus_scenarios/simulation_cam.py:
+    #   /drone_0/camera/image_raw
+    #   /drone_0/depth/image_raw
     gcs_bridge = TimerAction(
         period=2.0,
         actions=[Node(

@@ -36,7 +36,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from core.app_logger import AppLogger
 from core.bridge_protocol import DEFAULT_HOST, DEFAULT_PORT
+from core.depth_mapper import DepthMapper
 from core.field_manager import FieldGrid, find_default_grid_file
 from core.mavlink_manager import DroneTelemetry, SwarmMavlinkManager
 from core.ros2_bridge import Ros2BridgeThreadRunner
@@ -78,6 +80,13 @@ class MainWindow(QMainWindow):
 
         # ── Core state ──────────────────────────────────────────────────────
         self._swarm = SwarmManager(grid)
+        self._depth_mapper = DepthMapper()
+        self._depth_mapper.set_grid(grid)
+        self._logger = AppLogger()
+        self._last_setup_state: str = ""
+        self._last_setup_text: str = ""
+        self._last_mission_ready: bool = False
+        self._last_mission_complete: bool = False
 
         # ── MAVLink ─────────────────────────────────────────────────────────
         self._mav = SwarmMavlinkManager(
@@ -104,15 +113,19 @@ class MainWindow(QMainWindow):
         br.setup_complete.connect(self._on_setup_complete)
         br.grid_reload.connect(self._on_grid_reload)
         br.hello.connect(self._on_bridge_hello)
+        br.depth_frame.connect(self._on_depth_frame_for_map)
+        br.camera_info.connect(self._on_camera_info_for_map)
 
         # ── UI ──────────────────────────────────────────────────────────────
         self._field_view = FieldView(self._swarm)
         self._drone_list = DroneListPanel(self._swarm)
         self._control = ControlPanel()
+        self._logger.entry_added.connect(self._control.append_log_entry)
         self._manual_control = ManualControlWidget(
             self._swarm,
             drone_count=drone_count,
             send_manual_control=self._bridge_runner.client.send_manual_control,
+            send_generate_grid=self._bridge_runner.client.send_generate_grid,
         )
 
         # M4 — Camera feed (must be created before connecting bridge signals)
@@ -127,7 +140,7 @@ class MainWindow(QMainWindow):
         br.depth_frame.connect(self._camera_view.on_depth_frame)
 
         # M4 — 3D viewport
-        self._viewport_3d = Viewport3D()
+        self._viewport_3d = Viewport3D(self._depth_mapper)
         self._swarm.add_listener(self._viewport_3d.on_drone_record)
         self._viewport_3d.set_grid(grid)
 
@@ -155,6 +168,7 @@ class MainWindow(QMainWindow):
 
         # Mission state → control panel
         self._swarm.add_mission_listener(self._control.update_mission)
+        self._swarm.add_mission_listener(self._on_mission_state_changed)
 
         # Right column: control panel (top) + drone list (bottom)
         right = QWidget()
@@ -189,6 +203,11 @@ class MainWindow(QMainWindow):
         self._control.set_mav_status(
             f"waiting for HEARTBEAT on {host}:{base_port}")
         self._control.set_bridge_status(False)
+        self._logger.info(
+            "swarm_center",
+            f"Startup complete | MAVLink {host}:{base_port}-{base_port + drone_count - 1} | "
+            f"bridge {bridge_host}:{bridge_port}"
+        )
 
         # ── Start background workers ────────────────────────────────────────
         self._mav.start_all()
@@ -230,9 +249,14 @@ class MainWindow(QMainWindow):
         try:
             grid = FieldGrid.from_file(path)
         except Exception as exc:
+            self._logger.error("grid", f"Load failed for {path}: {exc}")
             QMessageBox.warning(self, "Load grid", f"Failed:\n{exc}")
             return
         self._apply_grid(grid)
+        self._logger.info(
+            "grid",
+            f"Loaded {path} | {grid.cols}x{grid.rows} | cell {grid.cell_size_m:.1f} m"
+        )
         self.statusBar().showMessage(
             f"Grid loaded: {grid.cols}×{grid.rows} cells "
             f"({grid.cell_size_m:.1f} m each)",
@@ -241,15 +265,18 @@ class MainWindow(QMainWindow):
 
     def _apply_grid(self, grid: FieldGrid) -> None:
         self._swarm.set_grid(grid)
+        self._depth_mapper.set_grid(grid)
         self._field_view.reset_view()
         self._viewport_3d.set_grid(grid)
         self._control.set_cell_size(grid.cell_size_m)
 
     def _on_cell_size_changed(self, cell_size: float) -> None:
         new_grid = self._swarm.grid.regrid(cell_size)
-        self._swarm.set_grid(new_grid)
-        self._field_view.reset_view()
-        self._viewport_3d.set_grid(new_grid)
+        self._apply_grid(new_grid)
+        self._logger.info(
+            "grid",
+            f"Regridded to {new_grid.cols}x{new_grid.rows} | cell {cell_size:.1f} m"
+        )
         self.statusBar().showMessage(
             f"Grid regridded: {new_grid.cols}×{new_grid.rows} cells "
             f"({cell_size:.1f} m each) — "
@@ -270,18 +297,28 @@ class MainWindow(QMainWindow):
 
     def _on_connection_changed(self, drone_id: int, connected: bool) -> None:
         self._swarm.set_connection(drone_id, connected)
+        state = "connected" if connected else "disconnected"
+        level = self._logger.info if connected else self._logger.warn
+        level(f"drone_{drone_id}", f"MAVLink {state}")
 
     def _on_mav_log(self, drone_id: int, msg: str) -> None:
-        self._control.append_log(f"drone_{drone_id}", msg)
+        self._logger.info(f"drone_{drone_id}", msg)
 
     # ── Bridge signal handlers ──────────────────────────────────────────────
 
     def _on_bridge_log(self, msg: str) -> None:
-        self._control.append_log("bridge", msg)
+        lowered = msg.lower()
+        if "failed" in lowered or "error" in lowered or "bad json" in lowered:
+            self._logger.error("bridge", msg)
+        elif "retrying" in lowered or "closed" in lowered or "disconnected" in lowered:
+            self._logger.warn("bridge", msg)
+        else:
+            self._logger.info("bridge", msg)
 
     def _on_bridge_hello(self, data: dict) -> None:
         ver = data.get("bridge_version", "?")
         distro = data.get("ros_distro", "?")
+        self._logger.info("bridge", f"HELLO | version={ver} | ros={distro}")
         self.statusBar().showMessage(
             f"Bridge v{ver} on ROS2 {distro}", 5000)
 
@@ -290,6 +327,10 @@ class MainWindow(QMainWindow):
         # The bridge won't send a grid_reload for the initial setup, so do it here.
         cells = data.get("cells")
         if cells:
+            self._logger.info(
+                "setup",
+                f"Field setup complete | {cells} cells | field {data.get('field_size', '?')}"
+            )
             self.statusBar().showMessage(
                 f"Field setup complete: {cells} cells "
                 f"({data.get('field_size', '?')})", 5000)
@@ -303,9 +344,10 @@ class MainWindow(QMainWindow):
         try:
             grid = FieldGrid.from_file(path)
         except Exception as exc:
-            self._control.append_log("bridge", f"grid_reload failed: {exc}")
+            self._logger.error("grid", f"grid_reload failed for {path}: {exc}")
             return
         self._apply_grid(grid)
+        self._logger.info("grid", f"Reloaded from {path}")
         self.statusBar().showMessage(f"Grid reloaded: {path}", 5000)
 
     def _try_reload_default_grid(self) -> None:
@@ -315,14 +357,53 @@ class MainWindow(QMainWindow):
         try:
             grid = FieldGrid.from_file(found)
         except Exception as exc:
-            self._control.append_log("bridge", f"grid auto-reload failed: {exc}")
+            self._logger.error("grid", f"auto-reload failed for {found}: {exc}")
             return
         self._apply_grid(grid)
+        self._logger.info("grid", f"Auto-reloaded from {found}")
         self.statusBar().showMessage(f"Grid reloaded: {found}", 5000)
+
+    def _on_camera_info_for_map(self, data: dict) -> None:
+        drone_id = str(data.get("drone_id", ""))
+        if not drone_id:
+            return
+        self._logger.info(
+            "depth_map",
+            f"{drone_id} camera_info received | {int(data.get('width', 0))}x{int(data.get('height', 0))}"
+        )
+        self._depth_mapper.set_camera_info(
+            drone_id=drone_id,
+            width=int(data.get("width", 0)),
+            height=int(data.get("height", 0)),
+            k=list(data.get("k", [])),
+        )
+
+    def _on_depth_frame_for_map(self, data: dict) -> None:
+        drone_id = str(data.get("drone_id", ""))
+        if not drone_id:
+            return
+        try:
+            drone_num = int(drone_id.split("_")[-1])
+        except (ValueError, IndexError):
+            return
+        rec = self._swarm.drone(drone_num)
+        telem = rec.telemetry if rec is not None else None
+        png_bytes = data.get("png_bytes", b"")
+        if not png_bytes:
+            return
+        self._depth_mapper.ingest_depth_frame(
+            drone_id=drone_id,
+            png_bytes=png_bytes,
+            width=int(data.get("width", 0)),
+            height=int(data.get("height", 0)),
+            encoding=str(data.get("encoding", "")),
+            telem=telem,
+        )
 
     # ── UI actions ──────────────────────────────────────────────────────────
 
     def _on_mode_changed(self, mode: str) -> None:
+        self._logger.info("operator", f"Mode changed to {mode}")
         self._bridge_runner.client.send_set_mode(mode)
         self.statusBar().showMessage(f"Mission mode → {mode}", 3000)
 
@@ -335,6 +416,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            self._logger.warn("operator", "RTH all drones requested")
             self._bridge_runner.client.send_rth_all(reason="operator_gui")
             self.statusBar().showMessage("RTH sent to all drones", 3000)
 
@@ -347,6 +429,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            self._logger.info("operator", "Mission start confirmed")
             self._bridge_runner.client.send_start_mission()
             self.statusBar().showMessage("Mission confirmed — starting", 3000)
 
@@ -359,10 +442,12 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            self._logger.error("operator", "EMERGENCY STOP requested")
             self._bridge_runner.client.send_emergency_stop()
             self.statusBar().showMessage("EMERGENCY STOP sent", 3000)
 
     def _on_arm(self, drone_id: int) -> None:
+        self._logger.info("operator", f"ARM requested for drone_{drone_id}")
         self._mav.arm(drone_id)
         self.statusBar().showMessage(f"ARM → drone_{drone_id}", 3000)
 
@@ -375,6 +460,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            self._logger.warn("operator", f"DISARM requested for drone_{drone_id}")
             self._mav.disarm(drone_id)
             self.statusBar().showMessage(f"DISARM → drone_{drone_id}", 3000)
 
@@ -382,6 +468,7 @@ class MainWindow(QMainWindow):
         self._swarm.select_drone(drone_id)
         self._drone_list.highlight_selected(drone_id)
         self._field_view.update()
+        self._logger.debug("operator", f"Selected drone_{drone_id}")
         self.statusBar().showMessage(
             f"drone_{drone_id} selected — right-click field cell to GOTO", 3000)
 
@@ -399,6 +486,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            self._logger.info("operator", f"GOTO {cell_id} requested for drone_{selected}")
             self._bridge_runner.client.send_goto_cell(f"drone_{selected}", cell_id)
             self.statusBar().showMessage(
                 f"GOTO {cell_id} → drone_{selected}", 3000)
@@ -412,6 +500,28 @@ class MainWindow(QMainWindow):
             cells[rec.did] = rec.cell.id if rec.cell is not None else None
         if cells:
             self._bridge_runner.client.send_peer_cells(cells)
+
+    def _on_mission_state_changed(self, ms: MissionState) -> None:
+        if ms.setup_state != self._last_setup_state:
+            if ms.setup_state:
+                self._logger.info("setup", f"State -> {ms.setup_state}")
+            self._last_setup_state = ms.setup_state
+
+        if ms.setup_status != self._last_setup_text:
+            if ms.setup_status and ms.setup_state not in ("", "MAP_FIELD"):
+                self._logger.info("setup", ms.setup_status)
+            self._last_setup_text = ms.setup_status
+
+        if ms.ready and not self._last_mission_ready:
+            self._logger.info("mission", "Mission ready / in progress")
+        self._last_mission_ready = ms.ready
+
+        if ms.complete and not self._last_mission_complete:
+            self._logger.info(
+                "mission",
+                f"Mission complete | {ms.completed_cells}/{ms.total_cells} cells"
+            )
+        self._last_mission_complete = ms.complete
 
     # ── Menu ────────────────────────────────────────────────────────────────
 

@@ -395,9 +395,23 @@ class ManualController(Node):
             d = self._d[idx]
             if d.rth_active or d.landing or d.phase != Phase.FLY:
                 return
+            prev_vx, prev_vy = d.vel_cmd
+            next_vx = max(-MANUAL_SPEED, min(MANUAL_SPEED, vx))
+            next_vy = max(-MANUAL_SPEED, min(MANUAL_SPEED, vy))
+
+            # Swarm Center sends a continuous "move" action, including zeroed
+            # velocities on key release. When XY motion stops we must latch the
+            # current real position as the new hold setpoint; otherwise PX4
+            # falls back to the previous position-mode target, typically the
+            # takeoff point.
+            if (prev_vx != 0.0 or prev_vy != 0.0) and next_vx == 0.0 and next_vy == 0.0:
+                if d.pos_valid:
+                    d.vsp[0] = d.x
+                    d.vsp[1] = d.y
+
             d.vel_cmd = [
-                max(-MANUAL_SPEED, min(MANUAL_SPEED, vx)),
-                max(-MANUAL_SPEED, min(MANUAL_SPEED, vy)),
+                next_vx,
+                next_vy,
             ]
             d.vel_cmd_time = now
             d.vz_cmd = max(-ALT_SPEED, min(ALT_SPEED, vz))

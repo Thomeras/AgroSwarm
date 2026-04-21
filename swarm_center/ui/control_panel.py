@@ -165,6 +165,13 @@ class ControlPanel(QWidget):
     def append_log(self, source: str, msg: str) -> None:
         self._log.appendPlainText(f"[{source}] {msg}")
 
+    def append_log_entry(self, entry) -> None:
+        try:
+            line = entry.format_line()
+        except Exception:
+            line = str(entry)
+        self._log.appendPlainText(line)
+
     def update_mission(self, ms: MissionState) -> None:
         if ms.setup_status:
             self._setup_label.setText(f"Setup: {ms.setup_status}")

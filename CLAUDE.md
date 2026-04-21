@@ -1,6 +1,6 @@
 # CLAUDE.md — scout_ws
 
-Aktuální stav workspace k 2026-04-19.
+Aktuální stav workspace k 2026-04-20.
 
 Tento dokument je určený pro práci nad repozitářem. Popisuje reálnou strukturu
 projektu, běžné entry pointy a známé odchylky proti starší dokumentaci.
@@ -166,8 +166,44 @@ Rozdíl proti Gazebo větvi:
 V repu jsou pro Isaac i overlay assety:
 
 - `worlds/agro_field.usd`
+- `worlds/agro_field_pegasus.usda`
 - `worlds/agro_field_overlay.png`
 - `worlds/agro_field_overhead.png`
+
+### Ověřený Camera/Depth Workflow V Isaac Větvi
+
+K 2026-04-20 je funkční a ověřený tento postup:
+
+1. Isaac Sim se spouští ručně v ROS2-ready envu.
+2. Operátor ručně otevře world a ručně nahraje dron přes Pegasus UI.
+3. Teprve potom se uvnitř běžící Isaac session přes `Window > Script Editor`
+   spustí:
+
+```python
+exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+```
+
+4. Tento skript už dnes:
+   - nevytváří novou Isaac instanci
+   - nenačítá world
+   - nespawnuje dron
+   - jen najde existující kamerový prim na už načteném dronu a připojí ROS2
+     publishery
+
+Ověřené výsledné topicy:
+
+- `/drone_0/camera/image_raw`
+- `/drone_0/depth/image_raw`
+
+Poznámky:
+
+- `camera_info` není v aktuálním workflow požadovaný a nemusí se vždy objevit
+  podle konkrétního Isaac build/runtime helperu
+- pokud se `simulation_cam.py` pustí dvakrát v jedné Isaac session, vzniknou
+  duplicitní publishery a `ros2 topic info` ukáže `Publisher count: 2`
+- pro čistý stav je potřeba pustit skript jen jednou za session
+- `simulation_cam.py` není launcher nové Isaac appky; je to in-session helper
+  pro už ručně připravený svět a dron
 
 ## 3. Swarm Center
 
