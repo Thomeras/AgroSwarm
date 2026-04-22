@@ -44,7 +44,7 @@ import math
 import threading
 from collections import deque
 from enum import Enum, auto
-from typing import Optional
+from typing import Any, Optional
 
 import rclpy
 from rclpy.node import Node
@@ -120,6 +120,8 @@ ALT_DEADBAND       = 0.5    # m — don't correct if range error < this (wider b
 TERRAIN_KP         = 1.2    # P gain [m/s per m error] — same as terrain_follower.py
 TERRAIN_VZ_MAX     = 1.0    # m/s — max vertical velocity for terrain correction
                              # Kept low to avoid oscillation at high cruise speeds
+NAV_BACKEND_DIRECT = "direct"
+NAV_BACKEND_AVOIDANCE_RUNTIME = "avoidance_runtime"
 
 
 class Phase(Enum):
@@ -142,14 +144,20 @@ class SwarmAgent(Node):
         self.declare_parameter("home_ned_x",   0.0)
         self.declare_parameter("home_ned_y",   0.0)
         self.declare_parameter("cruise_speed", 2.0)
+        self.declare_parameter("navigation_backend", NAV_BACKEND_DIRECT)
 
         self._drone_id:     int   = self.get_parameter("drone_id").value
         self._altitude:     float = self.get_parameter("altitude_m").value
         self._home_x:       float = self.get_parameter("home_ned_x").value
         self._home_y:       float = self.get_parameter("home_ned_y").value
         self._cruise_speed: float = self.get_parameter("cruise_speed").value
-
         self._did = f"drone_{self._drone_id}"
+        backend_raw = str(self.get_parameter("navigation_backend").value)
+        self._navigation_backend: str = self._normalize_navigation_backend(backend_raw)
+        self._runtime_backend_active = (
+            self._navigation_backend == NAV_BACKEND_AVOIDANCE_RUNTIME
+        )
+
         # PX4 topic prefix: drone 0 = bare, drone N = /px4_N/
         _px4_ns = "" if self._drone_id == 0 else f"/px4_{self._drone_id}"
 
@@ -205,6 +213,8 @@ class SwarmAgent(Node):
         self._avoid_waypoint:       tuple          = (0.0, 0.0)   # lateral detour point
         self._avoid_ticks:          int            = 0
         self._avoiding_resume_cell: Optional[str]  = None         # for status publish on entry
+        self._last_avoidance_payload: Optional[dict[str, Any]] = None
+        self._last_runtime_status_signature: Optional[tuple[Any, ...]] = None
 
         # ── Publishers ────────────────────────────────────────────────────────
         self._offboard_pub = self.create_publisher(
@@ -269,6 +279,13 @@ class SwarmAgent(Node):
             String,
             f"/{self._did}/obstacles/detected",
             self._on_obstacle, QOS_SENSOR)
+        if self._navigation_backend == NAV_BACKEND_AVOIDANCE_RUNTIME:
+            self.create_subscription(
+                String,
+                f"/{self._did}/avoidance/status",
+                self._avoidance_status_cb,
+                QOS_VOL,
+            )
 
         # Subscribe to /swarm/mission_ready — arm only after setup is complete.
         # VOLATILE: intentionally ignores stale latched messages from previous
@@ -290,7 +307,9 @@ class SwarmAgent(Node):
         self.get_logger().info(
             f"SwarmAgent {self._did} ready | "
             f"alt={self._altitude}m | home NED({self._home_x},{self._home_y}) | "
-            f"cruise={self._cruise_speed}m/s | waiting for /swarm/mission_ready"
+            f"cruise={self._cruise_speed}m/s | backend={self._navigation_backend} | "
+            f"runtime_backend_active={self._runtime_backend_active} | "
+            "waiting for /swarm/mission_ready"
         )
 
     # ── Subscribers ───────────────────────────────────────────────────────────
@@ -399,6 +418,10 @@ class SwarmAgent(Node):
         (_on_ground=True) a new mission_ready clears mission state and arms again.
         """
         with self._lock:
+            if self._runtime_backend_active:
+                self._passive = False
+                self._idle_ticks = 0
+                return
             if self._arm_requested or (self._armed and not self._on_ground):
                 return   # already armed and airborne — ignore duplicate
             self._passive          = False
@@ -441,6 +464,111 @@ class SwarmAgent(Node):
             self._obstacle_critical = bool(data.get("critical", False))
             self._free_directions   = data.get("free_directions", ["left", "center", "right"])
 
+    def _avoidance_status_cb(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        self._last_avoidance_payload = payload
+        mapped = self._build_swarm_status_from_avoidance(payload)
+        if mapped is None or not self._runtime_backend_active:
+            return
+        status, extra = mapped
+        signature = (
+            status,
+            extra.get("phase"),
+            extra.get("target_id"),
+            extra.get("planner_state"),
+            extra.get("scan_state"),
+            extra.get("blocked_severity"),
+            extra.get("runtime_event"),
+        )
+        if signature == self._last_runtime_status_signature:
+            return
+        self._last_runtime_status_signature = signature
+        self._pub_status(status, **extra)
+
+    def _build_swarm_status_from_avoidance(
+        self, payload: dict[str, Any]
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        phase = str(payload.get("phase", "")).upper()
+        if not phase:
+            return None
+
+        if phase == "IDLE":
+            status = "READY" if bool(payload.get("navigator_ready", False)) else "IDLE"
+        else:
+            phase_to_status = {
+                "TAKEOFF": "TAKEOFF",
+                "CRUISE_TO_TARGET": "NAVIGATING",
+                "WARN_DRIFT": "AVOIDANCE_WARN",
+                "STOP_HOVER": "HOVER",
+                "SCAN_360": "SCAN_360",
+                "LOCAL_REPLAN": "LOCAL_REPLAN",
+                "DETOUR_EXECUTION": "AVOIDING",
+                "BLOCKED": "BLOCKED",
+                "RETURN_HOME": "RTH",
+                "LANDING": "LANDING",
+                "ABORT": "ABORT",
+            }
+            status = phase_to_status.get(phase)
+            if status is None:
+                return None
+
+        event = payload.get("last_runtime_event") or {}
+        runtime_event = str(event.get("event", "")).strip() if isinstance(event, dict) else ""
+        blocked_severity = payload.get("blocked_severity")
+        blocked_reason = payload.get("blocked_reason")
+        blocked_since_s = payload.get("blocked_since_s")
+        extra = {
+            "backend": NAV_BACKEND_AVOIDANCE_RUNTIME,
+            "phase": phase,
+            "command": str(payload.get("command", "")),
+            "target_id": str(payload.get("target_id", "")),
+            "target_name": str(payload.get("target_name", "")),
+            "target_ned": payload.get("target_ned"),
+            "subgoal_ned": payload.get("subgoal_ned"),
+            "planner_state": str(payload.get("planner_state", "")),
+            "planner_mode": str(payload.get("planner_mode", "")),
+            "scan_state": str(payload.get("scan_state", "")),
+            "no_path_streak": int(payload.get("no_path_streak", 0)),
+            "scan_attempts_for_target": int(payload.get("scan_attempts_for_target", 0)),
+            "blocked_reason": None if blocked_reason is None else str(blocked_reason),
+            "blocked_severity": None if blocked_severity is None else str(blocked_severity),
+            "blocked_since_s": None if blocked_since_s is None else float(blocked_since_s),
+            "dense_scan_points": int(payload.get("dense_scan_points", 0)),
+            "mapper_state": str(payload.get("mapper_state", "")),
+            "local_map_age_s": float(payload.get("local_map_age_s", 0.0)),
+            "last_scan": payload.get("last_scan"),
+            "last_runtime_event": payload.get("last_runtime_event"),
+            "avoidance_active": bool(payload.get("avoidance_active", False)),
+            "obstacle_warn": bool(payload.get("obstacle_warn", False)),
+            "obstacle_critical": bool(payload.get("obstacle_critical", False)),
+            "obstacle_closest_m": float(payload.get("obstacle_closest_m", 99.0)),
+            "free_directions": payload.get("free_directions"),
+            "drone_ned": payload.get("drone_ned"),
+            "home_ned": payload.get("home_ned"),
+            "home_captured": bool(payload.get("home_captured", False)),
+            "last_completed_target_id": str(payload.get("last_completed_target_id", "")),
+            "last_completed_target_name": str(payload.get("last_completed_target_name", "")),
+            "runtime_event": runtime_event,
+        }
+        if not runtime_event:
+            extra.pop("runtime_event")
+        return (status, extra)
+
+    def _normalize_navigation_backend(self, value: str) -> str:
+        backend = value.strip().lower()
+        if backend in {NAV_BACKEND_DIRECT, NAV_BACKEND_AVOIDANCE_RUNTIME}:
+            return backend
+        self.get_logger().warn(
+            f"{self._did}: unsupported navigation_backend='{value}', fallback to "
+            f"{NAV_BACKEND_DIRECT}"
+        )
+        return NAV_BACKEND_DIRECT
+
     def _compute_avoid_waypoint(self) -> Optional[tuple]:
         """Compute lateral detour waypoint to clear an obstacle.
 
@@ -466,6 +594,8 @@ class SwarmAgent(Node):
     # ── Control loop (10 Hz) ──────────────────────────────────────────────────
 
     def _timer_cb(self) -> None:
+        if self._runtime_backend_active:
+            return
         with self._lock:
             self._ticks += 1
 

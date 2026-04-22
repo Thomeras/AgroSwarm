@@ -67,10 +67,22 @@ class SwarmCoordinator(Node):
         self.declare_parameter("drone_count",   2)
         self.declare_parameter("ready_timeout", 30.0)
         self.declare_parameter("nfz_radius",    3.0)
+        self.declare_parameter("deferred_retry_delay_s", 12.0)
+        self.declare_parameter("hard_block_cooldown_s", 30.0)
+        self.declare_parameter("max_deferrals_per_cell", 3)
 
         self._n_drones:      int   = self.get_parameter("drone_count").value
         self._ready_timeout: float = self.get_parameter("ready_timeout").value
         self._nfz_radius:    float = self.get_parameter("nfz_radius").value
+        self._deferred_retry_delay_s: float = float(
+            self.get_parameter("deferred_retry_delay_s").value
+        )
+        self._hard_block_cooldown_s: float = float(
+            self.get_parameter("hard_block_cooldown_s").value
+        )
+        self._max_deferrals_per_cell: int = int(
+            self.get_parameter("max_deferrals_per_cell").value
+        )
 
         # ── Publishers ────────────────────────────────────────────────────────
         self._next_cell_pubs: dict[str, rclpy.publisher.Publisher] = {
@@ -156,6 +168,9 @@ class SwarmCoordinator(Node):
             on_mission_complete = self._alloc_publish_mission_complete,
             on_rth              = self._alloc_publish_rth,
             nfz_radius          = self._nfz_radius,
+            deferred_retry_delay_s=self._deferred_retry_delay_s,
+            hard_block_cooldown_s=self._hard_block_cooldown_s,
+            max_deferrals_per_cell=self._max_deferrals_per_cell,
         )
 
     # ── Timer wrappers — indirection so _allocator can be hot-swapped ─────────

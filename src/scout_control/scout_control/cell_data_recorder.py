@@ -35,6 +35,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+from scout_control.avoidance.types import SwarmDroneStatusEvent
 from scout_control.paths import CELL_DATA_DIR
 
 # ── QoS ───────────────────────────────────────────────────────────────────────
@@ -158,11 +159,15 @@ class CellDataRecorder(Node):
             )
             return
 
-        if data.get("status") != "CELL_COMPLETE":
+        if not isinstance(data, dict):
             return
 
-        drone_id = data.get("drone_id", "")
-        cell_id  = data.get("cell_id", "")
+        event = SwarmDroneStatusEvent.from_payload(data)
+        if event.status.upper() != "CELL_COMPLETE":
+            return
+
+        drone_id = event.drone_id
+        cell_id = event.cell_id
 
         if not drone_id or not cell_id:
             self.get_logger().warn(

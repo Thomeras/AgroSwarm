@@ -12,11 +12,10 @@ Topiky (publish):
   /visualization/obstacle_cloud     sensor_msgs/PointCloud2         0.5 Hz
 
 Topiky (subscribe):
-  /fmu/out/vehicle_local_position_v1    VehicleLocalPosition
-  /obstacle_avoidance/status            std_msgs/String
-  /obstacle_avoidance/planned_path      nav_msgs/Path
-  /obstacle_avoidance/actual_path       nav_msgs/Path
-  /obstacle_avoidance/avoidance_active  std_msgs/Bool
+  /px4_N/fmu/out/vehicle_local_position_v1 or /fmu/out/... (drone_0)  VehicleLocalPosition
+  /drone_N/avoidance/planned_path                                   nav_msgs/Path
+  /drone_N/avoidance/actual_path                                    nav_msgs/Path
+  /drone_N/avoidance/active                                         std_msgs/Bool
 
 Souřadnicový systém pro RViz2 (frame_id="map"):
   rviz_x = ned_y   (East)
@@ -114,6 +113,12 @@ class ObstacleViz(Node):
 
     def __init__(self) -> None:
         super().__init__("obstacle_viz")
+        self.declare_parameter("drone_id", 0)
+        self.declare_parameter("subscribe_legacy_topics", False)
+        drone_id = int(self.get_parameter("drone_id").value)
+        subscribe_legacy = bool(self.get_parameter("subscribe_legacy_topics").value)
+        drone_ns = f"drone_{drone_id}"
+        px4_ns = "" if drone_id == 0 else f"/px4_{drone_id}"
 
         # ── Stav ──────────────────────────────────────────────────────────────
         self._drone_x: float       = 0.0
@@ -138,12 +143,22 @@ class ObstacleViz(Node):
         # ── Subscribers ───────────────────────────────────────────────────────
         self.create_subscription(
             VehicleLocalPosition,
-            "/fmu/out/vehicle_local_position_v1",
+            f"{px4_ns}/fmu/out/vehicle_local_position_v1",
             self._pos_cb, QOS_PX4,
         )
-        self.create_subscription(Bool,   "/obstacle_avoidance/avoidance_active", self._avoid_cb, QOS_SUB)
-        self.create_subscription(Path,   "/obstacle_avoidance/planned_path",     self._plan_cb,  QOS_SUB)
-        self.create_subscription(Path,   "/obstacle_avoidance/actual_path",      self._actual_cb, QOS_SUB)
+        self.create_subscription(Bool, f"/{drone_ns}/avoidance/active", self._avoid_cb, QOS_SUB)
+        self.create_subscription(Path, f"/{drone_ns}/avoidance/planned_path", self._plan_cb, QOS_SUB)
+        self.create_subscription(Path, f"/{drone_ns}/avoidance/actual_path", self._actual_cb, QOS_SUB)
+        if subscribe_legacy:
+            self.create_subscription(
+                Bool, "/obstacle_avoidance/avoidance_active", self._avoid_cb, QOS_SUB
+            )
+            self.create_subscription(
+                Path, "/obstacle_avoidance/planned_path", self._plan_cb, QOS_SUB
+            )
+            self.create_subscription(
+                Path, "/obstacle_avoidance/actual_path", self._actual_cb, QOS_SUB
+            )
 
         # ── Timery ────────────────────────────────────────────────────────────
         self.create_timer(1.0,  self._pub_obs_cb)
@@ -151,7 +166,10 @@ class ObstacleViz(Node):
         self.create_timer(0.2,  self._pub_paths_cb)
         self.create_timer(2.0,  self._pub_cloud_cb)
 
-        self.get_logger().info("obstacle_viz ready — view in RViz2 (frame_id=map)")
+        self.get_logger().info(
+            f"obstacle_viz ready — drone_id={drone_id} legacy_topics="
+            f"{'on' if subscribe_legacy else 'off'}"
+        )
 
     # ── Subscribers ───────────────────────────────────────────────────────────
 

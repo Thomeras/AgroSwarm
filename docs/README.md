@@ -1,0 +1,21 @@
+# Documentation Map
+
+Tato slozka drzi lidskou dokumentaci a dlouhodobe poznamky mimo root workspace.
+
+## Struktura
+
+- `guides/` — operatorni a workflow navody
+- `internal/` — technicke poznamky z vyvoje, debugging a historicke zavery
+- `plans/` — rozpracovane planovaci materialy a navrhy
+- `private/` — lokalni necitovane nebo citlive podklady, ignorovane v gitu
+
+## Dulezite soubory
+
+- `guides/E2E_OPERATOR_GUIDE.md` — operatorni guide pro plnou E2E misi
+- `internal/technical_notes.md` — technicke poznamky k architekture a bugfixum
+- `plans/scout_development_plan.docx` — starsi vyvojovy plan
+
+Root workspace je vyhrazeny hlavne pro:
+- realne entrypointy a launchery (`scout_launcher.py`, `isaac_launcher.py`, `reset.sh`)
+- AI instrukcni soubory (`CLAUDE.md`, `codex.md`)
+- top-level projektove slozky (`src/`, `swarm_center/`, `worlds/`, `launch_files/`)

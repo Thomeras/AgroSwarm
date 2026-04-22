@@ -20,6 +20,8 @@ spray_log.json
 perimeters/field_perimeter.json
 perimeters/field_grid.json
 perimeters/home_positions.json
+logs/avoidance_logs/*
+!logs/avoidance_logs/.gitkeep
 
 # IDE / editor
 .vscode/
@@ -44,4 +46,4 @@ Thumbs.db
 *.env.local
 
 # Sensitive credentials
-docs/udaje.txt
+docs/private/udaje.txt

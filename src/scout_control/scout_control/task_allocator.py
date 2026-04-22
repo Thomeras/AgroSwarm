@@ -37,6 +37,7 @@ class DroneStatus(Enum):
     WAITING      = auto()   # not yet READY
     WORKING      = auto()   # flying cells
     SECTOR_DONE  = auto()   # finished own sector, may be rebalanced
+    TEMP_BLOCKED = auto()   # temporary unavailable for new work
     MISSION_DONE = auto()   # all cells globally done
     RTH          = auto()   # returning home
 
@@ -51,6 +52,9 @@ class DroneRecord:
         self.current_cell:    Optional[dict] = None
         self.prefetched_cell: Optional[dict] = None  # already published, not yet popped
         self.completed_cells: list[str]      = []   # cell ids
+        self.blocked_until_s: float          = 0.0
+        self.blocked_reason: str             = ""
+        self.deferred_cells: int             = 0
 
     @property
     def queue_remaining(self) -> int:
@@ -121,6 +125,9 @@ class TaskAllocator:
         on_mission_complete: Callable[[dict], None],
         on_rth: Callable[[str], None],
         nfz_radius: float = 3.0,
+        deferred_retry_delay_s: float = 12.0,
+        hard_block_cooldown_s: float = 30.0,
+        max_deferrals_per_cell: int = 3,
     ) -> None:
         """
         Parameters
@@ -140,6 +147,9 @@ class TaskAllocator:
         self._ready_timeout = ready_timeout
         self._log           = logger
         self._nfz_radius    = nfz_radius
+        self._deferred_retry_delay_s = max(1.0, float(deferred_retry_delay_s))
+        self._hard_block_cooldown_s = max(3.0, float(hard_block_cooldown_s))
+        self._max_deferrals_per_cell = max(1, int(max_deferrals_per_cell))
 
         self._on_next_cell_cb        = on_next_cell
         self._on_task_status_cb      = on_task_status
@@ -178,6 +188,8 @@ class TaskAllocator:
         self._mission_done:    bool           = False
         self._mission_start_t: float          = 0.0
         self._ready_deadline:  Optional[float] = None   # set by start_ready_timeout()
+        self._deferred_cells: list[dict] = []
+        self._deferred_meta: dict[str, dict] = {}
 
         self._log.info(
             f"TaskAllocator waiting for {self._n_drones} drone(s) to publish READY "
@@ -260,6 +272,7 @@ class TaskAllocator:
             return
 
         with self._lock:
+            self._maintenance_tick(now_s=time.monotonic())
             visited  = sum(1 for c in self._cells.values() if c["status"] == "visited")
             total    = len(self._cells)
             progress = visited / total if total else 0.0
@@ -271,6 +284,9 @@ class TaskAllocator:
                     "queue_remaining": rec.queue_remaining,
                     "completed":       rec.completed,
                     "status":          rec.status.name,
+                    "blocked_until_s": round(max(0.0, rec.blocked_until_s - time.monotonic()), 2),
+                    "blocked_reason":  rec.blocked_reason,
+                    "deferred_cells":  rec.deferred_cells,
                 }
 
             payload = {
@@ -280,6 +296,7 @@ class TaskAllocator:
                 "total_cells":      total,
                 "completed_cells":  visited,
                 "cell_size_m":      self._cell_size_m,
+                "deferred_cells":   len(self._deferred_cells),
             }
 
         self._on_task_status_cb(payload)
@@ -306,25 +323,98 @@ class TaskAllocator:
     def handle_drone_status(self, data: dict) -> None:
         """Call when a parsed /swarm/drone_status JSON dict is received."""
         drone_id = data.get("drone_id")
-        status   = data.get("status")
+        status = str(data.get("status", "")).upper()
+        normalized = dict(data)
+        if status == "NAV_ACTIVE":
+            status = "NAVIGATING"
+        elif status == "NAV_COMPLETED":
+            status = "CELL_COMPLETE"
+            if not normalized.get("cell_id"):
+                normalized["cell_id"] = normalized.get("target_id", "")
+        elif status == "NAV_BLOCKED_SOFT":
+            status = "BLOCKED"
+            normalized.setdefault("blocked_severity", "SOFT")
+        elif status == "NAV_BLOCKED_HARD":
+            status = "BLOCKED"
+            normalized.setdefault("blocked_severity", "HARD")
+            normalized.setdefault("reassign_recommended", True)
+        elif status in {"NAV_ABORTED", "DRONE_ABORTED"}:
+            status = "ABORT"
+        elif status in {"DRONE_BLOCKED", "REPEATED_BLOCKED"}:
+            status = "BLOCKED"
+            normalized.setdefault("blocked_severity", "HARD")
 
         if drone_id not in self._drones:
             return
 
         with self._lock:
             rec = self._drones[drone_id]
+            now_s = time.monotonic()
 
             if status == "READY":
                 if rec.status == DroneStatus.WAITING:
                     rec.status = DroneStatus.WORKING
+                    rec.blocked_until_s = 0.0
+                    rec.blocked_reason = ""
                     self._log.info(f"{drone_id}: READY")
+                self._maintenance_tick(now_s=now_s)
                 return
 
             if status == "CELL_COMPLETE":
                 if not self._mission_started or self._mission_done:
                     return
-                cell_id = data.get("cell_id")
+                cell_id = normalized.get("cell_id")
                 self._on_cell_complete(rec, cell_id)
+                self._maintenance_tick(now_s=now_s)
+                return
+
+            if status == "CELL_DEFERRED":
+                if not self._mission_started or self._mission_done:
+                    return
+                self._handle_cell_deferred(rec, normalized, now_s=now_s)
+                self._maintenance_tick(now_s=now_s)
+                return
+
+            if status in {
+                "IDLE",
+                "TAKEOFF",
+                "NAVIGATING",
+                "AVOIDANCE_WARN",
+                "HOVER",
+                "SCAN_360",
+                "LOCAL_REPLAN",
+                "AVOIDING",
+            }:
+                if self._mission_started and not self._mission_done:
+                    self._set_drone_working(rec)
+                    self._maybe_backfill_current_cell(rec, data)
+                self._maintenance_tick(now_s=now_s)
+                return
+
+            if status == "BLOCKED":
+                if not self._mission_started or self._mission_done:
+                    return
+                self._handle_blocked_status(rec, normalized, now_s=now_s)
+                self._maintenance_tick(now_s=now_s)
+                return
+
+            if status in {"RTH", "LANDING", "ABORT"}:
+                if not self._mission_started or self._mission_done:
+                    return
+                if rec.current_cell is not None:
+                    self._defer_cell(
+                        rec.current_cell,
+                        reason=f"{status.lower()}_while_active",
+                        deferred_by=rec.drone_id,
+                        severity="HARD",
+                    )
+                    rec.current_cell = None
+                rec.prefetched_cell = None
+                rec.status = DroneStatus.TEMP_BLOCKED
+                rec.blocked_until_s = now_s + self._hard_block_cooldown_s
+                rec.blocked_reason = status.lower()
+                self._maintenance_tick(now_s=now_s)
+                return
 
     # ── Mission start ─────────────────────────────────────────────────────────
 
@@ -416,6 +506,8 @@ class TaskAllocator:
 
     def _advance(self, rec: DroneRecord) -> None:
         """Pop next unvisited cell from queue, invoke on_next_cell, prefetch."""
+        if rec.status == DroneStatus.TEMP_BLOCKED:
+            return
         while rec.assigned_cells:
             cell = rec.assigned_cells.pop(0)
             if self._cells.get(cell["id"], {}).get("status") == "visited":
@@ -471,11 +563,20 @@ class TaskAllocator:
 
     def _check_rebalance(self, finished: DroneRecord) -> None:
         """Steal cells from the drone with the most remaining work."""
+        if finished.status == DroneStatus.TEMP_BLOCKED:
+            return
+        if self._assign_deferred_to(finished):
+            self._log.info(f"{finished.drone_id}: resumed via deferred queue")
+            self._advance(finished)
+            return
+
         best_donor: Optional[DroneRecord] = None
         best_count: int = 3   # minimum threshold to trigger steal
 
         for rec in self._drones.values():
             if rec.drone_id == finished.drone_id:
+                continue
+            if rec.status == DroneStatus.TEMP_BLOCKED:
                 continue
             if rec.queue_remaining > best_count:
                 best_count = rec.queue_remaining
@@ -511,6 +612,181 @@ class TaskAllocator:
         )
 
         self._advance(finished)
+
+    def _set_drone_working(self, rec: DroneRecord) -> None:
+        rec.blocked_until_s = 0.0
+        rec.blocked_reason = ""
+        if rec.status in {DroneStatus.WAITING, DroneStatus.MISSION_DONE, DroneStatus.RTH}:
+            return
+        rec.status = DroneStatus.WORKING
+
+    def _maybe_backfill_current_cell(self, rec: DroneRecord, payload: dict) -> None:
+        if rec.current_cell is not None:
+            return
+        cell_id = payload.get("cell_id")
+        if isinstance(cell_id, str) and cell_id in self._cells:
+            rec.current_cell = self._cells[cell_id]
+            return
+        target_id = payload.get("target_id")
+        if isinstance(target_id, str) and target_id in self._cells:
+            rec.current_cell = self._cells[target_id]
+
+    def _infer_blocked_severity(self, payload: dict) -> str:
+        severity_raw = str(payload.get("blocked_severity", "")).strip().upper()
+        if severity_raw in {"HARD", "SOFT"}:
+            return severity_raw
+        if bool(payload.get("reassign_recommended", False)):
+            return "HARD"
+        return "SOFT"
+
+    def _handle_blocked_status(
+        self, rec: DroneRecord, payload: dict, *, now_s: float
+    ) -> None:
+        severity = self._infer_blocked_severity(payload)
+        reason = str(payload.get("blocked_reason", "blocked")).strip() or "blocked"
+        if severity == "HARD":
+            deferred_cell = rec.current_cell
+            if deferred_cell is None:
+                cell_id = payload.get("cell_id") or payload.get("target_id")
+                if isinstance(cell_id, str):
+                    deferred_cell = self._cells.get(cell_id)
+            if deferred_cell is not None:
+                self._defer_cell(
+                    deferred_cell,
+                    reason=reason,
+                    deferred_by=rec.drone_id,
+                    severity=severity,
+                )
+            rec.current_cell = None
+            rec.prefetched_cell = None
+            rec.status = DroneStatus.TEMP_BLOCKED
+            rec.blocked_reason = reason
+            rec.blocked_until_s = now_s + self._hard_block_cooldown_s
+            self._log.warn(
+                f"{rec.drone_id}: HARD BLOCKED ({reason}) "
+                f"→ temp blocked {self._hard_block_cooldown_s:.0f}s"
+            )
+            return
+        rec.status = DroneStatus.WORKING
+        rec.blocked_reason = reason
+        rec.blocked_until_s = now_s + min(5.0, self._deferred_retry_delay_s / 2.0)
+        self._log.info(f"{rec.drone_id}: SOFT BLOCKED ({reason}) — keep assignment")
+
+    def _handle_cell_deferred(
+        self, rec: DroneRecord, payload: dict, *, now_s: float
+    ) -> None:
+        cell_id = payload.get("cell_id")
+        severity = self._infer_blocked_severity(payload)
+        reason = str(payload.get("reason", payload.get("blocked_reason", "cell_deferred")))
+        target_cell = None
+        if isinstance(cell_id, str):
+            target_cell = self._cells.get(cell_id)
+        if target_cell is None:
+            target_cell = rec.current_cell
+        if target_cell is None:
+            return
+        self._defer_cell(
+            target_cell,
+            reason=reason,
+            deferred_by=rec.drone_id,
+            severity=severity,
+        )
+        if rec.current_cell and rec.current_cell["id"] == target_cell["id"]:
+            rec.current_cell = None
+        rec.prefetched_cell = None
+        if severity == "HARD":
+            rec.status = DroneStatus.TEMP_BLOCKED
+            rec.blocked_reason = reason
+            rec.blocked_until_s = now_s + self._hard_block_cooldown_s
+
+    def _defer_cell(
+        self,
+        cell: dict,
+        *,
+        reason: str,
+        deferred_by: str,
+        severity: str,
+    ) -> None:
+        cell_id = cell.get("id")
+        if not isinstance(cell_id, str) or cell_id not in self._cells:
+            return
+        if self._cells[cell_id]["status"] == "visited":
+            return
+        meta = self._deferred_meta.setdefault(
+            cell_id,
+            {
+                "attempts": 0,
+                "last_reason": "",
+                "last_drone_id": "",
+                "severity": "SOFT",
+                "next_eligible_s": 0.0,
+            },
+        )
+        meta["attempts"] = int(meta["attempts"]) + 1
+        meta["last_reason"] = str(reason)
+        meta["last_drone_id"] = str(deferred_by)
+        meta["severity"] = str(severity).upper()
+        meta["next_eligible_s"] = time.monotonic() + self._deferred_retry_delay_s
+        self._cells[cell_id]["status"] = "deferred"
+
+        if not any(existing.get("id") == cell_id for existing in self._deferred_cells):
+            self._deferred_cells.append(dict(self._cells[cell_id]))
+
+        rec = self._drones.get(deferred_by)
+        if rec is not None:
+            rec.deferred_cells += 1
+        self._log.warn(
+            f"{deferred_by}: CELL_DEFERRED {cell_id} reason={reason} "
+            f"severity={severity} attempts={meta['attempts']}"
+        )
+
+    def _eligible_for_reassign(self, cell_id: str, *, now_s: float) -> bool:
+        meta = self._deferred_meta.get(cell_id)
+        if meta is None:
+            return True
+        if int(meta.get("attempts", 0)) > self._max_deferrals_per_cell:
+            return False
+        return now_s >= float(meta.get("next_eligible_s", 0.0))
+
+    def _assign_deferred_to(self, rec: DroneRecord) -> bool:
+        if rec.status == DroneStatus.TEMP_BLOCKED:
+            return False
+        now_s = time.monotonic()
+        for idx, cell in enumerate(self._deferred_cells):
+            cell_id = cell.get("id")
+            if not isinstance(cell_id, str):
+                continue
+            if self._cells.get(cell_id, {}).get("status") == "visited":
+                continue
+            if rec.current_cell is not None and rec.current_cell.get("id") == cell_id:
+                continue
+            if any(item.get("id") == cell_id for item in rec.assigned_cells):
+                continue
+            if not self._eligible_for_reassign(cell_id, now_s=now_s):
+                continue
+            rec.assigned_cells.insert(0, self._cells[cell_id])
+            self._deferred_cells.pop(idx)
+            self._cells[cell_id]["status"] = "unvisited"
+            self._log.info(f"{rec.drone_id}: deferred {cell_id} re-assigned")
+            return True
+        return False
+
+    def _maintenance_tick(self, *, now_s: float) -> None:
+        for rec in self._drones.values():
+            if rec.status != DroneStatus.TEMP_BLOCKED:
+                continue
+            if rec.blocked_until_s <= now_s:
+                rec.blocked_until_s = 0.0
+                rec.blocked_reason = ""
+                rec.status = DroneStatus.WORKING
+                self._log.info(f"{rec.drone_id}: temp block cooldown elapsed")
+
+        for rec in self._drones.values():
+            if rec.status == DroneStatus.TEMP_BLOCKED:
+                continue
+            if self._assign_deferred_to(rec):
+                if rec.current_cell is None:
+                    self._advance(rec)
 
     # ── Mission complete ──────────────────────────────────────────────────────
 

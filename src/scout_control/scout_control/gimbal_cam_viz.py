@@ -17,14 +17,17 @@ Ovládání:
 HUD overlay:
   • Pan a tilt úhly v rozích
   • Crosshair
-  • Název mise (z /obstacle_avoidance/status)
+  • Název mise (z /drone_N/avoidance/status)
   • Avoidance indikátor (zelený/červený)
   • Výška a pozice dronu
 
 Parametry:
-  camera_topic   string  /camera/image_raw
-  pos_topic      string  /fmu/out/vehicle_local_position_v1
-  status_topic   string  /obstacle_avoidance/status
+  drone_id       int     0
+  camera_topic   string  /drone_0/camera/image_raw
+  pos_topic      string  /fmu/out/vehicle_local_position_v1 (drone_0) or /px4_N/fmu/out/...
+  status_topic   string  /drone_0/avoidance/status
+  avoid_topic    string  /drone_0/avoidance/active
+  subscribe_legacy_topics bool false
   pan_step_deg   float   3.0   stupeň posunu na stisk klávesy
   tilt_step_deg  float   2.0
   zoom_step      float   0.1
@@ -97,16 +100,32 @@ class GimbalCamViz(Node):
         super().__init__("gimbal_cam_viz")
 
         # ── Parametry ─────────────────────────────────────────────────────────
-        self.declare_parameter("camera_topic",  "/camera/image_raw")
-        self.declare_parameter("pos_topic",     "/fmu/out/vehicle_local_position_v1")
-        self.declare_parameter("status_topic",  "/obstacle_avoidance/status")
+        self.declare_parameter("drone_id", 0)
+        self.declare_parameter("camera_topic", "")
+        self.declare_parameter("pos_topic", "")
+        self.declare_parameter("status_topic", "")
+        self.declare_parameter("avoid_topic", "")
+        self.declare_parameter("subscribe_legacy_topics", False)
         self.declare_parameter("pan_step_deg",  3.0)
         self.declare_parameter("tilt_step_deg", 2.0)
         self.declare_parameter("zoom_step",     0.1)
 
-        cam_topic    = str(self.get_parameter("camera_topic").value)
-        pos_topic    = str(self.get_parameter("pos_topic").value)
-        status_topic = str(self.get_parameter("status_topic").value)
+        drone_id = int(self.get_parameter("drone_id").value)
+        drone_ns = f"drone_{drone_id}"
+        px4_ns = "" if drone_id == 0 else f"/px4_{drone_id}"
+        cam_topic = str(self.get_parameter("camera_topic").value).strip()
+        pos_topic = str(self.get_parameter("pos_topic").value).strip()
+        status_topic = str(self.get_parameter("status_topic").value).strip()
+        avoid_topic = str(self.get_parameter("avoid_topic").value).strip()
+        subscribe_legacy = bool(self.get_parameter("subscribe_legacy_topics").value)
+        if not cam_topic:
+            cam_topic = f"/{drone_ns}/camera/image_raw"
+        if not pos_topic:
+            pos_topic = f"{px4_ns}/fmu/out/vehicle_local_position_v1"
+        if not status_topic:
+            status_topic = f"/{drone_ns}/avoidance/status"
+        if not avoid_topic:
+            avoid_topic = f"/{drone_ns}/avoidance/active"
         self._pan_step  = float(self.get_parameter("pan_step_deg").value)
         self._tilt_step = float(self.get_parameter("tilt_step_deg").value)
         self._zoom_step = float(self.get_parameter("zoom_step").value)
@@ -135,15 +154,22 @@ class GimbalCamViz(Node):
         self.create_subscription(Image,             cam_topic,    self._cam_cb,    QOS_CAM)
         self.create_subscription(VehicleLocalPosition, pos_topic, self._pos_cb,    QOS_PX4)
         self.create_subscription(String, status_topic,            self._status_cb, QOS_STATUS)
-        self.create_subscription(Bool,   "/obstacle_avoidance/avoidance_active",
-                                 self._avoid_cb, QOS_SUB)
+        self.create_subscription(Bool, avoid_topic, self._avoid_cb, QOS_SUB)
+        if subscribe_legacy:
+            self.create_subscription(
+                String, "/obstacle_avoidance/status", self._status_cb, QOS_STATUS
+            )
+            self.create_subscription(
+                Bool, "/obstacle_avoidance/avoidance_active", self._avoid_cb, QOS_SUB
+            )
 
         # ── ROS spin thread ────────────────────────────────────────────────────
         self._spin_thread = threading.Thread(target=self._spin_ros, daemon=True)
         self._spin_thread.start()
 
         self.get_logger().info(
-            f"gimbal_cam_viz started — topic: {cam_topic}\n"
+            f"gimbal_cam_viz started — drone_id={drone_id} cam_topic={cam_topic} "
+            f"legacy_topics={'on' if subscribe_legacy else 'off'}\n"
             "Controls: WSAD=gimbal  +/-=zoom  R=reset  P=pause  Q=quit"
         )
 

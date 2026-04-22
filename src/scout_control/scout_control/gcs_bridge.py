@@ -141,6 +141,8 @@ class GcsBridge(Node):
         self.declare_parameter("camera_topic_template", "/{drone_id}/camera/image_raw")
         self.declare_parameter("depth_topic_template", "/{drone_id}/depth/image_raw")
         self.declare_parameter("camera_info_topic_template", "/{drone_id}/camera/camera_info")
+        self.declare_parameter("avoidance_status_topic_template", "/{drone_id}/avoidance/status")
+        self.declare_parameter("avoidance_events_topic_template", "/{drone_id}/avoidance/events")
 
         self._host: str = self.get_parameter("host").value
         self._port: int = int(self.get_parameter("port").value)
@@ -153,6 +155,10 @@ class GcsBridge(Node):
             self.get_parameter("depth_topic_template").value)
         self._camera_info_topic_template: str = str(
             self.get_parameter("camera_info_topic_template").value)
+        self._avoidance_status_topic_template: str = str(
+            self.get_parameter("avoidance_status_topic_template").value)
+        self._avoidance_events_topic_template: str = str(
+            self.get_parameter("avoidance_events_topic_template").value)
 
         # ── Camera state ─────────────────────────────────────────────────────
         self._cam_seq: dict[str, int] = {}
@@ -205,6 +211,26 @@ class GcsBridge(Node):
         self.create_subscription(
             String, "/field/setup_complete",
             self._setup_complete_cb, QOS_LATCHED_BE)
+        for i in range(self._n_drones):
+            did = f"drone_{i}"
+            avoidance_status_topic = self._expand_topic_template(
+                self._avoidance_status_topic_template, did, i
+            )
+            avoidance_events_topic = self._expand_topic_template(
+                self._avoidance_events_topic_template, did, i
+            )
+            self.create_subscription(
+                String,
+                avoidance_status_topic,
+                lambda msg, d=did: self._avoidance_status_cb(d, msg),
+                QOS_VOLATILE_RELIABLE,
+            )
+            self.create_subscription(
+                String,
+                avoidance_events_topic,
+                lambda msg, d=did: self._avoidance_event_cb(d, msg),
+                QOS_VOLATILE_RELIABLE,
+            )
 
         # ── Camera subscriptions (M4) ─────────────────────────────────────────
         if _HAS_CV:
@@ -255,6 +281,40 @@ class GcsBridge(Node):
 
     def _drone_status_cb(self, msg: String) -> None:
         self._enqueue_json(MSG_DRONE_STATUS, msg.data)
+
+    def _avoidance_status_cb(self, drone_id: str, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        self._enqueue(
+            MSG_DRONE_STATUS,
+            {
+                "drone_id": drone_id,
+                "status": "AVOIDANCE_STATUS",
+                "navigation_backend": "avoidance_runtime",
+                "avoidance_status": payload,
+            },
+        )
+
+    def _avoidance_event_cb(self, drone_id: str, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        self._enqueue(
+            MSG_DRONE_STATUS,
+            {
+                "drone_id": drone_id,
+                "status": "AVOIDANCE_EVENT",
+                "navigation_backend": "avoidance_runtime",
+                "avoidance_event": payload,
+            },
+        )
 
     def _mission_ready_cb(self, msg: String) -> None:
         self._enqueue_json(MSG_MISSION_READY, msg.data)

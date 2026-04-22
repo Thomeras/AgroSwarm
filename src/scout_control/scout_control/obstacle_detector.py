@@ -1,6 +1,11 @@
 """
 obstacle_detector.py — Obstacle detection from OakD-Lite depth camera.
 
+Legacy standalone detector node.
+For the current per-drone runtime flow, obstacle detection is integrated into
+`obstacle_avoidance_runtime.py` and this file remains mainly for backwards
+compatibility and isolated debugging.
+
 Udržuje 2D occupancy mapu překážek v NED world frame.
 Grid se inicializuje dynamicky z /field/grid topicu.
 
@@ -45,6 +50,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
+from scout_control.avoidance_logging import AvoidanceRunLogger
 from px4_msgs.msg import VehicleLocalPosition
 
 # ── QoS ───────────────────────────────────────────────────────────────────────
@@ -96,6 +102,7 @@ class ObstacleDetector(Node):
         self.declare_parameter("camera_hfov", 71.9)
         self.declare_parameter("cam_width", 640)
         self.declare_parameter("cam_height", 400)
+        self.declare_parameter("log_run_label", "")
 
         self._drone_id    = self.get_parameter("drone_id").value
         self._warn_dist   = self.get_parameter("warn_distance").value
@@ -105,6 +112,7 @@ class ObstacleDetector(Node):
         self._hfov_rad    = math.radians(self.get_parameter("camera_hfov").value)
         self._cam_w       = self.get_parameter("cam_width").value
         self._cam_h       = self.get_parameter("cam_height").value
+        self._log_run_label = str(self.get_parameter("log_run_label").value)
 
         drone_ns = f"drone_{self._drone_id}"
         px4_ns   = "" if self._drone_id == 0 else f"/px4_{self._drone_id}"
@@ -126,6 +134,25 @@ class ObstacleDetector(Node):
         self._sector_dist: dict[str, float] = {
             "left": 99.0, "center": 99.0, "right": 99.0
         }
+        self._depth_frame_count = 0
+        self._last_depth_stats = {
+            "height": 0,
+            "width": 0,
+            "valid_samples": 0,
+            "total_samples": 0,
+            "closest": 99.0,
+        }
+        self._last_warn = False
+        self._last_critical = False
+        self._last_free: list[str] = ["left", "center", "right"]
+        self._last_publish_log_ts = 0.0
+        self._pos_logged = False
+
+        self._run_log = AvoidanceRunLogger(
+            source="obstacle_detector",
+            drone_id=int(self._drone_id),
+            run_label=self._log_run_label,
+        )
 
         # precompute camera focal length
         self._fx = (self._cam_w / 2.0) / math.tan(self._hfov_rad / 2.0)
@@ -171,6 +198,19 @@ class ObstacleDetector(Node):
             f"obstacle_detector started — drone_{self._drone_id} "
             f"warn={self._warn_dist}m stop={self._stop_dist}m cell={self._cell_size}m"
         )
+        self._run_log.log(
+            "detector_started",
+            warn_distance_m=float(self._warn_dist),
+            stop_distance_m=float(self._stop_dist),
+            cell_size_m=float(self._cell_size),
+            map_decay_secs=float(self._decay_secs),
+            camera_hfov_deg=math.degrees(self._hfov_rad),
+            cam_width=int(self._cam_w),
+            cam_height=int(self._cam_h),
+            depth_topic=f"/{drone_ns}/depth/image_raw",
+            position_topic=f"{px4_ns}/fmu/out/vehicle_local_position_v1",
+            grid_topic="/field/grid",
+        )
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -181,6 +221,14 @@ class ObstacleDetector(Node):
         self._drone_y   = msg.y
         self._drone_yaw = msg.heading
         self._pos_valid = True
+        if not self._pos_logged:
+            self._pos_logged = True
+            self._run_log.log(
+                "first_valid_position",
+                ned_x=round(float(msg.x), 3),
+                ned_y=round(float(msg.y), 3),
+                yaw_rad=round(float(msg.heading), 3),
+            )
 
     def _grid_cb(self, msg: String) -> None:
         if self._grid_ready:
@@ -221,6 +269,16 @@ class ObstacleDetector(Node):
             f"occupancy grid initialized {grid_w}×{grid_h} cells "
             f"origin=({origin_x:.1f}, {origin_y:.1f}) cell={self._cell_size}m"
         )
+        self._run_log.log(
+            "grid_initialized",
+            grid_w=int(grid_w),
+            grid_h=int(grid_h),
+            origin_x=round(float(origin_x), 3),
+            origin_y=round(float(origin_y), 3),
+            cell_size_m=float(self._cell_size),
+            field_cell_size_m=float(field_cell),
+            cell_count=len(cells),
+        )
 
     def _depth_cb(self, msg: Image) -> None:
         # Sector detection (left/center/right distances) works without field grid
@@ -230,6 +288,14 @@ class ObstacleDetector(Node):
             depth = self.get_bridge_image(msg)
         except Exception as e:
             self.get_logger().warn(f"CvBridge conversion failed: {e}")
+            self._run_log.log(
+                "depth_bridge_error",
+                level="WARN",
+                error=str(e),
+                encoding=getattr(msg, "encoding", ""),
+                height=int(getattr(msg, "height", 0)),
+                width=int(getattr(msg, "width", 0)),
+            )
             return
 
         self._process_depth(depth)
@@ -274,6 +340,15 @@ class ObstacleDetector(Node):
         d_v   = d_sub[valid]
         u_v   = uu[valid].astype(np.float32)
 
+        self._depth_frame_count += 1
+        self._last_depth_stats = {
+            "height": int(h),
+            "width": int(w),
+            "valid_samples": int(d_v.size),
+            "total_samples": int(d_sub.size),
+            "closest": round(float(min(sector_dist.values())), 3),
+        }
+
         if d_v.size == 0:
             return
 
@@ -307,6 +382,7 @@ class ObstacleDetector(Node):
         warn     = closest < self._warn_dist
         critical = closest < self._stop_dist
         free     = [d for d, dist in sd.items() if dist > self._warn_dist]
+        now = time.time()
 
         payload = json.dumps({
             "drone_id":        f"drone_{self._drone_id}",
@@ -321,6 +397,34 @@ class ObstacleDetector(Node):
         self._pub_detected.publish(String(data=payload))
         self._pub_clear.publish(Bool(data=not warn))
 
+        state_changed = (
+            warn != self._last_warn
+            or critical != self._last_critical
+            or free != self._last_free
+        )
+        if state_changed or (now - self._last_publish_log_ts) >= 1.0:
+            self._last_publish_log_ts = now
+            self._last_warn = warn
+            self._last_critical = critical
+            self._last_free = list(free)
+            self._run_log.log(
+                "detector_status",
+                warn=bool(warn),
+                critical=bool(critical),
+                closest_m=round(float(closest), 3),
+                sectors={k: round(float(v), 3) for k, v in sd.items()},
+                free_directions=free,
+                drone_ned=[
+                    round(float(self._drone_x), 3),
+                    round(float(self._drone_y), 3),
+                ],
+                yaw_rad=round(float(self._drone_yaw), 3),
+                pos_valid=bool(self._pos_valid),
+                grid_ready=bool(self._grid_ready),
+                depth_frames=int(self._depth_frame_count),
+                depth_stats=self._last_depth_stats,
+            )
+
     # ── Decay timer ───────────────────────────────────────────────────────────
 
     def _decay_cb(self) -> None:
@@ -333,6 +437,10 @@ class ObstacleDetector(Node):
             if count > 0:
                 self._grid[stale] = 0.0
                 self.get_logger().info(f"map decay cleared {count} stale cells")
+                self._run_log.log("grid_decay", cleared_cells=count)
+
+    def close_log(self) -> None:
+        self._run_log.close()
 
 
 def main(args=None) -> None:
@@ -343,6 +451,7 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        node.close_log()
         node.destroy_node()
         rclpy.shutdown()
 

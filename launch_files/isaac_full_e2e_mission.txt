@@ -1,0 +1,167 @@
+ISAAC FULL E2E MISSION — MANUAL LAUNCH ORDER
+============================================
+
+Aktualni overeny postup pro Full E2E mission v Isaac Sim.
+
+DULEZITE
+--------
+- ROS2 E2E scenar spoustej az POTOM, co je Isaac Sim opravdu propojeny s PX4.
+- Pokud PX4 stale vypisuje:
+  "Waiting for simulator to accept connection on TCP port 4560"
+  tak Isaac jeste neni korektne pripojeny.
+- Pokud se v Isaac/Pegasus objevi chyba typu:
+  "World object invalidated" nebo
+  "AttributeError: 'World' object has no attribute '_scene'"
+  znamena to, ze vehicle byl loadnuty do neplatneho nebo jeste neinicializovaneho stage/worldu.
+- `colcon build` poustej z rootu workspace:
+  `/home/tj/_Data/_Projekty/TJlabs/scout_ws`
+  Ne z `~`, jinak `colcon` prochazi cizi virtualenvy a vypisuje hromadu
+  nesouvisejicich chyb o `Cython`, `numpy.distutils`, `omni` apod.
+
+
+TERMINAL 1 — PX4 SITL
+---------------------
+```bash
+cd ~/PX4-Autopilot
+PX4_SIM_MODEL=gazebo-classic_iris ./build/px4_sitl_default/bin/px4 \
+  ROMFS/px4fmu_common/ -s ROMFS/px4fmu_common/init.d-posix/rcS
+```
+
+
+TERMINAL 2 — MicroXRCE-DDS
+--------------------------
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+
+TERMINAL 3 — Isaac Sim
+----------------------
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash
+export ROS_DISTRO=jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ISAAC_ROS2=~/isaac_env_511/lib/python3.11/site-packages/isaacsim/exts/isaacsim.ros2.bridge
+export LD_LIBRARY_PATH=${ISAAC_ROS2}/jazzy/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=${ISAAC_ROS2}/jazzy/rclpy:$PYTHONPATH
+unset AMENT_PREFIX_PATH
+unset COLCON_PREFIX_PATH
+source ~/isaac_env_511/bin/activate
+isaacsim
+```
+
+
+V ISAAC SIM UDELEJ PRESNE TOHLE
+-------------------------------
+1. Otevri stage:
+   `/home/tj/_Data/_Projekty/TJlabs/scout_ws/worlds/agro_field.usd`
+2. Pockej par sekund, az se stage kompletne nacte.
+3. V Pegasus UI vyber PX4 backend.
+4. Teprve potom klikni na `Load Vehicle`.
+5. Otevri `Window > Script Editor`.
+6. Spust:
+
+```python
+exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+```
+
+7. Ocekavany vysledek:
+   - `/drone_0/camera/image_raw`
+   - `/drone_0/depth/image_raw`
+8. Script pust jen jednou za session.
+9. Potom dej `Play`.
+10. Sleduj TERMINAL 1 s PX4.
+
+
+TERMINAL 4 — build scout_control
+--------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-select scout_control
+source install/setup.bash
+```
+
+
+TERMINAL 5 — ROS2 E2E backend
+-----------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch scout_control isaac_e2e_mission.launch.py
+```
+
+Tento launch dnes spusti:
+- field_setup_coordinator
+- home_manager
+- manual_controller
+- swarm_agent_0
+- swarm_agent_1
+- swarm_coordinator
+- cell_data_recorder
+- spray_controller
+- ml_interface
+- mission_launcher
+- gcs_bridge
+
+
+TERMINAL 6 — Swarm Center
+-------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws/swarm_center
+python3 main.py --drones 1 --base-port 14540 --world-image ../worlds/agro_field_overlay.png
+```
+
+
+CO DELAT DAL
+------------
+1. Ve Swarm Center otevri tab `Manual`.
+2. Fokusuj tab a letej WSAD + sipky nahoru/dolu.
+3. Uloz home pad pres `Set pad_0`.
+4. Oznac 4 rohy pole pres `Mark NE/NW/SE/SW`.
+5. Pockej, az `field_setup_coordinator` vygeneruje grid a vrati dron domu.
+6. Spust misi tlacitkem `Start Mission`.
+
+
+RYCHLA DIAGNOSTIKA KDYZ NEFUNGUJE KAMERA
+----------------------------------------
+```bash
+ros2 node list | grep gcs_bridge
+ros2 topic list | grep -E 'image|camera|depth'
+ros2 topic echo /drone_0/camera/image_raw --once
+ros2 topic echo /drone_0/depth/image_raw --once
+ros2 topic info /drone_0/camera/image_raw -v
+ros2 topic info /drone_0/depth/image_raw -v
+```
+
+Pokud vidis `Publisher count: 2`, restartuj Isaac a pust `simulation_cam.py`
+jen jednou.
+
+
+RYCHLA DIAGNOSTIKA KDYZ NEFUNGUJE 3D MAPA POLE
+----------------------------------------------
+```bash
+ls /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_grid.json
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws/swarm_center
+pip install -r requirements.txt
+```
+
+
+KDYZ TO SPADNE
+-------------
+Pokud Pegasus/Isaac hlasi chyby jako:
+- `new stage was opened`
+- `World invalidated`
+- `'World' object has no attribute '_scene'`
+
+tak typicky pomuze:
+1. zavrit vehicle load flow
+2. znovu otevrit stage
+3. pockat na plne nacteni
+4. az potom znovu PX4 backend + Load Vehicle + Play
+
+Pokud PX4 zustane viset na:
+`Waiting for simulator to accept connection on TCP port 4560`
+tak ROS2 cast mise zatim nespoustej.

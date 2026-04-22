@@ -1,0 +1,23 @@
+LAUNCH FILES INDEX
+==================
+
+Původni jeden velky launch navod byl rozdelen, aby se nemichaly ruzne mise a
+test flow.
+
+Pouzivej tyto soubory:
+
+1. Full Isaac E2E mise:
+   /home/tj/_Data/_Projekty/TJlabs/scout_ws/launch_files/isaac_full_e2e_mission.txt
+
+2. Samostatny obstacle avoidance test pres 3D/depth kameru:
+   /home/tj/_Data/_Projekty/TJlabs/scout_ws/launch_files/isaac_obstacle_avoidance_test.txt
+
+Poznamka:
+- pokud delas zmeny v `src/scout_control`, vzdy potom znovu:
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-select scout_control
+source install/setup.bash
+```

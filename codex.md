@@ -33,7 +33,7 @@
 exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
 ```
 
-- `launch_sim_e2e.txt`
+- `launch_files/launch_sim_e2e.txt`
   - dokumentace byla narovnana na realne funkcni workflow
   - Isaac se spousti rucne v ROS2-ready envu
   - world i dron se nacitaji rucne pres Pegasus UI
@@ -79,3 +79,239 @@ exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation
   session helper, ne bootstrap cele simulace.
 - Pokud nekdo hlasi `Publisher count: 2`, prvni podezreni je dvojite spusteni
   helper skriptu v jedne Isaac session.
+
+## Codex Log — 2026-04-21
+
+### Kontext
+
+- Resilo se testovani obstacle avoidance pres Isaac depth kameru a obstacle
+  course.
+- Uzivatel predtim opravil bug kolem obstacle course spawn/world setup.
+- Cilem bylo overit, jestli avoidance mise opravdu ridi podle kamery, proc
+  leti velmi pomalu, a pridat robustnejsi debug logy.
+
+### Co bylo upraveno
+
+- `launch_files/launch_sim_e2e.txt`
+  - na konec byla dopsana sekce pro samostatny obstacle-avoidance test v
+    Isaac vetvi
+  - workflow byl doplnen o `obstacle_detector`, `obstacle_avoidance_mission`,
+    `obstacle_viz` a `gimbal_cam_viz`
+  - behem dalsiho overeni se potvrdilo, ze pokud je otevreny primo
+    `worlds/obstacle_course.usda`, tak `obstacle_course_spawn.py` uz neni treba
+
+- `src/scout_control/scout_control/avoidance_logging.py`
+  - pridan jednoduchy JSONL logger pro obstacle test behy
+  - logy se ukladaji do `logs/avoidance_logs/`
+
+- `src/scout_control/scout_control/obstacle_detector.py`
+  - doplneno per-run logovani:
+    - start konfigurace
+    - prvni validni pozice
+    - stav detectoru
+    - stats z depth framu
+    - chyby `CvBridge`
+    - decay udalosti occupancy gridu
+
+- `src/scout_control/scout_control/obstacle_avoidance_mission.py`
+  - opraven crash v loggeru (`mission_name` se predavalo dvakrat)
+  - mission uz mezi obstacle runy nedela mezilehly navrat domu
+  - home pozice se uklada z realne pozice pred takeoffem a pouziva se jen pro
+    finalni land/navrat
+  - `_step_toward()` uz nepocita dalsi setpoint ciste od predchoziho setpointu,
+    ale od aktualni pozice dronu, pokud je k dispozici
+  - pridano logovani phase transition, obstacle update, vehicle commandu a
+    mission statusu
+  - pri critical obstacle byl doplnen fallback detour i pro wall-like situace:
+    kdyz neni zadny sektor uplne `free`, mise si vybere lepsi stranu podle
+    vetsi lateralni clearance
+
+- `logs/avoidance_logs/.gitkeep`
+  - vytvorena explicitni slozka pro obstacle logy v repu
+
+### Co bylo overene z logu
+
+- Avoidance mise neni "cheating" v tom smyslu, ze by cetla fixni mapu prekazek
+  pro rizeni:
+  - `obstacle_avoidance_mission.py` ridi jen podle
+    `/drone_0/obstacles/detected`
+  - ten je odvozen z depth kamery v `obstacle_detector.py`
+  - fixni `OBSTACLES` seznam v `obstacle_viz.py` slouzi jen pro vizualizaci
+
+- V testu `North Wall` se ukazaly dve hlavni runtime slabiny:
+  1. puvodni mezilehly `RTH_HOME` vedl dron zpet skrz prekazky
+  2. po oprave RTH vetve je mise stale velmi pomala
+
+- Duvod pomaleho letu neni jedna jedina chyba, ale kombinace:
+  - mission bezi v position-setpoint rezimu a generuje jen maly posun na tick
+  - pri priblizeni k waypointu se rychlost dale snizuje pres `min(speed, d)`
+  - v `warn` zone se navic pouziva `WARN_SLOWDOWN = 0.5`
+  - realna ground speed tak byla v logu o dost mensi nez nominalni
+    `cruise_speed:=2.5`
+
+- Posledni test (logy `20260421_211901_*` a `20260421_212004_*`) ukazal:
+  - mise dosla k prvnimu `North Wall` runu
+  - critical avoidance vyrobila detour a probehl prechod `APPROACH -> AVOIDING`
+  - po dosazeni detour waypointu se mise vratila do `APPROACH`
+  - nasledne dron zustal v `warn` zone kolem `closest ~= 2.21 m`
+  - `critical` uz se znovu nespustil, protoze `stop_distance` zustava `2.0 m`
+  - `free_directions` byly prazdne, takze mise pred zdi prakticky ustrnula
+
+### Dulezite zavery
+
+- Isaac obstacle-avoidance vetev je dnes dobra pro:
+  - validaci camera/depth pipeline
+  - ladeni reaktivni obstacle logiky
+  - sbirani logu a reprodukovatelnych failu
+
+- Neni jeste dobra pro:
+  - robustni oblet dlouhych sten
+  - "real-world ready" obstacle avoidance bez dalsi lokalni pameti/mapovani
+
+- Pokud nekdo hlasi "dron leti hrozne pomalu", prvni vec ke kontrole jsou:
+  - `mission_status` v `logs/avoidance_logs/*obstacle_avoidance_mission*.jsonl`
+  - rozdil mezi `drone_ned` a `setpoint_ned`
+  - jestli mise neni v `warn` creep rezimu nebo tesne pred waypointem
+
+### Co zustava jako dalsi rozumna prace
+
+- zvazit agresivnejsi position guidance, pokud ma mission pusobit realisticky
+  i bez planneru
+- rozhodnout, jestli se ma v `warn` zone:
+  - drzet pomaly creep
+  - nebo jit drive do aktivniho bočniho detour rezimu
+- edge-following "z dalky" zatim neimplementovat; bez lokalni pameti/slamu by to
+  bylo krehke a silne heuristicke
+
+## Codex Log — 2026-04-22
+
+### Kontext
+
+- Uzivatel chtel znovu projit cely projekt a srovnat AI instrukcni soubory se
+  skutecnym stavem repo.
+- Mezi 2026-04-20 a 2026-04-22 pribyla nova obstacle-avoidance runtime vetev,
+  testy, relokovana dokumentace do `docs/` a runbooky do `launch_files/`.
+- Cilem nebylo menit runtime logiku, ale opravit `CLAUDE.md` a `codex.md`, aby
+  dalsi session nevychazely ze zastaralych predpokladu.
+
+### Co bylo overeno primo v kodu
+
+- `src/scout_control/setup.py` dnes registruje mimo jine:
+  - `obstacle_avoidance_runtime`
+  - `obstacle_avoidance_mission`
+  - `scan_cloud_viz`
+  - `gcs_bridge`
+- `task_allocator.py` stale neni registrovany jako `console_script`; scenar
+  `task_allocator.yaml` je proto stale podezrely.
+- `full_e2e_mission.launch.py` zustava swarm-agent-centric launch:
+  - setup + mission nody pro full swarm misi
+  - `gcs_bridge` se spousti automaticky
+  - `manual_controller` se zamerne spousti bokem kvuli TTY
+- `isaac_e2e_mission.launch.py` uz pocita s topic templaty pro kameru a depth:
+  - `camera_topic_template`
+  - `depth_topic_template`
+  - default topicy odpovidaji `Pegasus_scenarios/simulation_cam.py`
+- nova avoidance architektura je uz fyzicky pritomna v:
+  - `src/scout_control/scout_control/avoidance/depth_projector.py`
+  - `src/scout_control/scout_control/avoidance/local_mapper.py`
+  - `src/scout_control/scout_control/avoidance/local_planner.py`
+  - `src/scout_control/scout_control/avoidance/scan_manager.py`
+  - `src/scout_control/scout_control/avoidance/peer_tracks.py`
+  - `src/scout_control/scout_control/avoidance/types.py`
+- `obstacle_avoidance_runtime.py` uz dnes opravdu dela vic nez jen reaktivni
+  stopku:
+  - lokalni mapovani
+  - planner integration
+  - peer drone safety masky
+  - status / path / subgoal publikaci
+- existuji uz focused testy pro avoidance helpery a planner:
+  - `src/scout_control/test/test_local_planner.py`
+  - `src/scout_control/test/test_avoidance_helpers.py`
+- `paths.py` stale hleda workspace root podle pritomnosti `CLAUDE.md` a drzi
+  fallback na `~/scout_ws`.
+- bridge protokol je stale duplikovany ve dvou kopiich a verze zustava `1.2`
+  s podporou `camera_frame` a `depth_frame`.
+
+### Co bylo upraveno
+
+- `CLAUDE.md`
+  - prepsan na aktualni mapu projektu k 2026-04-22
+  - oddeleny production core, runtime-centric avoidance branch a debug/tooling
+    nody
+  - doplneny realne launch cesty a roli jednotlivych souboru
+  - dopsany aktualni Isaac camera/depth workflow
+  - dopsany obstacle-avoidance runtime test harness workflow
+  - zapsany aktualni path / data / QoS / bridge konvence
+  - zvyrazneny stale otevreny rozdil mezi full swarm misi a novou avoidance
+    runtime architekturou
+
+- `codex.md`
+  - doplnen tento auditni zaznam z 2026-04-22
+
+### Dulezite zavery pro dalsi praci
+
+- Nepredpokladat, ze `obstacle_avoidance_runtime` uz nahradil `swarm_agent`
+  v plne E2E misi. Zatim jde o vedlejsi, ale uz dost realnou runtime vetev.
+- Pri dalsich upravach obstacle avoidance drzet oddeleni:
+  - `obstacle_avoidance_runtime` = flight-control owner
+  - `obstacle_avoidance_mission` = route provider / test harness
+  - `obstacle_detector` = debug / srovnavaci node
+- Pri upravach cest preferovat `scout_control.paths`, ale pocitat s tim, ze
+  cast launcheru a scenaru stale obsahuje historicke `~/scout_ws` reference.
+- Pokud se meni bridge wire format, musi zustat synchronni:
+  - `src/scout_control/scout_control/bridge_protocol.py`
+  - `swarm_center/core/bridge_protocol.py`
+
+## Codex Log — 2026-04-22 (A/B/C/D merge)
+
+### Kontext
+
+- Uzivatel chtel paralelni realizaci 4 workstreamu:
+  - A: core avoidance runtime
+  - B: swarm integrace
+  - C: peer/reassign/GCS
+  - D: typed payloady + cleanup + tuning
+- Cilem bylo dotahnout runtime-centric avoidance flow tak, aby
+  `obstacle_avoidance_runtime` byl jedinym flight ownerem.
+
+### Co bylo finalne zapojeno
+
+- Runtime:
+  - stabilizovane faze `CRUISE_TO_TARGET`, `WARN_DRIFT`, `STOP_HOVER`,
+    `SCAN_360`, `LOCAL_REPLAN`, `DETOUR_EXECUTION`, `BLOCKED`
+  - scan enrichment je skutecne navazan do mapperu a ovlivnuje nasledujici
+    replan
+  - `scan_complete(success=True)` vede do replanu
+  - `scan_complete(success=False)` / repeated no-path eskaluje do `BLOCKED`
+- Swarm:
+  - `swarm_agent` ma `navigation_backend=direct|avoidance_runtime`
+  - v runtime backendu je flight-control cast swarm agenta vypnuta
+  - finalni mapping `/{drone}/avoidance/status` -> `/swarm/drone_status`
+- Allocator / reassign:
+  - `blocked_severity` sjednoceno na `NONE|SOFT|HARD`
+  - zavedeno `CELL_DEFERRED` + `TEMP_BLOCKED` cooldown + deferred queue
+- GCS:
+  - bridge forwarduje `AVOIDANCE_STATUS` a `AVOIDANCE_EVENT` jako subtype
+    payloady pres `MSG_DRONE_STATUS`
+- Typed + cleanup:
+  - typed parsery avoidance/swarm status payloadu
+  - legacy `/obstacle_avoidance/*` publikace je gateovana parametrem
+    `publish_legacy_obstacle_topics` (default `false`)
+
+### Overy
+
+- Lokalni test batch po integraci:
+  - `test_local_planner.py`
+  - `test_local_mapper_scan_pipeline.py`
+  - `test_task_allocator.py`
+  - `test_typed_status_payloads.py`
+  - `test_avoidance_helpers.py`
+- Vysledek: `23 passed`
+
+### Otevrene body
+
+- Chybi plny E2E ROS/PX4 launch-level overeni celeho runtime backend flow.
+- GCS consumeri musi filtrovat `status` subtype (`AVOIDANCE_STATUS`,
+  `AVOIDANCE_EVENT`) v `MSG_DRONE_STATUS`.
+- Po prekroceni `max_deferrals_per_cell` je bunka zmrazena v deferred stavu bez
+  samostatneho alert topicu.

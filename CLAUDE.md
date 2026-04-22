@@ -1,109 +1,290 @@
 # CLAUDE.md — scout_ws
 
-Aktuální stav workspace k 2026-04-20.
+Aktualni stav workspace k 2026-04-22.
 
-Tento dokument je určený pro práci nad repozitářem. Popisuje reálnou strukturu
-projektu, běžné entry pointy a známé odchylky proti starší dokumentaci.
+Tento dokument je urceny pro praci nad timto repozitarem. Popisuje realnou
+strukturu projektu, aktualni workflow a dulezite rozdily mezi produkcni cestou,
+test harnessy a historickou dokumentaci.
 
-## Co Ten Projekt Dělá
+## Co Ten Projekt Dela
 
-`scout_ws` je ROS2 Jazzy workspace pro autonomní zemědělský roj dronů nad PX4
-SITL. V repu dnes existují dvě paralelní runtime větve:
+`scout_ws` je ROS2 Jazzy workspace pro autonomni zemedelsky roj dronu nad PX4
+SITL. Dnes v repu soubezne existuji ctyri prakticky dulezite vetve:
 
-- Gazebo / PX4 SITL workflow přes `scout_launcher.py`
-- Isaac Sim / Pegasus workflow přes `isaac_e2e_mission.launch.py`
+- Gazebo / PX4 SITL full E2E workflow pres `scout_launcher.py` a
+  `full_e2e_mission.launch.py`
+- Isaac Sim / Pegasus E2E workflow pres `isaac_e2e_mission.launch.py` a
+  in-session helper `Pegasus_scenarios/simulation_cam.py`
+- samostatna desktopova GCS aplikace `swarm_center/`, ktera bezi mimo ROS2
+  package a pripojuje se pres MAVLink + vlastni TCP bridge
+- nova obstacle-avoidance runtime vetev kolem
+  `src/scout_control/scout_control/obstacle_avoidance_runtime.py` a modulu v
+  `src/scout_control/scout_control/avoidance/`
 
-Nad tím nově běží samostatná desktopová GCS aplikace `swarm_center/`, která se
-nepouští jako ROS2 package, ale jako zvláštní PyQt6 aplikace připojená přes
-MAVLink a vlastní TCP bridge.
+Dulezite: plna swarm mise dnes stale bezi primarne pres `swarm_agent` +
+`swarm_coordinator`. `obstacle_avoidance_runtime` je nova generalizovana
+per-drone safety / navigation vrstva, ale zatim neni integrovana do
+`full_e2e_mission.launch.py` jako hlavni ridici cesta.
 
 ## Stack
 
 - ROS2: Jazzy
 - Autopilot: PX4 SITL
-- Gazebo větev: Gazebo Harmonic + `ros_gz_bridge` / `ros_gz_image`
-- Isaac větev: Isaac Sim / Pegasus, senzory publikuje přímo do ROS2
+- Gazebo vetev: Gazebo Harmonic + `ros_gz_bridge` / `ros_gz_image`
+- Isaac vetev: Isaac Sim / Pegasus, senzory publikuji primo do ROS2
 - DDS bridge: MicroXRCE-DDS (`udp4`, typicky port `8888`)
 - GCS: `swarm_center` (`PyQt6` + `pymavlink`)
+- Computer vision / bridge utility: `opencv-python`, `cv_bridge`
 
-## Hlavní Vstupní Body
-
-- Launcher simulace: `scout_launcher.py`
-- ROS2 package: `src/scout_control`
-- Hlavní swarm wrapper: `src/scout_control/scout_control/swarm_coordinator.py`
-- Pure-Python alokátor: `src/scout_control/scout_control/task_allocator.py`
-- TCP bridge do GCS: `src/scout_control/scout_control/gcs_bridge.py`
-- Samostatná GCS app: `swarm_center/main.py`
-
-## Aktuální Struktura Repo
+## Repo Map
 
 ```text
 scout_ws/
 ├── CLAUDE.md
-├── E2E_OPERATOR_GUIDE.md
+├── codex.md
+├── docs/
+│   ├── guides/
+│   ├── internal/
+│   └── plans/
+├── launch_files/                 # runbooky a rucni postupy
+├── perimeters/                   # perimeter, grid a home JSON data
+├── cell_data/                    # historicka data po navstivenych bunkach
+├── logs/
+│   └── avoidance_logs/
 ├── scout_launcher.py
 ├── isaac_launcher.py
 ├── reset.sh
 ├── scenarios/
-├── perimeters/
-├── cell_data/
-├── worlds/                       # Isaac / overlay assety, ne Gazebo worlds
-├── swarm_center/                 # samostatná PyQt6 GCS
+├── worlds/                       # Isaac / overlay assety
+├── Pegasus_scenarios/
+├── swarm_center/                 # samostatna PyQt6 GCS
 └── src/
     ├── px4_msgs/
     └── scout_control/
         ├── launch/
         ├── scout_control/
+        │   └── avoidance/
+        ├── test/
         ├── worlds/
         └── config/
 ```
 
-## Důležité Adresáře A Soubory
+## Klicove Vstupni Body
 
-### `src/scout_control/scout_control/`
+- hlavni terminal launcher: `scout_launcher.py`
+- ROS2 package: `src/scout_control`
+- Gazebo full E2E launch: `src/scout_control/launch/full_e2e_mission.launch.py`
+- Isaac full E2E launch: `src/scout_control/launch/isaac_e2e_mission.launch.py`
+- obstacle test launch:
+  `src/scout_control/launch/obstacle_avoidance_test.launch.py`
+- swarm allocator wrapper:
+  `src/scout_control/scout_control/swarm_coordinator.py`
+- interni allocator:
+  `src/scout_control/scout_control/task_allocator.py`
+- GCS TCP bridge:
+  `src/scout_control/scout_control/gcs_bridge.py`
+- samostatna GCS app: `swarm_center/main.py`
 
-Aktivní nody a moduly:
+## Aktivni Moduly A Jejich Role
 
-- `manual_commander.py` — single-drone ruční mapování perimetru
-- `manual_controller.py` — dual-drone curses UI pro E2E setup
-- `field_setup_coordinator.py` — stavový automat setupu pole
-- `grid_generator.py` — generace `field_grid.json`
-- `home_manager.py` — RTH / landing pad koordinace
-- `swarm_agent.py` — autonomní agent jednoho dronu
-- `swarm_coordinator.py` — ROS2 vrstva nad `TaskAllocator`
-- `task_allocator.py` — alokace buněk, snake pattern, rebalance
-- `mission_launcher.py` — sleduje ready/complete a loguje průběh mise
-- `spray_controller.py` — zapisuje události postřiku do `spray_log.json`
-- `cell_data_recorder.py` — ukládá snímky a metadata po buňkách
-- `ml_interface.py` — placeholder ML výstupy
-- `gcs_bridge.py` — TCP bridge pro `swarm_center`
-- `bridge_protocol.py` — sdílený wire protokol, verze `1.2`
-- `camera_hud.py` — OpenCV HUD pro živý kamerový obraz
-- `terrain_follower.py` — standalone terrain following přes downward lidar
-- `obstacle_detector.py`, `obstacle_avoidance_mission.py`, `obstacle_viz.py`,
-  `gimbal_cam_viz.py` — oddělená obstacle-avoidance / gimbal větev
+### Production Core
+
+Tyto komponenty jsou dnes nejbliz aktualni produkcni / operatorni ceste:
+
+- `field_setup_coordinator.py`
+- `grid_generator.py`
+- `home_manager.py`
+- `swarm_agent.py`
+- `swarm_coordinator.py`
+- `mission_launcher.py`
+- `gcs_bridge.py`
+- `spray_controller.py`
+- `cell_data_recorder.py`
+- `ml_interface.py`
+
+### Runtime-Centric Obstacle Avoidance Branch
+
+Nova avoidance architektura je rozdelena takto:
+
+- `obstacle_avoidance_runtime.py`
+  - vlastni obstacle detection pipeline
+  - lokalni mapu
+  - scan / replanning
+  - PX4 offboard setpoint publishing
+  - status topic `/{drone_ns}/avoidance/status`
+- `avoidance/depth_projector.py`
+  - depth frame -> body/world point batches
+- `avoidance/local_mapper.py`
+  - rolling obstacle memory a clearance summary
+- `avoidance/local_planner.py`
+  - direct path / detour / blocked rozhodovani
+- `avoidance/scan_manager.py`
+  - 360 scan orchestrace a scan body points
+- `avoidance/peer_tracks.py`
+  - safety zony ostatnich dronu
+- `avoidance/types.py`
+  - sdilene datove typy a payload normalizace
+
+Soucasny conceptual split:
+
+- `obstacle_avoidance_runtime` je cilovy flight-control owner pro
+  avoidance-enabled misi
+- `obstacle_avoidance_mission.py` je test harness / route provider, ne obecny
+  produkcni navigator
+- `obstacle_detector.py` zustava izolovany debug / srovnavaci node, ne hlavni
+  produkcni obstacle controller
+
+### Support, Manual A Debug Nody
+
+- `manual_controller.py`
+- `manual_commander.py`
+- `field_commander.py`
+- `position_monitor.py`
+- `offboard_control.py`
+- `camera_hud.py`
+- `terrain_follower.py`
+- `obstacle_detector.py`
+- `obstacle_avoidance_mission.py`
+- `obstacle_viz.py`
+- `gimbal_cam_viz.py`
+- `scan_cloud_viz.py`
+- `perimeter_flight.py`
+
+Pozor: `task_allocator.py` je interni pure-Python modul. Neni registrovany jako
+`console_script` v `src/scout_control/setup.py`, takze standalone scenar
+`task_allocator.yaml` je podezrely a pravdepodobne nespustitelny bez dalsich
+uprav.
+
+## Launch A Scenario Prehled
 
 ### `src/scout_control/launch/`
 
-- `full_e2e_mission.launch.py` — hlavní Gazebo E2E mise pro `tilted_field`
-- `isaac_e2e_mission.launch.py` — Isaac Sim varianta bez Gazebo bridge
-- `swarm_mission.launch.py` — starší / jednodušší swarm launch
-- `camera_bridge.launch.py`, `camera_hud.launch.py`, `lidar_bridge.launch.py`
-- `gimbal_bridge.launch.py`
+- `full_e2e_mission.launch.py`
+  - hlavni Gazebo swarm mise pro `tilted_field`
+  - pousti `field_setup_coordinator`, `home_manager`, dva `swarm_agent`,
+    `swarm_coordinator`, `cell_data_recorder`, `spray_controller`,
+    `ml_interface`, `mission_launcher`, `gcs_bridge` a bridge pro kamery a
+    lidary
+  - `manual_controller` zamerne nepousti, protoze potrebuje skutecne TTY
+- `isaac_e2e_mission.launch.py`
+  - Isaac / Pegasus varianta bez `ros_gz_bridge`
+  - pousti headless `manual_controller` s `ui:=False`
+  - defaultne `drone_count:=1`
+  - predava `camera_topic_template` a `depth_topic_template` do `gcs_bridge`
 - `obstacle_avoidance_test.launch.py`
+  - pousti `obstacle_avoidance_runtime`, `obstacle_avoidance_mission`,
+    `obstacle_viz`
+  - bridgeuje Gazebo kameru pres `ros_gz_image`
+  - `gimbal_cam_viz` se pousti separatne
 
-### `swarm_center/`
+### `scenarios/*.yaml`
 
-Samostatná aplikace mimo ROS2 package:
+`scout_launcher.py` scenare autodiscoveruje z `scenarios/*.yaml`.
 
-- `main.py` — CLI a start Qt aplikace
-- `core/mavlink_manager.py` — MAVLink příjem telemetrie
-- `core/ros2_bridge.py` — TCP klient na `gcs_bridge`
-- `core/swarm_manager.py` — centrální stav UI
-- `core/field_manager.py` — práce s `field_grid.json`
-- `ui/` — Mission / Camera / 3D pohledy
+Prakticky dulezite scenare:
 
-Závislosti nejsou řešené přes `colcon`; používá se:
+- `full_e2e_mission.yaml`
+- `isaac_e2e_mission.yaml`
+- `obstacle_avoidance_test.yaml`
+- `camera_*`, `lidar_bridge`, `gcs_bridge`, `manual_commander`,
+  `home_manager`, `swarm_coordinator`, `terrain_follower`
+
+Historicky / rizikovy detail:
+
+- nektere scenario YAML soubory stale referencuji `~/scout_ws/install/setup.bash`
+  misto skutecneho workspace path
+- `scout_launcher.py` ma `WS_DIR` natvrdo na
+  `/home/tj/_Data/_Projekty/TJlabs/scout_ws`
+
+## Realtime Workflow Dnes
+
+## 1. Gazebo Full E2E Mise
+
+Nejbeznejsi operatorni cesta:
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+python3 scout_launcher.py
+```
+
+Typicky prubeh:
+
+1. V launcheru se vybere world a model.
+2. Launcher spusti PX4 SITL, Gazebo, MicroXRCE a QGroundControl.
+3. Potom se spusti scenar `Full E2E Mission — Tilted Field`.
+4. `full_e2e_mission.launch.py` rozbehne backend nody.
+5. `manual_controller` bezi v extra terminalu kvuli curses UI.
+6. `gcs_bridge` se spousti automaticky a `swarm_center` se muze pripojit.
+
+V teto ceste zatim hlavni autonomni rizeni stale patri `swarm_agent`.
+`obstacle_avoidance_runtime` sem jeste neni zapojeny jako vychozi navigator.
+
+## 2. Isaac Sim / Pegasus E2E Mise
+
+Pouziva se:
+
+```bash
+ros2 launch scout_control isaac_e2e_mission.launch.py
+```
+
+Predpoklady:
+
+- PX4 SITL a MicroXRCE jsou spustene rucne predem
+- Isaac Sim je spusteny rucne v ROS2-ready envu
+- world a dron se nactou rucne v bezici Isaac session
+
+Overeny camera/depth workflow k 2026-04-22:
+
+1. Spustit Isaac Sim.
+2. Rucne otevrit world a nahrat dron pres Pegasus UI.
+3. Az pote ve `Window > Script Editor` pustit:
+
+```python
+exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+```
+
+Tento skript:
+
+- nevytvari novou Isaac instanci
+- nenacita world
+- nespawnuje dron
+- jen najde existujici kamerovy prim a pripoji ROS2 publishery
+
+Ocekavane topicy:
+
+- `/drone_0/camera/image_raw`
+- `/drone_0/depth/image_raw`
+
+Dulezite:
+
+- pokud se `simulation_cam.py` spusti dvakrat v jedne Isaac session, vzniknou
+  duplicitni publishery
+- `camera_info` neni v tomto workflow garantovany
+
+## 3. Obstacle Avoidance Test Harness
+
+Pouziva se:
+
+```bash
+ros2 launch scout_control obstacle_avoidance_test.launch.py
+```
+
+Tento test dnes oddeluje role takto:
+
+- `obstacle_avoidance_runtime` ridi dron a vyhodnocuje lokalni prekazky
+- `obstacle_avoidance_mission` jen posila high-level `goto` / `return_home`
+  commandy na `/{drone_ns}/avoidance/target_cmd`
+- `obstacle_viz` je jen vizualizace
+
+Logy bezhu jdou do:
+
+- `logs/avoidance_logs/*.jsonl`
+
+## Swarm Center
+
+`swarm_center/` je samostatna aplikace mimo ROS2 package.
+
+Spusteni:
 
 ```bash
 cd swarm_center
@@ -111,151 +292,36 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
-## Reálné Workflow Dnes
-
-## 1. Gazebo E2E Mise
-
-Nejběžnější plná cesta je:
-
-```bash
-cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
-python3 scout_launcher.py
-```
-
-Typický průběh:
-
-1. V launcheru se vybere world a model.
-2. Launcher spustí PX4 SITL, Gazebo, MicroXRCE a QGC.
-3. Potom se z menu pustí scénář `Full E2E Mission — Tilted Field`.
-4. `full_e2e_mission.launch.py` spustí backend nody.
-5. `manual_controller` běží v extra terminálu, protože potřebuje skutečné TTY.
-6. `camera_hud` se může otevřít zvlášť pro `drone_0`.
-7. `gcs_bridge` se spouští v launchi automaticky a `swarm_center` se může připojit.
-
-Gazebo E2E launch dnes obsahuje:
-
-- `field_setup_coordinator`
-- `home_manager`
-- `swarm_agent` pro `drone_0` a `drone_1`
-- `swarm_coordinator`
-- `cell_data_recorder`
-- `spray_controller`
-- `ml_interface`
-- `mission_launcher`
-- `gcs_bridge`
-- bridges pro lidar a kameru obou dronů
-
-`manual_controller` v tomto launchi záměrně není.
-
-## 2. Isaac Sim E2E Mise
-
-Scénář `isaac_e2e_mission.yaml` používá:
-
-```bash
-ros2 launch scout_control isaac_e2e_mission.launch.py
-```
-
-Rozdíl proti Gazebo větvi:
-
-- PX4 SITL, MicroXRCE a Isaac Sim se mají spustit ručně předem
-- launch nepouští `ros_gz_bridge`
-- kamera a případná depth data mají přijít přímo z Isaac Sim
-- `gcs_bridge` se i tady spouští automaticky
-- default je dnes `drone_count:=1`, i když launch umí i druhý dron
-
-V repu jsou pro Isaac i overlay assety:
-
-- `worlds/agro_field.usd`
-- `worlds/agro_field_pegasus.usda`
-- `worlds/agro_field_overlay.png`
-- `worlds/agro_field_overhead.png`
-
-### Ověřený Camera/Depth Workflow V Isaac Větvi
-
-K 2026-04-20 je funkční a ověřený tento postup:
-
-1. Isaac Sim se spouští ručně v ROS2-ready envu.
-2. Operátor ručně otevře world a ručně nahraje dron přes Pegasus UI.
-3. Teprve potom se uvnitř běžící Isaac session přes `Window > Script Editor`
-   spustí:
-
-```python
-exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
-```
-
-4. Tento skript už dnes:
-   - nevytváří novou Isaac instanci
-   - nenačítá world
-   - nespawnuje dron
-   - jen najde existující kamerový prim na už načteném dronu a připojí ROS2
-     publishery
-
-Ověřené výsledné topicy:
-
-- `/drone_0/camera/image_raw`
-- `/drone_0/depth/image_raw`
-
-Poznámky:
-
-- `camera_info` není v aktuálním workflow požadovaný a nemusí se vždy objevit
-  podle konkrétního Isaac build/runtime helperu
-- pokud se `simulation_cam.py` pustí dvakrát v jedné Isaac session, vzniknou
-  duplicitní publishery a `ros2 topic info` ukáže `Publisher count: 2`
-- pro čistý stav je potřeba pustit skript jen jednou za session
-- `simulation_cam.py` není launcher nové Isaac appky; je to in-session helper
-  pro už ručně připravený svět a dron
-
-## 3. Swarm Center
-
-`swarm_center` je teď integrální součást workflow, ale technicky je mimo ROS2
-package. Připojuje se dvěma směry:
+Pripojuje se:
 
 - MAVLink UDP na PX4 instance, default `14540 + N`
 - TCP na `gcs_bridge`, default `127.0.0.1:17845`
 
-Umí dnes:
+Umi dnes:
 
-- živou top-down mapu a grid
-- progress mise
+- top-down mapu a grid
+- mission progress
 - assignment / current cell per drone
-- mode přepínač přes `/swarm/mode`
+- mode prepinac pres `/swarm/mode`
 - `RTH all`
-- start mise přes `/field/mission_confirm`
+- start mise pres `/field/mission_confirm`
 - manual `goto_cell` override
-- kamera stream přes bridge
-- základní 3D view, pokud jsou dostupné UI závislosti
+- camera a depth stream pres bridge
+- zakladni 3D view, pokud jsou dostupne UI zavislosti
 
-Bridge protokol je sdílený v:
+Bridge protokol je sdileny v:
 
 - `src/scout_control/scout_control/bridge_protocol.py`
 - `swarm_center/core/bridge_protocol.py`
 
-Verze protokolu je aktuálně `1.2`.
+Aktualni verze protokolu je `1.2` a zahrnuje i `MSG_CAMERA_FRAME` a
+`MSG_DEPTH_FRAME`.
 
-## Setup Pole A Mise
+## Cesty, Data A Konvence
 
-Aktuální setup flow pro plnou E2E misi:
+### Pouzivej `scout_control.paths`
 
-1. `manual_controller` uloží landing pady:
-   `H` pro `drone_0`, `J` pro `drone_1`
-2. `field_setup_coordinator` uloží `home_positions.json`
-3. operátor označí 4 rohy pole přes `C` + `1/2/3/4`
-4. `field_setup_coordinator` vygeneruje `field_grid.json`
-5. `drone_0` dostane RTH
-6. po potvrzení mise se publikuje `/swarm/mission_ready`
-7. `swarm_coordinator` spustí countdown a čeká na READY od dronů
-8. `TaskAllocator` rozdělí grid a swarm přebere řízení
-
-`swarm_coordinator` je dnes jediná aktivní ROS2 vrstva pro alokaci; samotný
-`task_allocator.py` je interní pure-Python modul.
-
-## Důležité Runtime Konvence
-
-### Cesty
-
-Používej `scout_control.paths`, ne ručně zadrátované cesty.
-
-Exportované konstanty:
+Na path konstanty nepouzivej hardcoded rooty tam, kde jde pouzit:
 
 - `WS_ROOT`
 - `PERIMETERS_DIR`
@@ -265,58 +331,41 @@ Exportované konstanty:
 - `SPRAY_LOG_FILE`
 - `CELL_DATA_DIR`
 
-Workspace root se hledá podle přítomnosti `CLAUDE.md` při průchodu nahoru od
-modulu. Fallback stále existuje na `~/scout_ws`, ale ten je jen kvůli
-kompatibilitě se starším layoutem.
+`paths.py` hleda workspace root podle pritomnosti `CLAUDE.md`. Fallback na
+`~/scout_ws` zustava jen kvuli kompatibilite se starsim layoutem.
 
-### PX4 / NED
-
-- PX4 používá NED
-- `z` je down, tedy výška je záporné číslo
-- pro držení headingu se používá `yaw = nan`
-- topicy pro PX4 používat se suffixem `_v1`, např.:
-  `/fmu/out/vehicle_local_position_v1`
-
-### QoS
-
-Projekt hodně spoléhá na přesný match QoS. Obzvlášť citlivé jsou:
-
-- latched / reliable command topics
-- `/swarm/task_status`
-- `/field/setup_complete`
-- `/swarm/mission_ready`
-- obrazová data z bridge
-
-Při úpravách bridge nebo coordinatoru vždy nejdřív ověřit QoS na obou stranách.
-
-## Data, Která Mise Produkuje
+### Data, Ktera Mise Produkuje
 
 - `perimeters/field_perimeter.json`
 - `perimeters/field_grid.json`
 - `perimeters/home_positions.json`
 - `spray_log.json`
 - `cell_data/<cell_id>/...`
+- `logs/avoidance_logs/*.jsonl`
 
-`cell_data` už v workspace obsahuje historická data, není to prázdná složka.
+### PX4 / NED
 
-## Scenario Soubory
+- PX4 pouziva NED
+- `z` je down, takze vyska je zaporne cislo
+- pro heading-hold se casto pouziva `yaw = nan`
+- PX4 topic naming tady standardne pouziva suffix `_v1`, napr.:
+  `/fmu/out/vehicle_local_position_v1`
 
-`scout_launcher.py` načítá scénáře auto-discovery z `scenarios/*.yaml`.
+### QoS
 
-Aktuálně tam jsou tři typy scénářů:
+Projekt je citlivy na QoS match. Opatrne hlavne u:
 
-- aktivní a používané: `full_e2e_mission`, `isaac_e2e_mission`, `gcs_bridge`,
-  `camera_*`, `lidar_bridge`, `manual_commander`, `home_manager`,
-  `swarm_coordinator`, `terrain_follower`
-- specializované: `obstacle_avoidance_test`, `obstacle_detector`,
-  `gimbal_bridge`
-- historické nebo podezřelé: `task_allocator.yaml`, část starších standalone flow
+- latched command / status topicu
+- `/swarm/task_status`
+- `/field/setup_complete`
+- `/swarm/mission_ready`
+- `/{drone_ns}/avoidance/status`
+- obrazovych dat pres `gcs_bridge`
 
-Pozor: samotný `task_allocator` dnes není registrovaný jako `console_script` v
-`src/scout_control/setup.py`. Pokud někdo spustí scénář `task_allocator.yaml`,
-pravděpodobně selže. Pro reálný swarm flow se má používat `swarm_coordinator`.
+Pri upravach bridge, coordinatoru nebo avoidance runtime nejdriv zkontrolovat
+QoS na obou stranach.
 
-## Build A Spouštění
+## Build, Test A Overy
 
 ROS2 package:
 
@@ -326,50 +375,71 @@ colcon build --packages-select scout_control
 source install/setup.bash
 ```
 
+Targeted pure-Python avoidance testy:
+
+```bash
+PYTHONPATH=src/scout_control pytest \
+  src/scout_control/test/test_local_planner.py \
+  src/scout_control/test/test_avoidance_helpers.py
+```
+
 Launcher:
 
 ```bash
 python3 scout_launcher.py
 ```
 
-Swarm Center:
+## Dulezite Rozchody A Rizika
 
-```bash
-cd swarm_center
-pip install -r requirements.txt
-python3 main.py
-```
+- `full_e2e_mission.launch.py` je porad `swarm_agent`-centric launch; neplest si
+  ho s novou runtime-centric avoidance architekturou
+- `obstacle_avoidance_runtime` je nova obecnejsi vrstva, ale jeste neni
+  integrovanou vychozi cestou pro plnou swarm misi
+- `task_allocator.yaml` neodpovida registraci v `setup.py`
+- bridge protokol je duplikovany ve dvou souborech; zmeny musi zustat
+  synchronizovane
+- nektere scenare a starsi poznamky stale pocitaji s `~/scout_ws`
+- `scout_launcher.py` ma workspace root natvrdo, neni plne prenositelny
+- worktree muze byt spinavy; nevracet cizi zmeny bez explicitniho zadani
 
-## Světy A Assety
+## Dokumentacni Konvence V Teto Repu
 
-V repo jsou dnes dva různé typy world assetů:
+- dlouhodoba lidska dokumentace je v `docs/`
+- operatorni runbooky a rucni launch postupy jsou v `launch_files/`
+- `CLAUDE.md` ma byt aktualni mapa projektu a workflow
+- `codex.md` ma byt prubezny changelog / log dulezitych zjisteni pro dalsi AI
+  session
 
-- `src/scout_control/worlds/*.world` — ROS2 package assety, např.
-  `agricultural_field.world`, `obstacle_course.world`
-- `worlds/` v rootu — Isaac / overlay soubory, ne Gazebo `.world`
+## Update 2026-04-22 (A/B/C/D Integrace)
 
-`scout_launcher.py` čte seznam worldů z `~/PX4-Autopilot/Tools/simulation/gz/worlds`.
-Takže existence world souboru v repu sama o sobě nestačí; často musí být
-soubor i v PX4 worlds adresáři.
+Aktualni implementacni stav po koordinovane integraci:
 
-## Známé Rozchody A Rizika
+- `obstacle_avoidance_runtime` je stabilizovany jako single flight owner pro
+  avoidance-enabled flow.
+- `local_mapper + local_planner + scan_manager` jsou aktivne integrovane
+  pipeline moduly uvnitr runtime.
+- `swarm_agent` umi backend volbu:
+  - `navigation_backend=direct`
+  - `navigation_backend=avoidance_runtime`
+- Pri `avoidance_runtime` backendu swarm agent nevydava flight setpointy, ale
+  funguje jako route/status vrstva nad runtime.
+- `task_allocator` umi pracovat s blocked/deferred semantikou:
+  - `blocked_severity` (`NONE|SOFT|HARD`)
+  - `CELL_DEFERRED`
+  - `TEMP_BLOCKED` cooldown.
+- `gcs_bridge` forwarduje i avoidance detail stream
+  (`AVOIDANCE_STATUS`, `AVOIDANCE_EVENT`) v payloadu `MSG_DRONE_STATUS`.
 
-- `CLAUDE.md` byl předtím výrazně zastaralý; staré reference na
-  `scout_devtools.py` a některé workflow už neplatí.
-- `swarm_center` je už reálná součást systému, ne jen budoucí milestone.
-- `gcs_bridge` je součást plného launch flow, nejen volitelný doplněk.
-- `task_allocator.yaml` neodpovídá registraci v `setup.py`.
-- některé scénáře nebo popisy stále používají historickou cestu `~/scout_ws`
-  místo skutečné workspace cesty
-- v worktree jsou necommitnuté změny i nové soubory kolem Isaac/GCS; při úpravách
-  nevracet cizí změny bez ověření záměru
+Aktualni stabilni `avoidance/status` kontrakt obsahuje mimo jine:
+- `phase`, `state`, `result`
+- `planner_mode`, `planner_state`
+- `scan_state`, `scan_active`
+- `no_path_streak`, `scan_attempts_for_target`
+- `blocked_reason`, `blocked_since_s`, `blocked_severity`
+- `reassign_recommended`
+- `last_scan`, `last_runtime_event`
 
-## Když Budeš V Tomto Repo Něco Měnit
-
-- nejdřív ověř skutečný stav v `scenarios/`, `setup.py` a launch souborech
-- nepředpokládej, že YAML scénář znamená funkční entry point
-- změny bridge protokolu dělej vždy synchronně v `scout_control` i `swarm_center`
-- u UI / GCS změn kontroluj i dopad na `gcs_bridge`
-- u swarm logiky kontroluj návaznost:
-  `manual_controller` → `field_setup_coordinator` → `swarm_coordinator` →
-  `TaskAllocator` → `swarm_agent`
+Poznamka:
+- full E2E launch (`full_e2e_mission.launch.py`) je stale historicky
+  swarm-agent-centric a muze vyzadovat dalsi wiring/polish pro plny prechod na
+  runtime backend jako default.

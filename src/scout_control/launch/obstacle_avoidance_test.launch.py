@@ -1,31 +1,14 @@
 """
-obstacle_avoidance_test.launch.py — Obstacle avoidance test mise.
+obstacle_avoidance_test.launch.py — Obstacle avoidance test mission.
 
-Spustí všechny potřebné nody pro testování obstacle avoidance:
-  - obstacle_detector           — depth kamera → sektorové obstacle info
-  - obstacle_avoidance_mission  — řídicí mise nad detector outputem
+Spusti potrebne nody pro obstacle avoidance test:
+  - obstacle_avoidance_runtime  — generic per-drone runtime
+  - obstacle_avoidance_mission  — route provider pro test pad sequence
   - obstacle_viz                — RViz2 marker + PointCloud2 publisher
-  - camera_bridge               — Gz Image → /camera/image_raw
+  - camera_bridge               — Gz Image -> /camera/image_raw
 
-POZNÁMKA: gimbal_cam_viz se nespouští zde — vyžaduje vlastní TTY (OpenCV okno).
-          Je spuštěn jako extra_terminal_command v scenarios/obstacle_avoidance_test.yaml.
-          RViz2 se také spouští extra přes scenario YAML.
-
-Předpoklady:
-  1. obstacle_course.world nainstalován do PX4 worlds:
-       cp src/scout_control/worlds/obstacle_course.world ~/PX4-Autopilot/Tools/simulation/gz/worlds/
-  2. PX4 SITL spuštěn:
-       PX4_GZ_WORLD=obstacle_course make px4_sitl gz_x500_mono_cam
-  3. MicroXRCEAgent udp4 -p 8888
-
-World: obstacle_course
-  drone_0 spawn: Gz ENU(0,0)   = NED(0,0)  — oranžový landing pad
-  drone_1 spawn: Gz ENU(4,0)   = NED(0,4)  — modrý landing pad (swarm)
-  4 překážky: wall_north (N), poles_east (E), building_ne (NE), fence_nnw (NNW)
-
-Spuštění:
-  ros2 launch scout_control obstacle_avoidance_test.launch.py
-  ros2 launch scout_control obstacle_avoidance_test.launch.py altitude_m:=5.0
+Poznamka: gimbal_cam_viz se nespousti zde, protoze potrebuje vlastni TTY
+(OpenCV okno). RViz2 i extra tooling se mohou poustet samostatne.
 """
 
 from launch import LaunchDescription
@@ -55,17 +38,22 @@ def generate_launch_description() -> LaunchDescription:
     world       = LaunchConfiguration("world")
     model       = LaunchConfiguration("model")
 
-    detector_node = Node(
+    runtime_node = Node(
         package="scout_control",
-        executable="obstacle_detector",
-        name="obstacle_detector",
+        executable="obstacle_avoidance_runtime",
+        name="obstacle_avoidance_runtime",
         parameters=[{
             "drone_id": 0,
+            "default_altitude_m": altitude,
+            "default_cruise_speed": cruise,
+            "default_clear_dist": 2.5,
+            "home_dist": 1.5,
+            "avoid_offset_m": 3.0,
         }],
         output="screen",
     )
 
-    # ── 1. Obstacle avoidance mission node ────────────────────────────────────
+    # ── 1. Test route provider ────────────────────────────────────────────────
     mission_node = Node(
         package="scout_control",
         executable="obstacle_avoidance_mission",
@@ -74,7 +62,6 @@ def generate_launch_description() -> LaunchDescription:
             "altitude_m":      altitude,
             "cruise_speed":    cruise,
             "drone_id":        0,
-            "avoid_offset_m":  3.0,
             "clear_dist":      2.5,
             "home_dist":       1.5,
         }],
@@ -113,7 +100,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         alt_arg, speed_arg, world_arg, model_arg,
-        detector_node,
+        runtime_node,
         mission_node,
         viz_node,
         camera_bridge,
