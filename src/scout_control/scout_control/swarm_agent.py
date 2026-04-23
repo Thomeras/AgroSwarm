@@ -1,8 +1,9 @@
 """
-swarm_agent.py — Autonomous flight agent for one drone in the swarm
+swarm_agent.py — Mission executor / route provider for one drone in the swarm
 
 One instance per drone. Receives target cells from task_allocator,
-executes them autonomously, and reports progress back.
+forwards high-level targets to obstacle_avoidance_runtime, and reports
+progress back to swarm_coordinator/task_allocator.
 
 State machine:
   IDLE → TAKEOFF → ROTATE → CRUISE → HOVER → (next cell)
@@ -22,9 +23,7 @@ Interfaces:
     /swarm/drone_status      String  JSON
       {"drone_id":"drone_0","status":"READY"}
       {"drone_id":"drone_0","status":"CELL_COMPLETE","cell_id":"x4_y2"}
-    /fmu/in/offboard_control_mode
-    /fmu/in/trajectory_setpoint
-    /fmu/in/vehicle_command
+    /drone_N/avoidance/target_cmd  String JSON
 
 Parameters:
   drone_id     int    0          which drone instance (0, 1, 2…)
@@ -36,7 +35,7 @@ Parameters:
 
 Usage:
   ros2 run scout_control swarm_agent --ros-args -p drone_id:=0
-  ros2 run scout_control swarm_agent --ros-args -p drone_id:=1 -p home_ned_y:=-3.0
+  ros2 run scout_control swarm_agent --ros-args -p drone_id:=1
 """
 
 import json
@@ -144,7 +143,7 @@ class SwarmAgent(Node):
         self.declare_parameter("home_ned_x",   0.0)
         self.declare_parameter("home_ned_y",   0.0)
         self.declare_parameter("cruise_speed", 2.0)
-        self.declare_parameter("navigation_backend", NAV_BACKEND_DIRECT)
+        self.declare_parameter("navigation_backend", NAV_BACKEND_AVOIDANCE_RUNTIME)
 
         self._drone_id:     int   = self.get_parameter("drone_id").value
         self._altitude:     float = self.get_parameter("altitude_m").value
@@ -215,27 +214,41 @@ class SwarmAgent(Node):
         self._avoiding_resume_cell: Optional[str]  = None         # for status publish on entry
         self._last_avoidance_payload: Optional[dict[str, Any]] = None
         self._last_runtime_status_signature: Optional[tuple[Any, ...]] = None
+        self._runtime_active_cell_id: Optional[str] = None
+        self._runtime_last_completed_target_id: str = ""
+        self._runtime_rth_requested: bool = False
+        self._runtime_return_home_sent: bool = False
 
         # ── Publishers ────────────────────────────────────────────────────────
-        self._offboard_pub = self.create_publisher(
-            OffboardControlMode,
-            f"{_px4_ns}/fmu/in/offboard_control_mode", QOS_PX4_PUB)
-        self._traj_pub = self.create_publisher(
-            TrajectorySetpoint,
-            f"{_px4_ns}/fmu/in/trajectory_setpoint", QOS_PX4_PUB)
-        self._cmd_pub = self.create_publisher(
-            VehicleCommand,
-            f"{_px4_ns}/fmu/in/vehicle_command", QOS_PX4_PUB)
+        self._offboard_pub = None
+        self._traj_pub = None
+        self._cmd_pub = None
+        if not self._runtime_backend_active:
+            self._offboard_pub = self.create_publisher(
+                OffboardControlMode,
+                f"{_px4_ns}/fmu/in/offboard_control_mode", QOS_PX4_PUB)
+            self._traj_pub = self.create_publisher(
+                TrajectorySetpoint,
+                f"{_px4_ns}/fmu/in/trajectory_setpoint", QOS_PX4_PUB)
+            self._cmd_pub = self.create_publisher(
+                VehicleCommand,
+                f"{_px4_ns}/fmu/in/vehicle_command", QOS_PX4_PUB)
+        self._target_cmd_pub = self.create_publisher(
+            String,
+            f"/{self._did}/avoidance/target_cmd",
+            QOS_VOL,
+        )
         self._status_pub = self.create_publisher(
             String, "/swarm/drone_status", QOS_VOL)
         self._landed_pub = self.create_publisher(
             String, "/swarm/landed_confirmation", QOS_SENSOR)
 
         # ── Subscribers ───────────────────────────────────────────────────────
-        self.create_subscription(
-            VehicleLocalPosition,
-            f"{_px4_ns}/fmu/out/vehicle_local_position_v1",
-            self._pos_cb, QOS_PX4_SUB)
+        if not self._runtime_backend_active:
+            self.create_subscription(
+                VehicleLocalPosition,
+                f"{_px4_ns}/fmu/out/vehicle_local_position_v1",
+                self._pos_cb, QOS_PX4_SUB)
         # Use depth=10 for next_cell so that a primary cell and its prefetch
         # arriving in rapid succession are never dropped (depth=1 could silently
         # discard the primary cell before the callback runs, causing the drone
@@ -253,32 +266,33 @@ class SwarmAgent(Node):
             String, "/swarm/rth_request",
             self._rth_request_cb, QOS_VOL)
 
-        # Subscribe to /drone_N/rth_target so that home position can be updated
-        # dynamically by manual_controller (H/J keys) or field_setup_coordinator.
-        # A message received BEFORE an rth_request updates home_x/y for the
-        # upcoming RTH manoeuvre.
-        self.create_subscription(
-            Point,
-            f"/{self._did}/rth_target",
-            self._rth_target_cb,
-            QOS_LATCHED,
-        )
+        if not self._runtime_backend_active:
+            # Subscribe to /drone_N/rth_target so that home position can be updated
+            # dynamically by manual_controller (H/J keys) or field_setup_coordinator.
+            # A message received BEFORE an rth_request updates home_x/y for the
+            # upcoming RTH manoeuvre.
+            self.create_subscription(
+                Point,
+                f"/{self._did}/rth_target",
+                self._rth_target_cb,
+                QOS_LATCHED,
+            )
 
-        # Downward lidar for terrain following.
-        # Topic is per-drone: /drone_N/downward_lidar/scan
-        # Bridged from Gazebo by the lidar bridge nodes in full_e2e_mission.launch.py.
-        # If lidar is unavailable (model without lidar) swarm_agent falls back to
-        # fixed altitude (_altitude parameter).
-        self.create_subscription(
-            LaserScan,
-            f"/{self._did}/downward_lidar/scan",
-            self._lidar_cb, QOS_SENSOR)
+            # Downward lidar for terrain following.
+            # Topic is per-drone: /drone_N/downward_lidar/scan
+            # Bridged from Gazebo by the lidar bridge nodes in full_e2e_mission.launch.py.
+            # If lidar is unavailable (model without lidar) swarm_agent falls back to
+            # fixed altitude (_altitude parameter).
+            self.create_subscription(
+                LaserScan,
+                f"/{self._did}/downward_lidar/scan",
+                self._lidar_cb, QOS_SENSOR)
 
-        # Obstacle detector output — per-drone JSON with closest distance + sector map.
-        self.create_subscription(
-            String,
-            f"/{self._did}/obstacles/detected",
-            self._on_obstacle, QOS_SENSOR)
+            # Obstacle detector output — per-drone JSON with closest distance + sector map.
+            self.create_subscription(
+                String,
+                f"/{self._did}/obstacles/detected",
+                self._on_obstacle, QOS_SENSOR)
         if self._navigation_backend == NAV_BACKEND_AVOIDANCE_RUNTIME:
             self.create_subscription(
                 String,
@@ -302,7 +316,8 @@ class SwarmAgent(Node):
             String, "/swarm/mission_ready",
             self._mission_ready_cb, _qos_mission_volatile)
 
-        self.create_timer(DT, self._timer_cb)
+        if not self._runtime_backend_active:
+            self.create_timer(DT, self._timer_cb)
 
         self.get_logger().info(
             f"SwarmAgent {self._did} ready | "
@@ -340,34 +355,52 @@ class SwarmAgent(Node):
         with self._lock:
             if self._mission_done:
                 return
-
-            if self._waiting_for_next:
-                # Drone is holding at current cell centre — activate immediately
-                self._current_cell_id  = cid
-                self._target_x         = tx
-                self._target_y         = ty
-                self._cell_reached     = False
-                self._waiting_for_next = False
-                self._phase            = Phase.ROTATE
-                self._rotate_ticks     = 0
-                self._vsp_yaw          = float("nan")
-                self.get_logger().info(
-                    f"{self._did}: resuming → {cid} NED({tx:.2f},{ty:.2f})"
-                )
-            else:
-                # Queue for seamless pick-up when drone reaches current target.
-                # This includes cells that arrive during TAKEOFF phase — they are
-                # always queued here and activated at the TAKEOFF→ROTATE transition
-                # (see _step_vsp).  Previously, the first cell was "activated
-                # directly" during TAKEOFF, but that could race with the prefetch:
-                # if both primary and prefetch messages arrived before the callback
-                # ran (depth=1 queue) the primary was dropped and the drone jumped
-                # straight to the prefetch cell (Bug 2).
+            if self._runtime_backend_active:
                 self._cell_queue.append((cid, tx, ty))
                 self.get_logger().info(
                     f"{self._did}: queued {cid} NED({tx:.2f},{ty:.2f}) "
                     f"[queue={len(self._cell_queue)}]"
                 )
+                cmd = self._maybe_build_runtime_cmd_locked()
+                if cmd is not None:
+                    self.get_logger().info(
+                        f"{self._did}: dispatching runtime target {cmd['target_id']} "
+                        f"NED({cmd['target_ned'][0]:.2f},{cmd['target_ned'][1]:.2f})"
+                    )
+                else:
+                    return
+            else:
+                cmd = None
+
+                if self._waiting_for_next:
+                    # Drone is holding at current cell centre — activate immediately
+                    self._current_cell_id  = cid
+                    self._target_x         = tx
+                    self._target_y         = ty
+                    self._cell_reached     = False
+                    self._waiting_for_next = False
+                    self._phase            = Phase.ROTATE
+                    self._rotate_ticks     = 0
+                    self._vsp_yaw          = float("nan")
+                    self.get_logger().info(
+                        f"{self._did}: resuming → {cid} NED({tx:.2f},{ty:.2f})"
+                    )
+                else:
+                    # Queue for seamless pick-up when drone reaches current target.
+                    # This includes cells that arrive during TAKEOFF phase — they are
+                    # always queued here and activated at the TAKEOFF→ROTATE transition
+                    # (see _step_vsp).  Previously, the first cell was "activated
+                    # directly" during TAKEOFF, but that could race with the prefetch:
+                    # if both primary and prefetch messages arrived before the callback
+                    # ran (depth=1 queue) the primary was dropped and the drone jumped
+                    # straight to the prefetch cell (Bug 2).
+                    self._cell_queue.append((cid, tx, ty))
+                    self.get_logger().info(
+                        f"{self._did}: queued {cid} NED({tx:.2f},{ty:.2f}) "
+                        f"[queue={len(self._cell_queue)}]"
+                    )
+        if cmd is not None:
+            self._publish_runtime_cmd(cmd)
 
     def _rth_request_cb(self, msg: String) -> None:
         try:
@@ -379,16 +412,31 @@ class SwarmAgent(Node):
         with self._lock:
             if self._rth_active or self._mission_done:
                 return
-            self._rth_active      = True
-            self._mission_done    = True
-            self._target_x        = self._home_x
-            self._target_y        = self._home_y
-            self._phase           = Phase.ROTATE
-            self._rotate_ticks    = 0
-            self._vsp_yaw         = float("nan")
-            self.get_logger().info(
-                f"{self._did}: RTH → home NED({self._home_x},{self._home_y})"
-            )
+            if self._runtime_backend_active:
+                self._rth_active = True
+                self._mission_done = True
+                self._runtime_rth_requested = True
+                self._runtime_return_home_sent = True
+                self._cell_queue.clear()
+                self._runtime_active_cell_id = None
+                cmd = self._build_runtime_return_home_cmd_locked()
+            else:
+                cmd = None
+                self._rth_active      = True
+                self._mission_done    = True
+                self._target_x        = self._home_x
+                self._target_y        = self._home_y
+                self._phase           = Phase.ROTATE
+                self._rotate_ticks    = 0
+                self._vsp_yaw         = float("nan")
+            if self._runtime_backend_active:
+                self.get_logger().info(f"{self._did}: RTH requested (runtime backend)")
+            else:
+                self.get_logger().info(
+                    f"{self._did}: RTH → home NED({self._home_x},{self._home_y})"
+                )
+        if cmd is not None:
+            self._publish_runtime_cmd(cmd)
 
     def _rth_target_cb(self, msg: Point) -> None:
         """Update home position dynamically when /drone_N/rth_target is received.
@@ -421,6 +469,18 @@ class SwarmAgent(Node):
             if self._runtime_backend_active:
                 self._passive = False
                 self._idle_ticks = 0
+                self._mission_done = False
+                self._rth_active = False
+                self._cell_queue.clear()
+                self._waiting_for_next = False
+                self._runtime_active_cell_id = None
+                self._runtime_last_completed_target_id = ""
+                self._runtime_rth_requested = False
+                self._runtime_return_home_sent = False
+                self._last_runtime_status_signature = None
+                self.get_logger().info(
+                    f"{self._did}: /swarm/mission_ready received — runtime backend mission mode active"
+                )
                 return
             if self._arm_requested or (self._armed and not self._on_ground):
                 return   # already armed and airborne — ignore duplicate
@@ -471,24 +531,45 @@ class SwarmAgent(Node):
             return
         if not isinstance(payload, dict):
             return
-        self._last_avoidance_payload = payload
-        mapped = self._build_swarm_status_from_avoidance(payload)
-        if mapped is None or not self._runtime_backend_active:
-            return
-        status, extra = mapped
-        signature = (
-            status,
-            extra.get("phase"),
-            extra.get("target_id"),
-            extra.get("planner_state"),
-            extra.get("scan_state"),
-            extra.get("blocked_severity"),
-            extra.get("runtime_event"),
-        )
-        if signature == self._last_runtime_status_signature:
-            return
-        self._last_runtime_status_signature = signature
+        cell_complete_id: Optional[str] = None
+        runtime_cmd: Optional[dict[str, Any]] = None
+        with self._lock:
+            self._last_avoidance_payload = payload
+            if self._runtime_backend_active:
+                completed_id_raw = str(payload.get("last_completed_target_id", "")).strip()
+                if (
+                    completed_id_raw
+                    and completed_id_raw != self._runtime_last_completed_target_id
+                ):
+                    self._runtime_last_completed_target_id = completed_id_raw
+                    if completed_id_raw == self._runtime_active_cell_id:
+                        cell_complete_id = completed_id_raw
+                        self._runtime_active_cell_id = None
+                        self._waiting_for_next = False
+                runtime_cmd = self._maybe_build_runtime_cmd_locked()
+
+            mapped = self._build_swarm_status_from_avoidance(payload)
+            if mapped is None or not self._runtime_backend_active:
+                return
+            status, extra = mapped
+            signature = (
+                status,
+                extra.get("phase"),
+                extra.get("target_id"),
+                extra.get("planner_state"),
+                extra.get("scan_state"),
+                extra.get("blocked_severity"),
+                extra.get("runtime_event"),
+                extra.get("last_completed_target_id"),
+            )
+            if signature == self._last_runtime_status_signature:
+                return
+            self._last_runtime_status_signature = signature
         self._pub_status(status, **extra)
+        if cell_complete_id:
+            self._pub_cell_complete(cell_complete_id)
+        if runtime_cmd is not None:
+            self._publish_runtime_cmd(runtime_cmd)
 
     def _build_swarm_status_from_avoidance(
         self, payload: dict[str, Any]
@@ -524,6 +605,7 @@ class SwarmAgent(Node):
         blocked_since_s = payload.get("blocked_since_s")
         extra = {
             "backend": NAV_BACKEND_AVOIDANCE_RUNTIME,
+            "navigation_backend": NAV_BACKEND_AVOIDANCE_RUNTIME,
             "phase": phase,
             "command": str(payload.get("command", "")),
             "target_id": str(payload.get("target_id", "")),
@@ -568,6 +650,52 @@ class SwarmAgent(Node):
             f"{NAV_BACKEND_DIRECT}"
         )
         return NAV_BACKEND_DIRECT
+
+    def _build_runtime_return_home_cmd_locked(self) -> dict[str, Any]:
+        return {
+            "command": "return_home",
+            "target_id": f"rth_{int(self.get_clock().now().nanoseconds // 1_000_000)}",
+            "name": "Swarm RTH",
+            "source": "swarm_agent",
+            "priority": "mission",
+        }
+
+    def _maybe_build_runtime_cmd_locked(self) -> Optional[dict[str, Any]]:
+        if not self._runtime_backend_active or self._passive:
+            return None
+        if self._runtime_rth_requested and not self._runtime_return_home_sent:
+            self._runtime_return_home_sent = True
+            return self._build_runtime_return_home_cmd_locked()
+        if self._runtime_rth_requested:
+            return None
+        if self._runtime_active_cell_id is not None:
+            return None
+        if not self._cell_queue:
+            self._waiting_for_next = True
+            return None
+        cid, tx, ty = self._cell_queue.popleft()
+        self._runtime_active_cell_id = cid
+        self._current_cell_id = cid
+        self._target_x = tx
+        self._target_y = ty
+        self._waiting_for_next = False
+        return {
+            "command": "goto",
+            "target_id": cid,
+            "name": cid,
+            "target_ned": [tx, ty],
+            "source": "swarm_agent",
+            "priority": "mission",
+        }
+
+    def _publish_runtime_cmd(self, payload: dict[str, Any]) -> None:
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._target_cmd_pub.publish(msg)
+        self.get_logger().info(
+            f"{self._did}: → /{self._did}/avoidance/target_cmd "
+            f"{payload.get('command', '')} {payload.get('target_id', '')}"
+        )
 
     def _compute_avoid_waypoint(self) -> Optional[tuple]:
         """Compute lateral detour waypoint to clear an obstacle.
@@ -980,7 +1108,7 @@ class SwarmAgent(Node):
     def _pub_offboard(self) -> None:
         # Stop the offboard heartbeat once AUTO.LAND is triggered; otherwise PX4
         # would keep reverting back to offboard mode, blocking the land command.
-        if self._landing:
+        if self._landing or self._offboard_pub is None:
             return
         msg           = OffboardControlMode()
         msg.position  = True
@@ -991,7 +1119,7 @@ class SwarmAgent(Node):
     def _pub_setpoint(
         self, vsp: list[float], phase: Phase, vsp_yaw: float, vz: float
     ) -> None:
-        if not self._landing:
+        if self._traj_pub is not None and not self._landing:
             nan = float("nan")
             msg = TrajectorySetpoint()
             msg.timestamp = self._now_us()
@@ -1037,6 +1165,8 @@ class SwarmAgent(Node):
         self.get_logger().info(f"{self._did}: armed + offboard mode")
 
     def _send_command(self, command: int, **kwargs) -> None:
+        if self._cmd_pub is None:
+            return
         msg                  = VehicleCommand()
         msg.timestamp        = self._now_us()
         msg.command          = command

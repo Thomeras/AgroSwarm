@@ -27,7 +27,9 @@ Nodes launched here (ROS2 side):
     manual_controller       — headless backend for Swarm Center manual tab
 
   Mission phase:
-    swarm_agent drone_0 (and drone_1 if drone_count=2)
+    avoidance_runtime_0     — flight owner for drone_0 (arm/takeoff/setpoints/avoidance)
+    avoidance_runtime_1     — flight owner for drone_1 (if drone_count=2)
+    swarm_agent drone_0 (and drone_1 if drone_count=2) — mission delegators
     swarm_coordinator       — snake cell assignment, dynamic rebalancing
     cell_data_recorder      — JPG + meta.json per cell visit
     spray_controller        — simulated spray log
@@ -36,8 +38,8 @@ Nodes launched here (ROS2 side):
     gcs_bridge              — TCP bridge for Swarm Center (port 17845)
 
   NOTE: No lidar or camera bridges — sensor data comes from Isaac Sim directly.
-  swarm_agent uses fixed-altitude mode (fallback when /drone_N/downward_lidar/scan
-  is absent; TAKEOFF transitions after MAX_TAKEOFF_TICKS = 200 ticks / 20 s).
+  obstacle_avoidance_runtime consumes /drone_N/depth/image_raw from simulation_cam.py
+  for obstacle detection. Without depth, runtime still handles flight ownership.
 
   Camera: if Isaac Sim is configured to publish /drone_N/camera/image_raw
   and /drone_N/depth/image_raw,
@@ -147,6 +149,47 @@ def generate_launch_description() -> LaunchDescription:
     # Isaac Sim Iris model spawns at NED origin (0, 0) by default.
     # Adjust home_ned_x/y to match where you positioned the vehicle in Isaac Sim.
 
+    # Obstacle avoidance runtime — drone_0 (single flight owner)
+    # Consumes /drone_0/depth/image_raw published by Pegasus_scenarios/simulation_cam.py.
+    # Without depth data (before simulation_cam.py is run), runtime still handles
+    # arm/takeoff/flight — avoidance detection inactive until depth arrives.
+    runtime_0 = TimerAction(
+        period=1.0,
+        actions=[Node(
+            package="scout_control",
+            executable="obstacle_avoidance_runtime",
+            name="avoidance_runtime_0",
+            parameters=[{
+                "drone_id":             0,
+                "default_altitude_m":   altitude,
+                "default_cruise_speed": cruise_speed,
+                "default_clear_dist":   2.5,
+                "home_dist":            1.5,
+                "avoid_offset_m":       3.0,
+            }],
+            output="screen",
+        )],
+    )
+
+    # Obstacle avoidance runtime — drone_1 (only if drone_count=2)
+    runtime_1 = TimerAction(
+        period=1.0,
+        actions=[Node(
+            package="scout_control",
+            executable="obstacle_avoidance_runtime",
+            name="avoidance_runtime_1",
+            parameters=[{
+                "drone_id":             1,
+                "default_altitude_m":   altitude,
+                "default_cruise_speed": cruise_speed,
+                "default_clear_dist":   2.5,
+                "home_dist":            1.5,
+                "avoid_offset_m":       3.0,
+            }],
+            output="screen",
+        )],
+    )
+
     agent_0 = TimerAction(
         period=2.0,
         actions=[Node(
@@ -154,11 +197,12 @@ def generate_launch_description() -> LaunchDescription:
             executable="swarm_agent",
             name="swarm_agent_0",
             parameters=[{
-                "drone_id":     0,
-                "altitude_m":   altitude,
-                "home_ned_x":   0.0,    # Isaac Sim Iris spawn NED x
-                "home_ned_y":   0.0,    # Isaac Sim Iris spawn NED y
-                "cruise_speed": cruise_speed,
+                "drone_id":           0,
+                "altitude_m":         altitude,
+                "home_ned_x":         0.0,    # Isaac Sim Iris spawn NED x
+                "home_ned_y":         0.0,    # Isaac Sim Iris spawn NED y
+                "cruise_speed":       cruise_speed,
+                "navigation_backend": "avoidance_runtime",
             }],
             output="screen",
         )],
@@ -172,11 +216,12 @@ def generate_launch_description() -> LaunchDescription:
             executable="swarm_agent",
             name="swarm_agent_1",
             parameters=[{
-                "drone_id":     1,
-                "altitude_m":   altitude,
-                "home_ned_x":   5.0,    # adjust to match 2nd vehicle spawn
-                "home_ned_y":   0.0,
-                "cruise_speed": cruise_speed,
+                "drone_id":           1,
+                "altitude_m":         altitude,
+                "home_ned_x":         5.0,    # adjust to match 2nd vehicle spawn
+                "home_ned_y":         0.0,
+                "cruise_speed":       cruise_speed,
+                "navigation_backend": "avoidance_runtime",
             }],
             output="screen",
         )],
@@ -276,7 +321,9 @@ def generate_launch_description() -> LaunchDescription:
         field_setup,
         home_mgr,
         manual_ctrl,
-        # Mission phase — drone_0 always; drone_1 for 2-vehicle Pegasus setup
+        # Mission phase — runtimes first, then delegating swarm agents
+        runtime_0,
+        runtime_1,
         agent_0,
         agent_1,
         swarm_coord,

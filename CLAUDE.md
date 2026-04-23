@@ -21,10 +21,12 @@ SITL. Dnes v repu soubezne existuji ctyri prakticky dulezite vetve:
   `src/scout_control/scout_control/obstacle_avoidance_runtime.py` a modulu v
   `src/scout_control/scout_control/avoidance/`
 
-Dulezite: plna swarm mise dnes stale bezi primarne pres `swarm_agent` +
-`swarm_coordinator`. `obstacle_avoidance_runtime` je nova generalizovana
-per-drone safety / navigation vrstva, ale zatim neni integrovana do
-`full_e2e_mission.launch.py` jako hlavni ridici cesta.
+Dulezite: pro avoidance-enabled navigation path je flight-control owner
+`obstacle_avoidance_runtime`. `swarm_agent` je v tomto rezimu mission
+executor/route provider a neposila PX4 flight setpointy.
+`swarm_agent` ma mit default `navigation_backend=avoidance_runtime`.
+Kompatibilni `navigation_backend=direct` muze byt stale dostupny jako
+prechodovy fallback.
 
 ## Stack
 
@@ -216,8 +218,17 @@ Typicky prubeh:
 5. `manual_controller` bezi v extra terminalu kvuli curses UI.
 6. `gcs_bridge` se spousti automaticky a `swarm_center` se muze pripojit.
 
-V teto ceste zatim hlavni autonomni rizeni stale patri `swarm_agent`.
-`obstacle_avoidance_runtime` sem jeste neni zapojeny jako vychozi navigator.
+V teto ceste ma byt avoidance runtime path autoritativni pro flight execution:
+
+- `swarm_agent` drzi mission stav, frontu targetu a swarm reporting
+- `swarm_agent` posila high-level commandy (`goto`, `return_home`) do runtime
+- `swarm_agent` odvozuje `CELL_COMPLETE` z runtime pole
+  `last_completed_target_id` (ne z vlastniho direct flight loopu)
+- `obstacle_avoidance_runtime` publikuje PX4 setpointy a rozhoduje avoidance
+  execution flow
+
+Poznamka: nektere launch/config kombinace mohou stale dovolit direct fallback
+(`navigation_backend=direct`) kvuli kompatibilite. To je docasne.
 
 ## 2. Isaac Sim / Pegasus E2E Mise
 
@@ -391,10 +402,9 @@ python3 scout_launcher.py
 
 ## Dulezite Rozchody A Rizika
 
-- `full_e2e_mission.launch.py` je porad `swarm_agent`-centric launch; neplest si
-  ho s novou runtime-centric avoidance architekturou
-- `obstacle_avoidance_runtime` je nova obecnejsi vrstva, ale jeste neni
-  integrovanou vychozi cestou pro plnou swarm misi
+- nektere launch/config kombinace stale drzi direct fallback
+  (`navigation_backend=direct`) pro kompatibilitu; cilovy model je runtime-owned
+  execution (`navigation_backend=avoidance_runtime`)
 - `task_allocator.yaml` neodpovida registraci v `setup.py`
 - bridge protokol je duplikovany ve dvou souborech; zmeny musi zustat
   synchronizovane
@@ -421,8 +431,11 @@ Aktualni implementacni stav po koordinovane integraci:
 - `swarm_agent` umi backend volbu:
   - `navigation_backend=direct`
   - `navigation_backend=avoidance_runtime`
-- Pri `avoidance_runtime` backendu swarm agent nevydava flight setpointy, ale
-  funguje jako route/status vrstva nad runtime.
+- default backend je `navigation_backend=avoidance_runtime`
+- Pri `avoidance_runtime` backendu je direct PX4 ownership path ve `swarm_agent`
+  vypnuta (zadne PX4 pubs/subs/timer/control loop).
+- `swarm_agent` posila high-level `target_cmd` do runtime a `CELL_COMPLETE`
+  odvozuje z runtime `last_completed_target_id`.
 - `task_allocator` umi pracovat s blocked/deferred semantikou:
   - `blocked_severity` (`NONE|SOFT|HARD`)
   - `CELL_DEFERRED`
@@ -438,8 +451,46 @@ Aktualni stabilni `avoidance/status` kontrakt obsahuje mimo jine:
 - `blocked_reason`, `blocked_since_s`, `blocked_severity`
 - `reassign_recommended`
 - `last_scan`, `last_runtime_event`
+- aditivni ownership/mission feedback pole pro mission vrstvu
+  (napr. accepted/active/completed target identifikatory)
 
 Poznamka:
 - full E2E launch (`full_e2e_mission.launch.py`) je stale historicky
-  swarm-agent-centric a muze vyzadovat dalsi wiring/polish pro plny prechod na
-  runtime backend jako default.
+  kompatibilni i s direct backendem a muze vyzadovat dalsi wiring/polish pro
+  plne odstraneni stare direct-control cesty.
+
+## Update 2026-04-22 (Swarm-Agent Ownership Refactor)
+
+Aktualni cilovy model pro dalsi iterace:
+
+- `swarm_agent`:
+  - mission state owner
+  - queue bunek/targetu
+  - swarm reporting (`/swarm/drone_status` a souvisejici udalosti)
+  - route provider: high-level commandy do runtime
+- `obstacle_avoidance_runtime`:
+  - production flight-control owner pro tuto path
+  - planner/mapper/scan execution
+  - jedine misto, ktere ma publikovat PX4 navigation commandy pro tuto path
+
+Prakticka compatibility poznamka:
+
+- direct path v `swarm_agent` muze byt docasne ponechana za backend gate, ale
+  nema se dale rozsirovat funkcionalitou
+- nove changes mají jit primarne do runtime command/status kontraktu
+- runtime command ingestion akceptuje command aliasy, envelope payloady a target
+  aliasy; invalidni commandy emituji `command_rejected`, validni
+  `command_accepted`
+
+Otevrene body:
+
+- launch/config defaulty nemusi byt ve vsech scenarich prepnute na
+  `navigation_backend=avoidance_runtime`
+- pred finalnim odstraneni direct path je potreba E2E overeni ve full swarm
+  scenari
+
+In-progress poznamka:
+
+- Tento dokument uz bere runtime-owned model jako cilovy a preferovany.
+- Pokud nektera cast kodu/launchu stale pouziva direct path, brat to jako
+  prechodovy compatibility stav, ne jako cilovou architekturu.

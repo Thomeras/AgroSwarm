@@ -65,7 +65,7 @@ from scout_control.avoidance.scan_manager import (
     SCAN_POINT_MIN_RANGE_M,
     ScanManager,
 )
-from scout_control.avoidance.types import ScanStepResult
+from scout_control.avoidance.types import ScanStepResult, TargetCommand
 from scout_control.avoidance_logging import AvoidanceRunLogger
 
 QOS_PX4_SUB = QoSProfile(
@@ -297,6 +297,7 @@ class ObstacleAvoidanceRuntime(Node):
         self._active_target_clear_dist = self._default_clear_d
         self._last_completed_target_id = ""
         self._last_completed_target_name = ""
+        self._last_completed_target_ts = 0.0
         self._avoidance_active = False
 
         self._obstacle_warn = False
@@ -558,65 +559,208 @@ class ObstacleAvoidanceRuntime(Node):
         self._update_depth_frame_stats(depth)
         self._ingest_depth_points(depth)
 
+    def _normalize_target_command_payload(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("target command payload must be an object")
+        normalized: dict[str, Any] = dict(payload)
+
+        for envelope_key in ("payload", "target_cmd", "command_payload"):
+            nested = normalized.get(envelope_key)
+            if isinstance(nested, dict):
+                normalized.update(nested)
+
+        nested_command = normalized.get("command")
+        if isinstance(nested_command, dict):
+            normalized.update(nested_command)
+
+        if "command" not in normalized:
+            for alias in ("cmd", "action", "op", "type"):
+                alias_value = normalized.get(alias)
+                if isinstance(alias_value, str) and alias_value.strip():
+                    normalized["command"] = alias_value
+                    break
+
+        if "target_ned" not in normalized:
+            target_xy = normalized.get("target_xy")
+            if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
+                normalized["target_ned"] = [target_xy[0], target_xy[1]]
+            elif (
+                "x" in normalized
+                and "y" in normalized
+                and normalized.get("x") is not None
+                and normalized.get("y") is not None
+            ):
+                normalized["target_ned"] = [normalized.get("x"), normalized.get("y")]
+
+        if "clear_radius_m" not in normalized:
+            for alias in ("acceptance_radius_m", "acceptance_m", "radius_m"):
+                if alias in normalized:
+                    normalized["clear_radius_m"] = normalized.get(alias)
+                    break
+
+        if "cruise_speed_mps" not in normalized and "speed_mps" in normalized:
+            normalized["cruise_speed_mps"] = normalized.get("speed_mps")
+        if "altitude_m" not in normalized and "target_altitude_m" in normalized:
+            normalized["altitude_m"] = normalized.get("target_altitude_m")
+        return normalized
+
+    def _publish_command_feedback(
+        self,
+        *,
+        accepted: bool,
+        command: str,
+        target_id: str,
+        reason: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        event_payload: dict[str, Any] = {
+            "event": "command_accepted" if accepted else "command_rejected",
+            "accepted": bool(accepted),
+            "command": command,
+            "target_id": target_id,
+            "reason": reason,
+            "phase": self._phase.name,
+        }
+        if payload is not None:
+            event_payload["payload"] = payload
+        self._publish_runtime_event(event_payload)
+
     def _target_cmd_cb(self, msg: String) -> None:
         try:
             data = json.loads(msg.data)
         except json.JSONDecodeError as exc:
             self.get_logger().warn(f"Invalid target command JSON: {exc}")
+            self._publish_command_feedback(
+                accepted=False,
+                command="",
+                target_id="",
+                reason=f"invalid_json:{exc}",
+            )
             return
 
-        cmd = str(data.get("command", "goto"))
-        name = str(data.get("name", cmd))
-        target_id = str(data.get("target_id", f"{cmd}_{int(time.time())}"))
+        try:
+            normalized = self._normalize_target_command_payload(data)
+            has_clear_radius = (
+                "clear_radius_m" in normalized
+                and normalized.get("clear_radius_m") is not None
+            )
+            normalized.setdefault("altitude_m", self._default_alt)
+            normalized.setdefault("cruise_speed_mps", self._default_cruise)
+            command = TargetCommand.from_payload(normalized)
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warn(f"Invalid target command payload: {exc}")
+            self._publish_command_feedback(
+                accepted=False,
+                command=str(data.get("command", data.get("cmd", ""))),
+                target_id=str(data.get("target_id", data.get("cmd_id", ""))),
+                reason=f"invalid_payload:{exc}",
+            )
+            return
+
+        cmd = command.command.strip().lower() or "goto"
+        name = command.name or cmd
+        target_id = command.target_id
 
         if cmd == "goto":
-            target = data.get("target_ned")
-            if not isinstance(target, (list, tuple)) or len(target) < 2:
+            target = command.target_ned
+            if target is None:
                 self.get_logger().warn("goto command missing target_ned=[x,y]")
+                self._publish_command_feedback(
+                    accepted=False,
+                    command=cmd,
+                    target_id=target_id,
+                    reason="missing_target_ned",
+                )
                 return
             self._activate_target(
                 command=cmd,
                 target_id=target_id,
                 name=name,
                 target_xy=(float(target[0]), float(target[1])),
-                altitude_m=float(data.get("altitude_m", self._default_alt)),
-                cruise_speed=float(data.get("cruise_speed_mps", self._default_cruise)),
-                clear_dist=float(data.get("clear_radius_m", self._default_clear_d)),
+                altitude_m=float(command.altitude_m),
+                cruise_speed=float(command.cruise_speed_mps),
+                clear_dist=float(
+                    command.clear_radius_m if has_clear_radius else self._default_clear_d
+                ),
+            )
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
             )
             return
 
         if cmd == "return_home":
             if not self._home_captured:
                 self.get_logger().warn("return_home requested before home was captured")
+                self._publish_command_feedback(
+                    accepted=False,
+                    command=cmd,
+                    target_id=target_id,
+                    reason="home_not_captured",
+                )
                 return
             self._activate_target(
                 command=cmd,
                 target_id=target_id,
                 name=name,
                 target_xy=(self._home_x, self._home_y),
-                altitude_m=float(data.get("altitude_m", self._default_alt)),
-                cruise_speed=float(data.get("cruise_speed_mps", self._default_cruise)),
-                clear_dist=float(data.get("clear_radius_m", self._home_d)),
+                altitude_m=float(command.altitude_m),
+                cruise_speed=float(command.cruise_speed_mps),
+                clear_dist=float(
+                    command.clear_radius_m if has_clear_radius else self._home_d
+                ),
+            )
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
             )
             return
 
         if cmd == "hold":
             self._clear_active_target()
             self._transition_to(RuntimePhase.STOP_HOVER, reason="external_hold_command")
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
+            )
             return
 
         if cmd == "land":
             self._clear_active_target()
             self._land_sent = False
             self._transition_to(RuntimePhase.LANDING, reason="external_land_command")
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
+            )
             return
 
         if cmd == "cancel":
             self._clear_active_target()
             self._transition_to(RuntimePhase.STOP_HOVER, reason="external_cancel_command")
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
+            )
             return
 
         self.get_logger().warn(f"Unknown target command: {cmd}")
+        self._publish_command_feedback(
+            accepted=False,
+            command=cmd,
+            target_id=target_id,
+            reason="unknown_command",
+        )
 
     def _activate_target(
         self,
@@ -1078,6 +1222,7 @@ class ObstacleAvoidanceRuntime(Node):
         )
         self._last_completed_target_id = self._active_target_id
         self._last_completed_target_name = self._active_target_name
+        self._last_completed_target_ts = time.time()
         self._run_log.log(
             "target_completed",
             reason=reason,
@@ -1342,11 +1487,28 @@ class ObstacleAvoidanceRuntime(Node):
             runtime_result = "BLOCKED"
         elif self._active_command == "none":
             runtime_result = "IDLE"
+        now = time.time()
+        command_active = self._active_target_xy is not None and self._active_command != "none"
+        target_reached_recent = (
+            bool(self._last_completed_target_id)
+            and not command_active
+            and (now - self._last_completed_target_ts) <= 3.0
+        )
+        mission_feedback_state = "ACTIVE" if command_active else "IDLE"
+        if blocked_active:
+            mission_feedback_state = "BLOCKED"
+        elif target_reached_recent:
+            mission_feedback_state = "TARGET_REACHED"
         scan_state_name = self._scan_manager.state.name
         payload = {
             "phase": self._phase.name,
             "state": self._phase.name,
             "result": runtime_result,
+            "flight_control_owner": "obstacle_avoidance_runtime",
+            "execution_owner": "obstacle_avoidance_runtime",
+            "mission_feedback_state": mission_feedback_state,
+            "command_active": command_active,
+            "target_active": command_active,
             "command": self._active_command,
             "target_id": self._active_target_id,
             "target_name": self._active_target_name,
@@ -1365,7 +1527,7 @@ class ObstacleAvoidanceRuntime(Node):
             ],
             "home_captured": bool(self._home_captured),
             "navigator_ready": bool(self._pos_valid),
-            "target_reached": False,
+            "target_reached": bool(target_reached_recent),
             "last_completed_target_id": self._last_completed_target_id,
             "last_completed_target_name": self._last_completed_target_name,
             "avoidance_active": self._avoidance_active,
@@ -1398,7 +1560,7 @@ class ObstacleAvoidanceRuntime(Node):
             "dense_scan_points": int(mapper_summary["dense_scan_points"]),
             "last_scan": self._last_scan_summary,
             "last_runtime_event": self._last_runtime_event,
-            "elapsed_s": round(time.time() - self._start_time, 1),
+            "elapsed_s": round(now - self._start_time, 1),
         }
         msg = String(data=json.dumps(payload))
         self._pub_status.publish(msg)
@@ -1410,7 +1572,6 @@ class ObstacleAvoidanceRuntime(Node):
         if self._pub_avoid_legacy is not None:
             self._pub_avoid_legacy.publish(avoid_msg)
 
-        now = time.time()
         if (now - self._last_status_log_ts) >= 1.0:
             self._last_status_log_ts = now
             self._run_log.log(

@@ -284,8 +284,12 @@ exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation
   - `scan_complete(success=True)` vede do replanu
   - `scan_complete(success=False)` / repeated no-path eskaluje do `BLOCKED`
 - Swarm:
-  - `swarm_agent` ma `navigation_backend=direct|avoidance_runtime`
-  - v runtime backendu je flight-control cast swarm agenta vypnuta
+  - `swarm_agent` ma `navigation_backend=direct|avoidance_runtime`, default je
+    `avoidance_runtime`
+  - v runtime backendu je direct PX4 ownership path vypnuta (zadne PX4
+    pubs/subs/timer/control loop)
+  - `swarm_agent` posila runtime high-level `target_cmd` a `CELL_COMPLETE`
+    odvozuje z runtime `last_completed_target_id`
   - finalni mapping `/{drone}/avoidance/status` -> `/swarm/drone_status`
 - Allocator / reassign:
   - `blocked_severity` sjednoceno na `NONE|SOFT|HARD`
@@ -297,6 +301,10 @@ exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation
   - typed parsery avoidance/swarm status payloadu
   - legacy `/obstacle_avoidance/*` publikace je gateovana parametrem
     `publish_legacy_obstacle_topics` (default `false`)
+  - runtime command ingestion rozsiren o command aliasy, envelope payloady a
+    target aliasy
+  - runtime emituje `command_accepted` / `command_rejected` eventy
+  - runtime status ma aditivni ownership/mission feedback pole pro mission layer
 
 ### Overy
 
@@ -315,3 +323,106 @@ exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation
   `AVOIDANCE_EVENT`) v `MSG_DRONE_STATUS`.
 - Po prekroceni `max_deferrals_per_cell` je bunka zmrazena v deferred stavu bez
   samostatneho alert topicu.
+
+## Codex Log — 2026-04-22 (Swarm Agent Ownership Refactor Finalized)
+
+### Finalni smer a stav
+
+- `swarm_agent` se prevadi na mission executor/route provider nad
+  `obstacle_avoidance_runtime`.
+- V teto path nema `swarm_agent` byt PX4 flight-control owner a nema publikovat
+  low-level flight setpointy.
+- `obstacle_avoidance_runtime` je produkcni flight-control owner pro execution,
+  avoidance rozhodovani a navazne replany.
+
+### Potvrzene implementacni body
+
+- `swarm_agent` default backend je `navigation_backend=avoidance_runtime`.
+- V runtime mode je direct PX4 ownership path v `swarm_agent` vypnuta:
+  - zadne PX4 pubs/subs
+  - zadny direct control timer/loop
+- `swarm_agent` pouziva runtime command topic (`target_cmd`) a completion
+  vyhodnocuje z `last_completed_target_id`.
+- Runtime command ingestion podporuje:
+  - command aliasy
+  - envelope payload shape
+  - target aliasy
+- Runtime emituje command lifecycle eventy:
+  - `command_accepted`
+  - `command_rejected`
+- Runtime status je rozsireny o aditivni ownership/mission feedback pole pro
+  nadrazenou mission vrstvu.
+
+### Co je stale otevrene
+
+- Doladeni launch/config defaultu tak, aby runtime backend byl konzistentni
+  default i mimo test harness.
+- Finalni odstraneni stare direct-control cesty az po E2E overeni v plne swarm
+  misi.
+
+## Codex Log — 2026-04-23 (Phase 1 dokončení)
+
+### Kontext
+
+- Cílem bylo uzavřít Phase 1 z roadmapy `scout_ws_e2e_architecture.docx`:
+  "Stable onboard runtime — swarm_agent jako čistý delegátor,
+  obstacle_avoidance_runtime jako jediný flight owner."
+
+### Co bylo provedeno
+
+- `obstacle_avoidance_runtime.py`
+  - přidána `_normalize_target_command_payload()` — normalizace aliasů, envelope
+    payloadů a target aliasů příchozích příkazů
+  - přidána `_publish_command_feedback()` — emituje `command_accepted` /
+    `command_rejected` events do runtime event streamu
+  - `_target_cmd_cb()` přepsán na `TargetCommand.from_payload()` pipeline
+  - přidán `_last_completed_target_ts` — timestamp dokončení targetu
+  - status payload rozšířen o: `mission_feedback_state`, `command_active`,
+    `target_reached` (3s okno), `flight_control_owner`, `execution_owner`
+
+- `swarm_agent.py`
+  - default backend změněn na `navigation_backend=avoidance_runtime`
+  - PX4 publishers/subscribers gateovány za `not self._runtime_backend_active`
+  - timer `_timer_cb` spouštěn pouze v direct backend módu
+  - přidán `_target_cmd_pub` pro high-level příkazy do runtime
+  - přidány runtime stavové proměnné:
+    `_runtime_active_cell_id`, `_runtime_last_completed_target_id`,
+    `_runtime_rth_requested`, `_runtime_return_home_sent`
+  - přidány metody:
+    `_maybe_build_runtime_cmd_locked()`, `_publish_runtime_cmd()`,
+    `_build_runtime_return_home_cmd_locked()`
+  - `CELL_COMPLETE` odvozován z `last_completed_target_id` v runtime statusu
+  - RTH callback posílá runtime command místo přímého PX4 řízení
+  - `mission_ready` callback resetuje runtime stav
+  - guardy pro `None` publishers (`_pub_offboard`, `_pub_setpoint`, `_send_command`)
+
+- `full_e2e_mission.launch.py`
+  - přidány `avoidance_runtime_0` a `avoidance_runtime_1` nodes (spouštěny dříve
+    než swarm agents, s 1s zpoždením)
+  - `swarm_agent_0` a `swarm_agent_1` mají explicitně nastaveno
+    `navigation_backend: avoidance_runtime`
+  - doc string aktualizován — popsány runtimes jako flight owners
+
+- `isaac_e2e_mission.launch.py`
+  - stejné přidání `avoidance_runtime_0` a `avoidance_runtime_1`
+  - `swarm_agent_0` a `swarm_agent_1` s `navigation_backend: avoidance_runtime`
+  - přidána poznámka o depth camera závilosti na `simulation_cam.py`
+
+### Testy
+
+- `23 passed` (test_local_planner, test_avoidance_helpers, test_task_allocator,
+  test_typed_status_payloads, test_local_mapper_scan_pipeline)
+
+### Stav Phase 1
+
+Phase 1 je architektonicky kompletní:
+- `obstacle_avoidance_runtime` = jediný flight owner ve všech launch scénářích
+- `swarm_agent` = čistý delegátor bez PX4 ownership v runtime backend módu
+- direct-control path v `swarm_agent` zachována za backend gate pro přechodovou
+  kompatibilitu — odstraní se po plném E2E ověření
+
+### Co zůstává otevřené pro Phase 2
+
+- Plné live E2E ověření v Gazebo nebo Isaac Sim s runtime backendem
+- Finální odstranění direct-control path po E2E ověření
+- Boundary capture workflow a home pad metadata (Phase 2)

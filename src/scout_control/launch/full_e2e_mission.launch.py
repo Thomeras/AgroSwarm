@@ -8,8 +8,10 @@ Launches all background nodes for the full E2E tilted field spray mission.
     home_manager            — landing pad RTH coordinator
 
   Mission phase (autonomous):
-    swarm_agent drone_0     — autonomous flight, pad NED(10, -8)  [Gz(-8,10)]
-    swarm_agent drone_1     — autonomous flight, pad NED(40, -8)  [Gz(-8,40)]
+    avoidance_runtime_0     — flight owner for drone_0 (arm/takeoff/setpoints/avoidance)
+    avoidance_runtime_1     — flight owner for drone_1
+    swarm_agent drone_0     — mission delegator, forwards targets to avoidance_runtime_0
+    swarm_agent drone_1     — mission delegator, forwards targets to avoidance_runtime_1
     swarm_coordinator       — snake cell assignment, task allocation + dynamic rebalancing
     cell_data_recorder      — JPG snapshot + meta.json per cell visit
     spray_controller        — simulated spray log (spray_log.json)
@@ -95,7 +97,50 @@ def generate_launch_description() -> LaunchDescription:
 
     # ── Mission phase nodes ───────────────────────────────────────────────────
 
-    # 3a. Swarm agent — drone_0 (bare /fmu/in/… topics, pad NED(10, -8))
+    # 3a. Obstacle avoidance runtime — drone_0 (single flight owner)
+    #     Handles arm, takeoff, PX4 setpoints, local avoidance, scan and replanning.
+    #     Receives high-level goto/return_home commands from swarm_agent_0.
+    #     Depth camera not available on this drone model — avoidance runs without
+    #     depth input (flight ownership and mission execution still functional).
+    runtime_0 = TimerAction(
+        period=1.0,
+        actions=[Node(
+            package="scout_control",
+            executable="obstacle_avoidance_runtime",
+            name="avoidance_runtime_0",
+            parameters=[{
+                "drone_id":             0,
+                "default_altitude_m":   altitude,
+                "default_cruise_speed": cruise_speed,
+                "default_clear_dist":   2.5,
+                "home_dist":            1.5,
+                "avoid_offset_m":       3.0,
+            }],
+            output="screen",
+        )],
+    )
+
+    # 3b. Obstacle avoidance runtime — drone_1
+    runtime_1 = TimerAction(
+        period=1.0,
+        actions=[Node(
+            package="scout_control",
+            executable="obstacle_avoidance_runtime",
+            name="avoidance_runtime_1",
+            parameters=[{
+                "drone_id":             1,
+                "default_altitude_m":   altitude,
+                "default_cruise_speed": cruise_speed,
+                "default_clear_dist":   2.5,
+                "home_dist":            1.5,
+                "avoid_offset_m":       3.0,
+            }],
+            output="screen",
+        )],
+    )
+
+    # 3c. Swarm agent — drone_0 (mission delegator, navigation_backend=avoidance_runtime)
+    #     Sends high-level target_cmd to avoidance_runtime_0; does not publish PX4 setpoints.
     #     home_ned_x/y are defaults; updated dynamically via /drone_0/rth_target.
     agent_0 = TimerAction(
         period=2.0,
@@ -104,17 +149,18 @@ def generate_launch_description() -> LaunchDescription:
             executable="swarm_agent",
             name="swarm_agent_0",
             parameters=[{
-                "drone_id":    0,
-                "altitude_m":  altitude,
-                "home_ned_x":  10.0,   # pad_0 NED x — Gz y=10
-                "home_ned_y":  -8.0,   # pad_0 NED y — Gz x=-8
-                "cruise_speed": cruise_speed,
+                "drone_id":               0,
+                "altitude_m":             altitude,
+                "home_ned_x":             10.0,   # pad_0 NED x — Gz y=10
+                "home_ned_y":             -8.0,   # pad_0 NED y — Gz x=-8
+                "cruise_speed":           cruise_speed,
+                "navigation_backend":     "avoidance_runtime",
             }],
             output="screen",
         )],
     )
 
-    # 3b. Swarm agent — drone_1 (/px4_1/fmu/in/… topics, pad NED(40, -8))
+    # 3d. Swarm agent — drone_1 (mission delegator, navigation_backend=avoidance_runtime)
     agent_1 = TimerAction(
         period=2.0,
         actions=[Node(
@@ -122,11 +168,12 @@ def generate_launch_description() -> LaunchDescription:
             executable="swarm_agent",
             name="swarm_agent_1",
             parameters=[{
-                "drone_id":    1,
-                "altitude_m":  altitude,
-                "home_ned_x":  40.0,   # pad_1 NED x — Gz y=40
-                "home_ned_y":  -8.0,   # pad_1 NED y — Gz x=-8
-                "cruise_speed": cruise_speed,
+                "drone_id":               1,
+                "altitude_m":             altitude,
+                "home_ned_x":             40.0,   # pad_1 NED x — Gz y=40
+                "home_ned_y":             -8.0,   # pad_1 NED y — Gz x=-8
+                "cruise_speed":           cruise_speed,
+                "navigation_backend":     "avoidance_runtime",
             }],
             output="screen",
         )],
@@ -306,7 +353,9 @@ def generate_launch_description() -> LaunchDescription:
         # Setup phase
         field_setup,
         home_mgr,
-        # Mission phase
+        # Mission phase — runtimes first, then delegating swarm agents
+        runtime_0,
+        runtime_1,
         agent_0,
         agent_1,
         swarm_coord,
