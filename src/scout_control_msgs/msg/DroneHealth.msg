@@ -1,0 +1,5 @@
+string drone_id
+bool runtime_ready
+bool navigator_ready
+DroneReadiness readiness
+string json_payload

@@ -1,7 +1,7 @@
 name: "Full E2E Mission — Tilted Field"
-description: "Manuální setup pole + swarm spray mise. 2 drony, snake pattern, terrain following, ML interface, cell data recorder."
+description: "Produkční autonomie: obstacle_avoidance_runtime je jediný flight owner; field_setup_tool jen značkuje pady/rohy a nepotvrzuje PX4 setpointy."
 world: "tilted_field"
 ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py"
 extra_terminal_commands:
-  - "ros2 run scout_control manual_controller"
+  - "ros2 run scout_control field_setup_tool"
   - "ros2 run scout_control camera_hud --ros-args -p camera_topic:=/drone_0/camera/image_raw -p pos_topic:=/fmu/out/vehicle_local_position_v1"

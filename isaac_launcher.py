@@ -211,7 +211,7 @@ def _screen_launch_mode(stdscr, default: str) -> Optional[str]:
                 "isaac_only":    "Isaac Sim GUI spustí se v novém terminálu. PX4 nespouštíme.",
                 "isaac_px4":     "PX4 SITL → 20s čekání → Isaac Sim. MAVLink TCP 4560.",
                 "isaac_px4_ros": "PX4 SITL → Isaac Sim → MicroXRCE bridge (port 8888) pro ROS2.",
-                "isaac_e2e":     "PX4 SITL → Isaac Sim → MicroXRCE → ROS2 E2E mise → manual_controller → Swarm Center.",
+                "isaac_e2e":     "PX4 SITL → Isaac Sim → MicroXRCE → ROS2 E2E mise → field_setup_tool → Swarm Center.",
             }
             stdscr.addstr(h - 4, 4, info[_LAUNCH_MODES[sel][0]][:w - 8],
                           curses.color_pair(6) | curses.A_DIM)
@@ -438,10 +438,11 @@ def _launch_isaac_e2e(headless: bool) -> None:
     )
     print(_dim("launch terminál otevřen"))
 
-    print(_step(8, T, "Spouštím manual_controller a Swarm Center..."))
+    print(_step(8, T, "Spouštím field_setup_tool a Swarm Center..."))
     _open_terminal(
-        "manual_controller",
-        f"cd {WS_DIR} && {ros_env} && ros2 run scout_control manual_controller",
+        "field_setup_tool",
+        f"cd {WS_DIR} && {ros_env} && ros2 run scout_control "
+        "field_setup_tool --ros-args -p ui:=False",
     )
     _open_terminal(
         "Swarm Center",
@@ -454,7 +455,7 @@ def _launch_isaac_e2e(headless: bool) -> None:
     _print_px4_hint()
     _print_isaac_hint()
     print(f"{GRY}  ROS2 launch:      isaac_e2e_mission.launch.py{RST}")
-    print(f"{GRY}  Manual control:   manual_controller{RST}")
+    print(f"{GRY}  Setup tool:       field_setup_tool{RST}")
     print(f"{GRY}  GCS:              Swarm Center (1 drone, overlay map){RST}")
     print(f"{YLW}  Další krok:       V Isaac Sim otevři agro_field.usd, nahraj Iris a dej Play ▶{RST}")
 

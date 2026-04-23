@@ -1,4 +1,4 @@
-from scout_control.task_allocator import DroneStatus, TaskAllocator
+from scout_control.utils.task_allocator import DroneStatus, TaskAllocator
 
 
 class _Logger:

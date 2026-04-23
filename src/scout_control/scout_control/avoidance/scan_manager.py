@@ -9,6 +9,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from scout_control.avoidance.depth_projector import DepthProjector
 from scout_control.avoidance.local_mapper import LocalMapper
 from scout_control.avoidance.types import (
     PointBatch,
@@ -22,6 +23,7 @@ from scout_control.avoidance.types import (
 
 SCAN_POINT_MIN_RANGE_M = 0.3
 SCAN_POINT_MAX_RANGE_M = 20.0
+DEFAULT_MAX_SCAN_ARTIFACTS = 20
 
 
 class ScanManager:
@@ -41,6 +43,8 @@ class ScanManager:
         run_log_cb: Callable[[str, Any], None],
         point_min_range_m: float = SCAN_POINT_MIN_RANGE_M,
         point_max_range_m: float = SCAN_POINT_MAX_RANGE_M,
+        depth_encoding: str = "32FC1",
+        max_scan_artifacts: int = DEFAULT_MAX_SCAN_ARTIFACTS,
     ) -> None:
         self._mapper = mapper
         self._assets_dir = Path(assets_dir)
@@ -51,10 +55,18 @@ class ScanManager:
         self._cam_hfov_rad = math.radians(float(cam_hfov_deg))
         self._camera_topic = camera_topic
         self._depth_topic = depth_topic
+        self._depth_encoding = str(depth_encoding)
+        self._max_scan_artifacts = max(1, int(max_scan_artifacts))
         self._point_min_range_m = float(point_min_range_m)
         self._point_max_range_m = float(point_max_range_m)
         self._log_cb = log_cb
         self._run_log_cb = run_log_cb
+        self._projector = DepthProjector(
+            camera_hfov_deg=float(cam_hfov_deg),
+            min_range_m=self._point_min_range_m,
+            max_range_m=self._point_max_range_m,
+            default_stride=self._point_stride,
+        )
 
         self._state = ScanState.IDLE
         self._scan_index = 0
@@ -68,10 +80,17 @@ class ScanManager:
         self._closest_m = 99.0
         self._target_ned = (0.0, 0.0)
         self._last_depth_ts = 0.0
+        self._last_projection_meta: dict[str, Any] = {}
+        self._depth_timestamp_provenance = "unavailable"
         self._point_keys: set[tuple[int, int, int]] = set()
         self._points_world: list[tuple[float, float, float]] = []
         self._best_sectors = {"left": 99.0, "center": 99.0, "right": 99.0}
         self._failure_reason = ""
+
+    def set_camera_info(self, camera_info: Any | None) -> None:
+        """Install CameraInfo intrinsics for subsequent scan captures."""
+
+        self._projector.set_camera_info(camera_info)
 
     @property
     def state(self) -> ScanState:
@@ -103,6 +122,8 @@ class ScanManager:
         self._committed_side = committed_side
         self._target_ned = (float(mission_target_ned[0]), float(mission_target_ned[1]))
         self._last_depth_ts = 0.0
+        self._last_projection_meta = {}
+        self._depth_timestamp_provenance = "unavailable"
         self._point_keys.clear()
         self._points_world = []
         self._best_sectors = {"left": 99.0, "center": 99.0, "right": 99.0}
@@ -189,43 +210,32 @@ class ScanManager:
             return
 
         depth = np.asarray(depth_frame, dtype=np.float32)
-        if depth.ndim < 2:
+        if depth.ndim != 2:
             return
 
-        height, width = depth.shape[:2]
-        cam_fx = (width / 2.0) / math.tan(self._cam_hfov_rad / 2.0)
-        cam_fy = cam_fx
-        cam_cx = width / 2.0
-        cam_cy = height / 2.0
-
-        rows = np.arange(0, height, self._point_stride)
-        cols = np.arange(0, width, self._point_stride)
-        uu, vv = np.meshgrid(cols, rows)
-        d_sub = depth[::self._point_stride, ::self._point_stride]
-        valid = (
-            (d_sub >= self._point_min_range_m)
-            & (d_sub <= self._point_max_range_m)
-            & ~np.isnan(d_sub)
+        body_batch = self._projector.depth_to_body_points(
+            depth,
+            pixel_stride=self._point_stride,
+            stamp_s=float(depth_ts),
+            source="scan_manager_depth",
+            is_dense_scan=True,
+            encoding=self._depth_encoding,
         )
-        if not np.any(valid):
+        self._last_projection_meta = self._projector.last_projection_metadata
+        self._depth_timestamp_provenance = "sensor" if depth_ts > 0.0 else "wall_time"
+        if body_batch.point_count == 0:
             self._last_depth_ts = depth_ts
             return
 
-        d_v = d_sub[valid]
-        u_v = uu[valid].astype(np.float32)
-        v_v = vv[valid].astype(np.float32)
+        world_batch = self._projector.project_to_world_points(
+            body_batch,
+            origin_ned=pose_ned,
+            yaw_rad=float(yaw),
+            ground_z_ned=0.0,
+            source="scan_manager_dense_scan",
+        )
 
-        x_cam = (u_v - cam_cx) * d_v / cam_fx
-        y_cam = (v_v - cam_cy) * d_v / cam_fy
-        z_cam = d_v
-
-        cos_yaw = math.cos(yaw)
-        sin_yaw = math.sin(yaw)
-        wx = pose_ned[0] + z_cam * cos_yaw - x_cam * sin_yaw
-        wy = pose_ned[1] + z_cam * sin_yaw + x_cam * cos_yaw
-        wz = pose_ned[2] + y_cam
-
-        for px, py, pz in zip(wx.tolist(), wy.tolist(), wz.tolist()):
+        for px, py, pz in world_batch.points_xyz.tolist():
             key = (int(round(px * 5.0)), int(round(py * 5.0)), int(round(pz * 5.0)))
             if key in self._point_keys:
                 continue
@@ -376,11 +386,11 @@ class ScanManager:
         scan_dir = self._assets_dir / f"scan_{self._scan_index:03d}_{target_slug}"
         scan_dir.mkdir(parents=True, exist_ok=True)
 
-        point_cloud_path = scan_dir / "scan_cloud.ply"
+        point_cloud_path = scan_dir / "scan_cloud.npz"
         rgb_path = scan_dir / "scan_rgb.png"
         meta_path = scan_dir / "scan_meta.json"
 
-        self._write_point_cloud_ply(point_cloud_path, point_batch.points_xyz)
+        self._write_point_cloud_npz(point_cloud_path, point_batch.points_xyz)
 
         rgb_saved = False
         if rgb_frame is not None:
@@ -412,10 +422,36 @@ class ScanManager:
             point_batch_source=point_batch.source,
             failure_reason=self._failure_reason,
         )
+        meta_payload = meta.as_dict()
+        meta_payload.update(
+            {
+                "artifact_format": "npz",
+                "artifact_retention_max_scans": int(self._max_scan_artifacts),
+                "camera_intrinsics": dict(
+                    self._last_projection_meta.get(
+                        "camera_intrinsics",
+                        self._projector.intrinsics_for_frame(1, 1).as_dict(),
+                    )
+                ),
+                "depth_encoding": self._depth_encoding,
+                "depth_stride": int(self._point_stride),
+                "timestamp_provenance": {
+                    "depth_ts": float(self._last_depth_ts),
+                    "point_batch_stamp_s": float(point_batch.stamp_s),
+                    "source": self._depth_timestamp_provenance,
+                },
+                "topics": {
+                    "camera": self._camera_topic,
+                    "depth": self._depth_topic,
+                },
+                "projection_path": "DepthProjector.depth_to_body_points -> DepthProjector.project_to_world_points",
+            }
+        )
         meta_path.write_text(
-            json.dumps(meta.as_dict(), indent=2, ensure_ascii=True),
+            json.dumps(meta_payload, indent=2, ensure_ascii=True),
             encoding="utf-8",
         )
+        self._prune_scan_artifacts()
 
         return (
             ScanArtifactPaths(
@@ -426,20 +462,34 @@ class ScanManager:
             meta,
         )
 
-    def _write_point_cloud_ply(self, path: Path, points_xyz: np.ndarray) -> None:
+    def _write_point_cloud_npz(self, path: Path, points_xyz: np.ndarray) -> None:
         points = np.asarray(points_xyz, dtype=np.float32)
         if points.size == 0:
             points = np.empty((0, 3), dtype=np.float32)
         else:
             points = points.reshape((-1, 3))
 
-        with path.open("w", encoding="utf-8") as fh:
-            fh.write("ply\n")
-            fh.write("format ascii 1.0\n")
-            fh.write(f"element vertex {points.shape[0]}\n")
-            fh.write("property float x\n")
-            fh.write("property float y\n")
-            fh.write("property float z\n")
-            fh.write("end_header\n")
-            for px, py, pz in points.tolist():
-                fh.write(f"{px:.4f} {py:.4f} {pz:.4f}\n")
+        np.savez_compressed(
+            path,
+            points_xyz=points,
+            frame=np.array("map"),
+            source=np.array("scan_manager_dense_scan"),
+            stamp_s=np.array(float(self._last_depth_ts), dtype=np.float64),
+        )
+
+    def _prune_scan_artifacts(self) -> None:
+        if not self._assets_dir.exists():
+            return
+        scan_dirs = [
+            path for path in self._assets_dir.iterdir()
+            if path.is_dir() and path.name.startswith("scan_")
+        ]
+        scan_dirs.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+        for old_dir in scan_dirs[self._max_scan_artifacts:]:
+            for child in old_dir.iterdir():
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+            try:
+                old_dir.rmdir()
+            except OSError:
+                continue

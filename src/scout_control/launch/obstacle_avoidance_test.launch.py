@@ -1,9 +1,8 @@
 """
-obstacle_avoidance_test.launch.py — Obstacle avoidance test mission.
+obstacle_avoidance_test.launch.py — Obstacle avoidance test harness.
 
 Spusti potrebne nody pro obstacle avoidance test:
   - obstacle_avoidance_runtime  — generic per-drone runtime
-  - obstacle_avoidance_mission  — route provider pro test pad sequence
   - obstacle_viz                — RViz2 marker + PointCloud2 publisher
   - camera_bridge               — Gz Image -> /camera/image_raw
 
@@ -53,23 +52,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    # ── 1. Test route provider ────────────────────────────────────────────────
-    mission_node = Node(
-        package="scout_control",
-        executable="obstacle_avoidance_mission",
-        name="obstacle_avoidance_mission",
-        parameters=[{
-            "altitude_m":      altitude,
-            "cruise_speed":    cruise,
-            "drone_id":        0,
-            "clear_dist":      2.5,
-            "home_dist":       1.5,
-        }],
-        output="screen",
-    )
-
     # ── 2. Obstacle viz (RViz2 marker publisher) ──────────────────────────────
-    #    2s zpoždění: čeká na inicializaci mission_node
     viz_node = TimerAction(
         period=2.0,
         actions=[Node(
@@ -101,7 +84,6 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         alt_arg, speed_arg, world_arg, model_arg,
         runtime_node,
-        mission_node,
         viz_node,
         camera_bridge,
     ])

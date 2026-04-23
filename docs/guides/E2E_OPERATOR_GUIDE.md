@@ -28,29 +28,32 @@ In the launcher:
 
 This opens two terminals:
 - **ROS2 launch terminal** — all background nodes (field_setup_coordinator, swarm_agents, task_allocator, spray_controller, ml_interface, mission_launcher, sensor bridges)
-- **manual_controller terminal** — curses UI for manual drone control
+- **field_setup_tool terminal** — setup-only UI for pad/corner marking and mission confirmation
+
+Flight ownership boundary:
+- `obstacle_avoidance_runtime` is the production flight owner. It arms, takes off and publishes PX4 setpoints.
+- `field_setup_tool` is setup/debug tooling only. It reads PX4 local position and publishes setup topics; it does **not** publish PX4 setpoints or vehicle commands.
+- Legacy manual flight tools are available only through explicit `legacy_*` commands and must not be started together with the production autonomy path unless you are intentionally debugging flight ownership.
 
 ---
 
 ## Step 2 — Set landing pad positions
 
-Both drones spawn near origin. Fly each drone to its designated landing pad.
+Both drones spawn near origin. Move each drone to its designated landing pad using the production runtime/GCS controls for the active autonomy stack. Use `field_setup_tool` only to record the current position.
 
 ### Assign pad_0 (drone_0)
 
-In the manual_controller terminal:
+In the field_setup_tool terminal:
 1. Drone_0 is the active drone by default (shown with `◄`)
-2. Use **W/S/A/D** to fly North/South/West/East
-3. Use **↑/↓** arrows to adjust altitude
-4. Fly drone_0 over the orange landing pad at Gazebo(-8, 10) = NED(10, -8)
-5. Press **H** → pad_0 is assigned and saved
+2. Move drone_0 over the orange landing pad at Gazebo(-8, 10) = NED(10, -8)
+3. Press **H** → pad_0 is assigned and saved
 
 Expected output: `pad_0 set for drone_0: NED(-8.00, 10.00)` *(actual values reflect drone's current position)*
 
 ### Assign pad_1 (drone_1)
 
 1. Press **Tab** → switch active drone to drone_1 (shown with `◄`)
-2. Fly drone_1 over the blue landing pad at Gazebo(-8, 40) = NED(40, -8)
+2. Move drone_1 over the blue landing pad at Gazebo(-8, 40) = NED(40, -8)
 3. Press **J** → pad_1 is assigned and saved
 
 Expected output: `pad_1 set for drone_1: NED(-8.00, 40.00)`
@@ -61,10 +64,10 @@ Expected output: `pad_1 set for drone_1: NED(-8.00, 40.00)`
 
 ## Step 3 — Map the field corners (drone_0 only)
 
-Switch back to drone_0 (**Tab**) and fly it to each of the 4 field corners.
+Switch back to drone_0 (**Tab**) and move it to each of the 4 field corners using the production runtime/GCS controls.
 
 For each corner:
-1. Fly drone_0 over the corner location at cruising altitude (~5 m)
+1. Move drone_0 over the corner location at cruising altitude (~5 m)
 2. Press **C** → corner submenu appears: `[1]NE  [2]NW  [3]SE  [4]SW`
 3. Press the number for the current corner (1/2/3/4)
 4. Confirm the flash message: `Corner NE marked at x=… y=…`
@@ -90,16 +93,16 @@ The status line shows progress: `MAP_FIELD — corners marked: 3/4 (NE, NW, SW)`
 Once drone_0 has landed on pad_0, the mission starts automatically.
 
 **Alternatively**, if you want to start immediately (before drone_0 lands):
-- Press **M** in manual_controller → confirms mission start immediately
+- Press **M** in field_setup_tool → confirms mission start immediately
 
 At this point:
 - `/swarm/mission_ready` is published
 - `task_allocator` assigns grid cells in snake pattern to both drones
 - Both drones execute their sectors autonomously (TAKEOFF → ROTATE → CRUISE → RTH)
 - `spray_controller` logs each sprayed cell to `spray_log.json`
-- manual_controller goes **passive** (stops publishing offboard setpoints so swarm_agents take over)
+- `field_setup_tool` remains passive because it never published offboard setpoints
 
-Status message: `Mission started — swarm agents are flying. Press Q to quit.`
+Status message: `Mission confirmed`
 
 ---
 
@@ -172,24 +175,38 @@ MISSION COMPLETE
 Drones are returning to home pads. Shutting down.
 ```
 
-Press **Q** in manual_controller to exit.
+Press **Q** in field_setup_tool to exit.
 
 ---
 
-## Key controls (manual_controller)
+## Key controls (field_setup_tool)
 
 | Key | Action |
 |-----|--------|
-| W/S | Fly North/South |
-| A/D | Fly West/East |
-| ↑/↓ | Altitude up/down |
 | Tab | Switch active drone (drone_0 ↔ drone_1) |
 | H | Assign current drone_0 position as pad_0 |
 | J | Assign current drone_1 position as pad_1 |
 | C | Corner marking submenu → 1=NE 2=NW 3=SE 4=SW |
 | M | Confirm mission start immediately |
-| L | Land active drone |
-| Q | Quit manual_controller |
+| Q | Quit field_setup_tool |
+
+## Legacy/debug manual flight tools
+
+Use these only for isolated debugging or old manual workflows. They publish PX4 setpoints/commands and are not part of the production autonomy path:
+
+```bash
+ros2 run scout_control legacy_manual_controller
+ros2 run scout_control legacy_manual_commander
+ros2 run scout_control legacy_field_commander
+ros2 run scout_control legacy_perimeter_flight
+ros2 run scout_control legacy_terrain_follower
+```
+
+The obstacle-avoidance route provider is also explicit test harness tooling:
+
+```bash
+ros2 launch scout_control obstacle_avoidance_test.launch.py
+```
 
 ---
 
@@ -204,7 +221,7 @@ Press **Q** in manual_controller to exit.
 - swarm_agent has a 20-second TAKEOFF timeout safety net
 
 **field_setup_coordinator stuck in IDLE**
-- Ensure manual_controller terminal is running
+- Ensure field_setup_tool terminal is running
 - Press H with drone_0 over pad_0, then J (Tab first) with drone_1 over pad_1
 
 **task_allocator won't start mission**

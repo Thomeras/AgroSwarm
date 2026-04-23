@@ -8,28 +8,28 @@ Tento dokument shrnuje hlavni ROS2 nody a souvisejici runtime entrypointy v proj
 1. SCOUT_CONTROL ROS2 NODY
 ==================================================
 
-position_monitor
+archived legacy_position_monitor
 Jednoduchy debug node, ktery jen odposloucha PX4 lokalni pozici a vypisuje ji do logu. Hodi se hlavne pro rychlou kontrolu, ze PX4->ROS2 telemetrie opravdu tece a dava rozumne hodnoty.
 
-offboard_control
+archived legacy_offboard_control
 Zakladni offboard letovy test, ktery dron provede po pevne dane trajektorii waypointu. Je to spis minimalni demonstrator arm/offboard/setpoint pipeline nez vyssi mise logika.
 
-perimeter_flight
+archived legacy_perimeter_flight
 Autonomne obleti obvod pole, uklada GPS log a publikuje perimeter do ROS topicu. Slouzi jako krok pro ziskani obrysu pole pred generovanim gridu pro dalsi misi.
 
 grid_generator
 Nacte perimeter nebo vytvori synteticke simulacni pole a z nej vygeneruje kartesky grid bunek. Vysledek uklada do `field_grid.json` a publikuje i jako `OccupancyGrid`, aby nad nim mohly pracovat dalsi casti systemu.
 
-field_commander
+archived legacy_field_commander
 Interaktivni curses commander, ve kterem operator vybira bunky gridu a posila na ne dron. Zaroven sleduje stav bunek v realnem case a umi je pri ukonceni ulozit zpet do JSONu.
 
-terrain_follower
+archived legacy_terrain_follower
 Offboard controller pro drzeni konstantni vysky nad terenem podle downward lidaru. Horizont drzi na miste a vertikalni osu ridi z lidarove chyby, takze funguje i tam, kde neni spolehliva absolutni vyska z EKF.
 
 home_manager
 Spravuje prirazeni home padu dronum a koordinuje RTH cile pro roj. Nacte `home_positions.json`, publikuje stav padu a pri RTH requestu posila konkretnimu dronu jeho cilovy pad v NED.
 
-manual_commander
+archived legacy_manual_commander
 Rucni WSAD commander pro mapovani obvodu pole a zaznamenani home padu jednim dronem. Operator s nim muze nasbirat rohy pole, ulozit perimeter a pripravit data pro dalsi kroky workflow.
 
 camera_hud
@@ -50,8 +50,11 @@ Simuluje postrikovou logiku tak, ze po dokoncenych bunkach publikuje prikaz s da
 cell_data_recorder
 Pasivni recorder pro ML data, ktery na `CELL_COMPLETE` udalost ulozi snapshot bunky. Typicky uklada obraz z kamery a metadata o dronu, bunce a NED pozici do adresarove struktury pro trening nebo analyzu.
 
-manual_controller
-Rozsireny manualni controller pro dva drony v E2E field setupu. Krome rucniho rizeni umi zapisovat pady, rohy pole a potvrdit pripravenost mise do topicu pro dalsi orchestrace.
+field_setup_tool
+Setup-only node pro E2E field setup. Cte PX4 lokalni pozice a publikuje pady, rohy pole a potvrzeni mise, ale neregistruje PX4 setpoint ani vehicle-command publishery.
+
+archived legacy_manual_controller
+Rozsireny manualni controller pro dva drony v E2E field setupu. Je to explicitni debug/manual flight owner, ktery publikuje PX4 offboard setpointy a nema byt implicitni soucasti produkcni autonomie.
 
 field_setup_coordinator
 Orchestrace pripravy pole pred samotnou misi, od pad assignmentu az po grid ready stav. Sbira rohy, uklada home pozice, generuje grid a nakonec publikuje, ze system je pripraven ke startu mise.
@@ -59,13 +62,13 @@ Orchestrace pripravy pole pred samotnou misi, od pad assignmentu az po grid read
 mission_launcher
 Trigger node, ktery po `mission_ready` vystreli signal startu swarm mise a nasledne loguje jeji prubeh. Sam o sobe nealokuje tasky ani neridi drony, ale spojuje setup cast s vykonnou casti mise.
 
-obstacle_detector
+archived legacy_obstacle_detector
 Legacy standalone obstacle detector pro depth kameru, ktery vytvari sektorove informace a jednoduchou occupancy mapu prekazek. Aktualne je uz jeho hlavni role sloucena do `obstacle_avoidance_runtime`, ale porad je uzitecny pro izolovany debug a porovnani.
 
 obstacle_avoidance_runtime
 Obecna per-drone runtime node pro obstacle avoidance, ktera drzi detection, scan, lokalni detour logiku a PX4 offboard setpointy. Mission-specific cile ji neprislusi a dostava je zvenku pres `/{drone_ns}/avoidance/target_cmd`, takze muze bezet pro libovolny dron i libovolnou misi.
 
-obstacle_avoidance_mission
+archived obstacle_avoidance_test_mission
 Tato node uz neni obecny avoidance controller, ale jen route provider pro konkretni testovaci misi. Posila do runtime sequence `goto/return_home/land` prikazu a sleduje completion pres status topic.
 
 obstacle_viz
@@ -117,4 +120,4 @@ Akumuluje lehkou height/depth mapu z downward depth framu a telemetrie dronu. Je
 
 Pro obecny obstacle avoidance flow je ted hlavni dvojice `obstacle_avoidance_runtime` + libovolny route provider. To znamena, ze detail mise typu "let na X, Y, Z" ma zustat mimo runtime a muze byt v samostatne node nebo pozdeji ve `swarm_center`.
 
-Ve `scout_control` jsou vedle produkcnich nodu i debug a operatorske utility. To je v poradku, ale pri dalsim uklidu dava smysl drzet oddelene produkcni runtime nody, vizualizacni tooling a jednorazove test helpery.
+Ve `scout_control` jsou vedle produkcnich nodu i archivovane debug/manual zdrojaky. Produkcni flight owner je `obstacle_avoidance_runtime`; setup tooling (`field_setup_tool`) nesmi publikovat PX4 setpointy a legacy/manual flight nody zustavaji ve zdrojovem stromu jen jako archiv, nejsou instalovane jako `console_scripts`.

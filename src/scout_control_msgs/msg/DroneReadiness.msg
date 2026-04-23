@@ -1,0 +1,11 @@
+bool ready
+bool navigation_allowed
+bool setpoint_publish_allowed
+bool pose_valid
+bool depth_ready
+bool owner_conflict
+string reason
+string severity
+float32 pose_age_s
+float32 depth_age_s
+string json_payload

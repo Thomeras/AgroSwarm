@@ -57,6 +57,30 @@ class SafetyDiskZone:
             "status": self.status,
         }
 
+    def to_planner_mask_payload(self) -> dict[str, Any]:
+        hard_radius = max(0.0, float(self.radius_m))
+        soft_radius = max(hard_radius, float(self.soft_radius_m))
+        return {
+            "zone_id": self.zone_id,
+            "source": "peer_track",
+            "drone_id": int(self.drone_id),
+            "center_ned": [float(self.center_ned[0]), float(self.center_ned[1])],
+            "hard_radius_m": hard_radius,
+            "soft_radius_m": soft_radius,
+            "weight": 1.0,
+            "age_s": max(0.0, float(self.age_s)),
+            "status": self.status,
+        }
+
+    @property
+    def is_finite(self) -> bool:
+        return (
+            math.isfinite(float(self.center_ned[0]))
+            and math.isfinite(float(self.center_ned[1]))
+            and math.isfinite(float(self.radius_m))
+            and math.isfinite(float(self.soft_radius_m))
+        )
+
 
 class PeerTrackStore:
     """Keep short peer history and derive planner safety disks."""
@@ -285,3 +309,26 @@ class PeerTrackStore:
             )
 
         return zones
+
+    def build_planner_mask_payload(
+        self,
+        *,
+        now_s: float | None = None,
+        exclude_drone_id: int | None = None,
+        lookahead_s: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return sanitized peer no-go disks ready for planner-mask rasterization."""
+
+        payloads: list[dict[str, Any]] = []
+        for zone in self.build_safety_disks(
+            now_s=now_s,
+            exclude_drone_id=exclude_drone_id,
+            lookahead_s=lookahead_s,
+        ):
+            if not zone.is_finite:
+                continue
+            payload = zone.to_planner_mask_payload()
+            if payload["soft_radius_m"] <= 0.0:
+                continue
+            payloads.append(payload)
+        return payloads

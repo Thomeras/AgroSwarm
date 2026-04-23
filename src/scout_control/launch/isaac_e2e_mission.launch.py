@@ -24,7 +24,7 @@ Nodes launched here (ROS2 side):
   Setup phase:
     field_setup_coordinator — IDLE→ASSIGN_PADS→MAP_FIELD→GENERATE_GRID→READY
     home_manager            — landing pad RTH coordinator
-    manual_controller       — headless backend for Swarm Center manual tab
+    field_setup_tool        — setup-only pad/corner/mission-confirm bridge
 
   Mission phase:
     avoidance_runtime_0     — flight owner for drone_0 (arm/takeoff/setpoints/avoidance)
@@ -39,7 +39,8 @@ Nodes launched here (ROS2 side):
 
   NOTE: No lidar or camera bridges — sensor data comes from Isaac Sim directly.
   obstacle_avoidance_runtime consumes /drone_N/depth/image_raw from simulation_cam.py
-  for obstacle detection. Without depth, runtime still handles flight ownership.
+  for obstacle detection. With the default safety gate, active navigation waits
+  until fresh depth is available.
 
   Camera: if Isaac Sim is configured to publish /drone_N/camera/image_raw
   and /drone_N/depth/image_raw,
@@ -55,7 +56,8 @@ Override defaults:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -131,15 +133,15 @@ def generate_launch_description() -> LaunchDescription:
         )],
     )
 
-    manual_ctrl = TimerAction(
+    field_setup_tool = TimerAction(
         period=2.0,
         actions=[Node(
             package="scout_control",
-            executable="manual_controller",
-            name="manual_controller",
+            executable="field_setup_tool",
+            name="field_setup_tool",
             parameters=[{
-                "altitude": altitude,
                 "ui": False,
+                "reject_origin_pad": False,
             }],
             output="screen",
         )],
@@ -151,8 +153,8 @@ def generate_launch_description() -> LaunchDescription:
 
     # Obstacle avoidance runtime — drone_0 (single flight owner)
     # Consumes /drone_0/depth/image_raw published by Pegasus_scenarios/simulation_cam.py.
-    # Without depth data (before simulation_cam.py is run), runtime still handles
-    # arm/takeoff/flight — avoidance detection inactive until depth arrives.
+    # Runtime keeps the default depth readiness gate: no fresh depth means no
+    # active navigation.
     runtime_0 = TimerAction(
         period=1.0,
         actions=[Node(
@@ -174,6 +176,7 @@ def generate_launch_description() -> LaunchDescription:
     # Obstacle avoidance runtime — drone_1 (only if drone_count=2)
     runtime_1 = TimerAction(
         period=1.0,
+        condition=IfCondition(PythonExpression(["int('", drone_count, "') >= 2"])),
         actions=[Node(
             package="scout_control",
             executable="obstacle_avoidance_runtime",
@@ -211,6 +214,7 @@ def generate_launch_description() -> LaunchDescription:
     # drone_1 — only useful when a second Pegasus vehicle is configured
     agent_1 = TimerAction(
         period=2.0,
+        condition=IfCondition(PythonExpression(["int('", drone_count, "') >= 2"])),
         actions=[Node(
             package="scout_control",
             executable="swarm_agent",
@@ -320,7 +324,7 @@ def generate_launch_description() -> LaunchDescription:
         # Setup phase
         field_setup,
         home_mgr,
-        manual_ctrl,
+        field_setup_tool,
         # Mission phase — runtimes first, then delegating swarm agents
         runtime_0,
         runtime_1,

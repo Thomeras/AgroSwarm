@@ -28,6 +28,8 @@ ROS2 → Swarm Center (published by gcs_bridge):
   MSG_DRONE_STATUS
     data: {drone_id, status:"READY"|"CELL_COMPLETE", cell_id?}
     From /swarm/drone_status (event-driven)
+    Avoidance runtime status is typed inside ROS2 and re-serialized here as:
+    {drone_id, status:"AVOIDANCE_STATUS", avoidance_status:{...}}
 
   MSG_MISSION_READY
     data: {drones: [drone_id, ...]}
@@ -107,8 +109,8 @@ MSG_DEPTH_FRAME        = "depth_frame"     # {drone_id, seq, data_b64, width, he
 MSG_CAMERA_INFO        = "camera_info"     # {drone_id, width, height, k}
 MSG_CAMERA_CONTROL     = "camera_control"  # GCS→ROS2: {drone_id|"all", enabled, fps_limit}
 
-# Protocol version — bump when an incompatible change is made.
-BRIDGE_VERSION = "1.2"
+# Protocol version — wire format stays JSON; 1.3 documents typed ROS internals.
+BRIDGE_VERSION = "1.3"
 
 # Default endpoint (localhost-only)
 DEFAULT_HOST = "127.0.0.1"

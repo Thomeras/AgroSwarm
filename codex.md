@@ -426,3 +426,30 @@ Phase 1 je architektonicky kompletní:
 - Plné live E2E ověření v Gazebo nebo Isaac Sim s runtime backendem
 - Finální odstranění direct-control path po E2E ověření
 - Boundary capture workflow a home pad metadata (Phase 2)
+
+## Codex Log — 2026-04-24 (Phase 1 Final — Architecture & Safety)
+
+### Kontext
+- Finalizace Phase 1: "Stable onboard runtime".
+- Vyřešení zbývajících findingů F1-F15 (topic kontrakty, legacy cleanup, health gates).
+
+### Co bylo provedeno
+- **`telemetry_hub.py`**: Vytvořen centrální registr všech ROS2 topiců. Všechny nody přepojeny na tento hub.
+- **`RuntimeHealthMonitor`**: Implementováno hlídání EKF zdraví (heading, reset counters, dead reckoning) a stale sensor dat. Runtime nyní bezpečně gateuje setpointy.
+- **`LocalPlanner`**: Přidána pojistka proti plánování nad nevalidní/prázdnou mapou.
+- **Legacy Cleanup**:
+  - `setup.py` už neinstaluje legacy flight nody (`offboard_control`, `terrain_follower`, atd.).
+  - Scénáře YAML přepnuty na "archived" notice.
+- **Isaac Sim Multi-drone**:
+  - `isaac_e2e_mission.launch.py` nyní korektně spawnuje runtime/agent nody jen pro existující drony.
+- **Typed Readiness**: Opraven parsing nested readiness payloadů (depth.ready, depth.age_s).
+
+### Výsledky
+- **Phase 1 DONE**: `obstacle_avoidance_runtime` je jediný flight owner.
+- **TelemetryHub**: Jediné místo pro správu topiců a HW kontraktů.
+- **Bezpečnost**: Systém rozpozná výpadek sensorů/EKF a zastaví navigaci místo havárie.
+
+### Co dál (Phase 2)
+- Live E2E swarm mise v simulaci pro ověření souhry všech nových komponent.
+- Nástroje pro sběr perimetru a metadata pro home pady.
+- Postupné mazání `navigation_backend=direct` kódu ze `swarm_agent`.

@@ -44,6 +44,8 @@ class LocalMapperConfig:
 class LocalClearanceSummary:
     state: LocalMapperState
     stamp_s: float
+    valid_for_planning: bool
+    validity_reason: str
     closest_m: float
     forward_m: float
     left_m: float
@@ -59,6 +61,9 @@ class LocalMapperSnapshot:
     state: LocalMapperState
     stamp_s: float
     age_s: float
+    valid_for_planning: bool
+    validity_reason: str
+    observed_cell_count: int
     resolution_m: float
     width: int
     height: int
@@ -102,6 +107,8 @@ class LocalMapper:
         self._blocked_layer = np.zeros(shape, dtype=np.float32)
 
         self._last_sensor_stamp = 0.0
+        self._last_nonempty_insert_stamp = 0.0
+        self._last_validity_reason = "empty_no_sensor_input"
         self._last_decay_stamp = 0.0
         self._recent_batches: deque[dict[str, Any]] = deque(maxlen=max(1, int(self._config.max_batches)))
         self._dense_scan_voxels: dict[tuple[int, int, int], tuple[float, float, float]] = {}
@@ -124,6 +131,8 @@ class LocalMapper:
         self._latest_summary = LocalClearanceSummary(
             state=LocalMapperState.EMPTY,
             stamp_s=0.0,
+            valid_for_planning=False,
+            validity_reason="empty_no_sensor_input",
             closest_m=99.0,
             forward_m=99.0,
             left_m=99.0,
@@ -161,6 +170,7 @@ class LocalMapper:
         points = np.asarray(batch.points_xyz, dtype=np.float32)
         if points.size == 0:
             self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+            self._last_validity_reason = "degraded_empty_point_batch"
             self._recent_batches.append(
                 {
                     "stamp_s": float(batch.stamp_s),
@@ -172,6 +182,8 @@ class LocalMapper:
             return 0
 
         if not self._origin_ready:
+            self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+            self._last_validity_reason = "degraded_origin_not_ready"
             return 0
 
         self._decay_layers(batch.stamp_s)
@@ -182,6 +194,8 @@ class LocalMapper:
             & np.isfinite(points[:, 2])
         )
         if not np.any(valid):
+            self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+            self._last_validity_reason = "degraded_invalid_points"
             return 0
         points = points[valid]
 
@@ -191,6 +205,8 @@ class LocalMapper:
             & (rel_z <= self._config.collision_band_max_m)
         )
         if not np.any(in_band):
+            self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+            self._last_validity_reason = "degraded_points_outside_collision_band"
             return 0
         points = points[in_band]
 
@@ -198,6 +214,8 @@ class LocalMapper:
         gy = np.floor((points[:, 1] - self._origin_y) / self._resolution).astype(np.int32)
         in_bounds = (gx >= 0) & (gx < self._width) & (gy >= 0) & (gy < self._height)
         if not np.any(in_bounds):
+            self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+            self._last_validity_reason = "degraded_points_outside_local_grid"
             return 0
         gx = gx[in_bounds]
         gy = gy[in_bounds]
@@ -220,6 +238,11 @@ class LocalMapper:
                 self._dense_scan_voxels[voxel] = (float(px[0]), float(px[1]), float(px[2]))
 
         self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+        self._last_nonempty_insert_stamp = max(
+            self._last_nonempty_insert_stamp,
+            float(batch.stamp_s),
+        )
+        self._last_validity_reason = "tracking"
         self._recent_batches.append(
             {
                 "stamp_s": float(batch.stamp_s),
@@ -287,6 +310,7 @@ class LocalMapper:
 
         occupancy = np.clip(self._fast_layer + self._scan_layer, 0.0, 1.5)
         occupied = occupancy >= self._config.obstacle_threshold
+        observed_cell_count = int(np.count_nonzero(occupancy > 1e-4))
 
         inflation = np.zeros_like(occupancy, dtype=np.float32)
         occ_y, occ_x = np.nonzero(occupied)
@@ -319,10 +343,18 @@ class LocalMapper:
         )
         age_s = 0.0 if self._last_sensor_stamp <= 0.0 else max(0.0, ref - self._last_sensor_stamp)
         state = self._resolve_state(ref)
+        valid_for_planning, validity_reason = self._resolve_validity(
+            ref,
+            state=state,
+            observed_cell_count=observed_cell_count,
+        )
         snapshot = LocalMapperSnapshot(
             state=state,
             stamp_s=ref,
             age_s=age_s,
+            valid_for_planning=valid_for_planning,
+            validity_reason=validity_reason,
+            observed_cell_count=observed_cell_count,
             resolution_m=self._resolution,
             width=self._width,
             height=self._height,
@@ -348,11 +380,20 @@ class LocalMapper:
 
     def summary(self) -> dict[str, Any]:
         return {
-            "state": self.state.name,
+            "state": self._latest_summary.state.name,
+            "valid_for_planning": bool(self._latest_summary.valid_for_planning),
+            "validity_reason": self._latest_summary.validity_reason,
             "dense_scan_points": int(len(self._dense_scan_voxels)),
             "recent_batches": list(self._recent_batches),
             "last_ingest_ts": round(float(self._last_sensor_stamp), 3),
+            "last_nonempty_insert_ts": round(float(self._last_nonempty_insert_stamp), 3),
         }
+
+    def peer_planner_mask_payload(self, *, now_s: float | None = None) -> list[dict[str, Any]]:
+        """Return current peer safety disks in planner-mask payload format."""
+
+        ref = time.time() if now_s is None else float(now_s)
+        return self._peer_store.build_planner_mask_payload(now_s=ref)
 
     def world_to_grid(self, x: float, y: float) -> tuple[int | None, int | None]:
         if not self._origin_ready:
@@ -396,6 +437,8 @@ class LocalMapper:
             return LocalClearanceSummary(
                 state=snapshot.state,
                 stamp_s=snapshot.stamp_s,
+                valid_for_planning=snapshot.valid_for_planning,
+                validity_reason=snapshot.validity_reason,
                 closest_m=99.0,
                 forward_m=99.0,
                 left_m=99.0,
@@ -436,6 +479,8 @@ class LocalMapper:
         return LocalClearanceSummary(
             state=snapshot.state,
             stamp_s=snapshot.stamp_s,
+            valid_for_planning=snapshot.valid_for_planning,
+            validity_reason=snapshot.validity_reason,
             closest_m=closest_m,
             forward_m=forward_m,
             left_m=left_m,
@@ -452,6 +497,26 @@ class LocalMapper:
         if (float(ref) - self._last_sensor_stamp) > self._config.stale_after_s:
             return LocalMapperState.STALE_INPUT
         return LocalMapperState.TRACKING
+
+    def _resolve_validity(
+        self,
+        ref: float,
+        *,
+        state: LocalMapperState,
+        observed_cell_count: int,
+    ) -> tuple[bool, str]:
+        if state == LocalMapperState.EMPTY:
+            return False, "empty_no_sensor_input"
+        if state == LocalMapperState.STALE_INPUT:
+            age_s = max(0.0, float(ref) - float(self._last_sensor_stamp))
+            return False, f"stale_input_age_{age_s:.2f}s"
+        if not self._origin_ready:
+            return False, "degraded_origin_not_ready"
+        if observed_cell_count <= 0:
+            return False, self._last_validity_reason or "degraded_no_observed_obstacle_cells"
+        if self._last_nonempty_insert_stamp <= 0.0:
+            return False, "degraded_no_inserted_points"
+        return True, "tracking"
 
     def _recenter_grid(self) -> None:
         desired_origin_x = self._pose_x - 0.5 * self._width * self._resolution
@@ -562,6 +627,9 @@ class LocalMapper:
             state=LocalMapperState.EMPTY,
             stamp_s=0.0,
             age_s=0.0,
+            valid_for_planning=False,
+            validity_reason="empty_no_sensor_input",
+            observed_cell_count=0,
             resolution_m=self._resolution,
             width=self._width,
             height=self._height,

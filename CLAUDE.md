@@ -96,7 +96,7 @@ Tyto komponenty jsou dnes nejbliz aktualni produkcni / operatorni ceste:
 - `field_setup_coordinator.py`
 - `grid_generator.py`
 - `home_manager.py`
-- `swarm_agent.py`
+- `swarm_agent.py` (Default: `navigation_backend=avoidance_runtime`)
 - `swarm_coordinator.py`
 - `mission_launcher.py`
 - `gcs_bridge.py`
@@ -104,28 +104,29 @@ Tyto komponenty jsou dnes nejbliz aktualni produkcni / operatorni ceste:
 - `cell_data_recorder.py`
 - `ml_interface.py`
 
-### Runtime-Centric Obstacle Avoidance Branch
+### Runtime-Centric Obstacle Avoidance Branch (Phase 1 Finalized)
 
-Nova avoidance architektura je rozdelena takto:
+Nova avoidance architektura je stabilizovana jako cilovy flight-control model:
 
 - `obstacle_avoidance_runtime.py`
-  - vlastni obstacle detection pipeline
-  - lokalni mapu
-  - scan / replanning
+  - **Autoritativni Flight Owner**
+  - Vlastni obstacle detection pipeline
+  - Lokalni mapu, scan / replanning
   - PX4 offboard setpoint publishing
-  - status topic `/{drone_ns}/avoidance/status`
+- `avoidance/telemetry_hub.py`
+  - **Centralni Topic Registry** (Single source of truth pro vsechny ROS2 topicy)
 - `avoidance/depth_projector.py`
-  - depth frame -> body/world point batches
+  - Depth frame -> body/world point batches (unified path)
 - `avoidance/local_mapper.py`
-  - rolling obstacle memory a clearance summary
+  - Rolling obstacle memory a clearance summary
 - `avoidance/local_planner.py`
-  - direct path / detour / blocked rozhodovani
+  - Rejekce nevalidnich map, detour / blocked rozhodovani
 - `avoidance/scan_manager.py`
   - 360 scan orchestrace a scan body points
 - `avoidance/peer_tracks.py`
-  - safety zony ostatnich dronu
+  - Safety zony ostatnich dronu
 - `avoidance/types.py`
-  - sdilene datove typy a payload normalizace
+  - Sdilene datove typy, readiness parsery a payload normalizace
 
 Soucasny conceptual split:
 

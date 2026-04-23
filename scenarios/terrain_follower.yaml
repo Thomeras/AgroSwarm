@@ -1,3 +1,3 @@
-name: "Terrain Follower"
-description: "Terrain following pomoci downward lidar (standalone, 1 dron). Vyzaduje bezici lidar_bridge scenar."
-ros2_command: "ros2 run scout_control terrain_follower --ros-args -p desired_height:=3.0"
+name: "Archived Legacy Terrain Follower"
+description: "Archived/source-only debug flight node. Production terrain following is owned by obstacle_avoidance_runtime AltitudeController."
+ros2_command: "python3 -c \"raise SystemExit('Archived legacy node: not installed. See src/scout_control/scout_control/legacy/terrain_follower.py')\""

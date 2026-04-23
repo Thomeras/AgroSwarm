@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+import json
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Mapping
@@ -48,6 +49,95 @@ def _xyz_tuple(value: Any) -> tuple[float, float, float] | None:
 
 def _xy_list(values: list[tuple[float, float]]) -> list[list[float]]:
     return [[float(x), float(y)] for x, y in values]
+
+
+def _safe_json(payload: Mapping[str, Any]) -> str:
+    return json.dumps(dict(payload), ensure_ascii=True, separators=(",", ":"))
+
+
+def _payload_from_msg(msg: Any) -> dict[str, Any]:
+    raw = getattr(msg, "json_payload", "")
+    if raw:
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _finite_or_default(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def target_command_to_msg(command: "TargetCommand", msg: Any | None = None) -> Any:
+    """Fill a scout_control_msgs/TargetCommand-like object from a TargetCommand."""
+
+    if msg is None:
+        msg = type("TargetCommandMsg", (), {})()
+    payload = command.to_payload()
+    msg.command = command.command
+    msg.target_id = command.target_id
+    msg.cmd_id = command.cmd_id or command.target_id
+    msg.route_id = command.route_id
+    msg.name = command.name
+    msg.frame = command.frame
+    msg.target_ned = [] if command.target_ned is None else [
+        float(command.target_ned[0]),
+        float(command.target_ned[1]),
+    ]
+    msg.altitude_mode = command.altitude_mode
+    msg.altitude_m = float(command.altitude_m)
+    msg.cruise_speed_mps = float(command.cruise_speed_mps)
+    msg.acceptance_radius_m = float(command.acceptance_radius_m)
+    msg.clear_radius_m = float(command.clear_radius_m)
+    msg.allow_replan = bool(command.allow_replan)
+    msg.max_blocked_time_s = float(command.max_blocked_time_s)
+    msg.priority = command.priority
+    msg.source = command.source
+    msg.stamp_ms = int(command.stamp_ms)
+    msg.json_payload = _safe_json(payload)
+    return msg
+
+
+def target_command_from_msg(msg: Any) -> "TargetCommand":
+    """Create TargetCommand from a generated ROS message or compatible object."""
+
+    payload = _payload_from_msg(msg)
+    if not payload:
+        target_ned = list(getattr(msg, "target_ned", []) or [])
+        payload = {
+            "command": getattr(msg, "command", "goto"),
+            "target_id": getattr(msg, "target_id", ""),
+            "cmd_id": getattr(msg, "cmd_id", ""),
+            "route_id": getattr(msg, "route_id", ""),
+            "name": getattr(msg, "name", ""),
+            "frame": getattr(msg, "frame", "local_ned"),
+            "altitude_mode": getattr(msg, "altitude_mode", "relative_ned"),
+            "altitude_m": _finite_or_default(getattr(msg, "altitude_m", 5.0), 5.0),
+            "cruise_speed_mps": _finite_or_default(
+                getattr(msg, "cruise_speed_mps", 2.5), 2.5
+            ),
+            "acceptance_radius_m": _finite_or_default(
+                getattr(msg, "acceptance_radius_m", 1.5), 1.5
+            ),
+            "clear_radius_m": _finite_or_default(getattr(msg, "clear_radius_m", 2.5), 2.5),
+            "allow_replan": bool(getattr(msg, "allow_replan", True)),
+            "max_blocked_time_s": _finite_or_default(
+                getattr(msg, "max_blocked_time_s", 30.0), 30.0
+            ),
+            "priority": getattr(msg, "priority", "mission"),
+            "source": getattr(msg, "source", ""),
+            "stamp_ms": int(getattr(msg, "stamp_ms", 0) or 0),
+        }
+        if len(target_ned) >= 2:
+            payload["target_ned"] = [target_ned[0], target_ned[1]]
+    return TargetCommand.from_payload(payload)
 
 
 @dataclass(slots=True)
@@ -534,6 +624,162 @@ class AvoidanceStatus:
         }
         payload.update(self.extras)
         return payload
+
+
+def readiness_payload_to_msg(payload: Mapping[str, Any], msg: Any | None = None) -> Any:
+    """Fill a DroneReadiness-like message from RuntimeReadiness.to_payload()."""
+
+    if msg is None:
+        msg = type("DroneReadinessMsg", (), {})()
+    pose = payload.get("pose", {}) if isinstance(payload.get("pose"), Mapping) else {}
+    depth = payload.get("depth", {}) if isinstance(payload.get("depth"), Mapping) else {}
+    msg.ready = bool(payload.get("ready", False))
+    msg.navigation_allowed = bool(payload.get("navigation_allowed", False))
+    msg.setpoint_publish_allowed = bool(payload.get("setpoint_publish_allowed", False))
+    msg.pose_valid = bool(pose.get("valid", payload.get("pose_valid", False)))
+    msg.depth_ready = bool(depth.get("ready", payload.get("depth_ready", False)))
+    msg.owner_conflict = bool(payload.get("owner_conflict", False))
+    msg.reason = str(payload.get("reason", ""))
+    msg.severity = str(payload.get("severity", ""))
+    msg.pose_age_s = _finite_or_default(pose.get("age_s", payload.get("pose_age_s", 0.0)))
+    msg.depth_age_s = _finite_or_default(depth.get("age_s", payload.get("depth_age_s", 0.0)))
+    msg.json_payload = _safe_json(payload)
+    return msg
+
+
+def readiness_msg_to_payload(msg: Any) -> dict[str, Any]:
+    payload = _payload_from_msg(msg)
+    if payload:
+        return payload
+    return {
+        "ready": bool(getattr(msg, "ready", False)),
+        "navigation_allowed": bool(getattr(msg, "navigation_allowed", False)),
+        "setpoint_publish_allowed": bool(
+            getattr(msg, "setpoint_publish_allowed", False)
+        ),
+        "reason": str(getattr(msg, "reason", "")),
+        "severity": str(getattr(msg, "severity", "")),
+        "depth_ready": bool(getattr(msg, "depth_ready", False)),
+        "depth_age_s": _finite_or_default(getattr(msg, "depth_age_s", 0.0)),
+        "owner_conflict": bool(getattr(msg, "owner_conflict", False)),
+        "pose": {
+            "valid": bool(getattr(msg, "pose_valid", False)),
+            "age_s": _finite_or_default(getattr(msg, "pose_age_s", 0.0)),
+        },
+    }
+
+
+def avoidance_status_to_msg(
+    status: "AvoidanceStatus", msg: Any | None = None, *, drone_id: str = ""
+) -> Any:
+    """Fill a scout_control_msgs/AvoidanceStatus-like message."""
+
+    if msg is None:
+        msg = type("AvoidanceStatusMsg", (), {})()
+    payload = status.to_payload()
+    readiness_payload = payload.get("readiness", {})
+    if not isinstance(readiness_payload, Mapping):
+        readiness_payload = {}
+    msg.drone_id = drone_id or str(payload.get("drone_id", ""))
+    msg.phase = status.phase
+    msg.state = status.state
+    msg.result = status.result
+    msg.command = str(payload.get("command", ""))
+    msg.target_id = status.target_id
+    msg.target_name = str(payload.get("target_name", payload.get("mission_name", "")))
+    msg.target_ned = [] if status.target_ned is None else list(status.target_ned)
+    msg.subgoal_ned = [] if status.subgoal_ned is None else list(status.subgoal_ned)
+    msg.drone_ned = [] if status.drone_ned is None else list(status.drone_ned)
+    msg.target_active = bool(payload.get("target_active", payload.get("command_active", False)))
+    msg.navigator_ready = bool(payload.get("navigator_ready", False))
+    msg.runtime_ready = bool(payload.get("runtime_ready", False))
+    if hasattr(msg, "readiness"):
+        readiness_payload_to_msg(readiness_payload, msg.readiness)
+    if hasattr(msg, "health"):
+        health_payload = payload.get("health", readiness_payload)
+        if not isinstance(health_payload, Mapping):
+            health_payload = readiness_payload
+        msg.health.drone_id = msg.drone_id
+        msg.health.runtime_ready = msg.runtime_ready
+        msg.health.navigator_ready = msg.navigator_ready
+        if hasattr(msg.health, "readiness"):
+            readiness_payload_to_msg(health_payload, msg.health.readiness)
+        msg.health.json_payload = _safe_json(health_payload)
+    msg.px4_input_ownership_json = _safe_json(
+        payload.get("px4_input_ownership", {})
+        if isinstance(payload.get("px4_input_ownership"), Mapping)
+        else {}
+    )
+    msg.altitude_policy_json = _safe_json(
+        payload.get("altitude_policy", {})
+        if isinstance(payload.get("altitude_policy"), Mapping)
+        else {}
+    )
+    msg.avoidance_active = bool(status.avoidance_active)
+    msg.obstacle_warn = bool(payload.get("obstacle_warn", False))
+    msg.obstacle_critical = bool(payload.get("obstacle_critical", False))
+    msg.obstacle_closest_m = _finite_or_default(payload.get("obstacle_closest_m", 99.0), 99.0)
+    msg.free_directions = [str(x) for x in payload.get("free_directions", []) or []]
+    msg.planner_mode = status.planner_mode
+    msg.planner_state = str(payload.get("planner_state", ""))
+    msg.scan_state = status.scan_state
+    msg.scan_active = bool(status.scan_active)
+    msg.mapper_state = str(payload.get("mapper_state", ""))
+    msg.local_map_age_s = _finite_or_default(payload.get("local_map_age_s", 0.0))
+    msg.dense_scan_points = int(payload.get("dense_scan_points", 0) or 0)
+    msg.blocked_reason = status.blocked_reason
+    msg.blocked_severity = status.blocked_severity
+    msg.reassign_recommended = bool(status.reassign_recommended)
+    msg.blocked_since_s = _finite_or_default(payload.get("blocked_since_s", 0.0))
+    msg.target_reached = bool(payload.get("target_reached", False))
+    msg.last_completed_target_id = str(payload.get("last_completed_target_id", ""))
+    msg.last_completed_target_name = str(payload.get("last_completed_target_name", ""))
+    msg.json_payload = _safe_json(payload)
+    return msg
+
+
+def avoidance_status_from_msg(msg: Any) -> "AvoidanceStatus":
+    payload = _payload_from_msg(msg)
+    if not payload:
+        payload = {
+            "phase": getattr(msg, "phase", "UNKNOWN"),
+            "state": getattr(msg, "state", getattr(msg, "phase", "UNKNOWN")),
+            "result": getattr(msg, "result", "ACTIVE"),
+            "command": getattr(msg, "command", ""),
+            "target_id": getattr(msg, "target_id", ""),
+            "target_name": getattr(msg, "target_name", ""),
+            "target_ned": list(getattr(msg, "target_ned", []) or []) or None,
+            "subgoal_ned": list(getattr(msg, "subgoal_ned", []) or []) or None,
+            "drone_ned": list(getattr(msg, "drone_ned", []) or []) or None,
+            "target_active": bool(getattr(msg, "target_active", False)),
+            "navigator_ready": bool(getattr(msg, "navigator_ready", False)),
+            "runtime_ready": bool(getattr(msg, "runtime_ready", False)),
+            "avoidance_active": bool(getattr(msg, "avoidance_active", False)),
+            "obstacle_warn": bool(getattr(msg, "obstacle_warn", False)),
+            "obstacle_critical": bool(getattr(msg, "obstacle_critical", False)),
+            "obstacle_closest_m": _finite_or_default(
+                getattr(msg, "obstacle_closest_m", 99.0), 99.0
+            ),
+            "free_directions": list(getattr(msg, "free_directions", []) or []),
+            "planner_mode": getattr(msg, "planner_mode", "NONE"),
+            "planner_state": getattr(msg, "planner_state", ""),
+            "scan_state": getattr(msg, "scan_state", "IDLE"),
+            "scan_active": bool(getattr(msg, "scan_active", False)),
+            "mapper_state": getattr(msg, "mapper_state", ""),
+            "local_map_age_s": _finite_or_default(getattr(msg, "local_map_age_s", 0.0)),
+            "dense_scan_points": int(getattr(msg, "dense_scan_points", 0) or 0),
+            "blocked_reason": getattr(msg, "blocked_reason", ""),
+            "blocked_severity": getattr(msg, "blocked_severity", "NONE"),
+            "reassign_recommended": bool(getattr(msg, "reassign_recommended", False)),
+            "blocked_since_s": _finite_or_default(getattr(msg, "blocked_since_s", 0.0)),
+            "target_reached": bool(getattr(msg, "target_reached", False)),
+            "last_completed_target_id": getattr(msg, "last_completed_target_id", ""),
+            "last_completed_target_name": getattr(msg, "last_completed_target_name", ""),
+        }
+        if hasattr(msg, "readiness"):
+            payload["readiness"] = readiness_msg_to_payload(msg.readiness)
+            payload["health"] = payload["readiness"]
+    return AvoidanceStatus.from_payload(payload)
 
 
 @dataclass(slots=True)

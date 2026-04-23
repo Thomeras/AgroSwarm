@@ -24,9 +24,9 @@ Launches all background nodes for the full E2E tilted field spray mission.
     camera_bridge drone_0   — Gz Image     → /drone_0/camera/image_raw
     camera_bridge drone_1   — Gz Image     → /drone_1/camera/image_raw
 
-  NOTE: manual_controller is NOT launched here — it requires a real TTY for
-  the curses UI. It is opened in a separate terminal via extra_terminal_commands
-  in scenarios/full_e2e_mission.yaml.
+  NOTE: field_setup_tool is opened in a separate terminal via
+  extra_terminal_commands in scenarios/full_e2e_mission.yaml. It does not
+  publish PX4 setpoints; obstacle_avoidance_runtime remains the flight owner.
 
 World: tilted_field (5° slope + terrain bump, 2 landing pads outside field boundary)
   pad_0: Gazebo ENU(-8, 10) = NED(10, -8)
@@ -100,8 +100,8 @@ def generate_launch_description() -> LaunchDescription:
     # 3a. Obstacle avoidance runtime — drone_0 (single flight owner)
     #     Handles arm, takeoff, PX4 setpoints, local avoidance, scan and replanning.
     #     Receives high-level goto/return_home commands from swarm_agent_0.
-    #     Depth camera not available on this drone model — avoidance runs without
-    #     depth input (flight ownership and mission execution still functional).
+    #     This Gazebo model does not publish depth, so depth gating is explicitly
+    #     disabled for this simulation-only tilted-field mission.
     runtime_0 = TimerAction(
         period=1.0,
         actions=[Node(
@@ -115,6 +115,8 @@ def generate_launch_description() -> LaunchDescription:
                 "default_clear_dist":   2.5,
                 "home_dist":            1.5,
                 "avoid_offset_m":       3.0,
+                "require_depth_for_navigation": False,
+                "altitude_policy_mode": "TerrainFollow",
             }],
             output="screen",
         )],
@@ -134,6 +136,8 @@ def generate_launch_description() -> LaunchDescription:
                 "default_clear_dist":   2.5,
                 "home_dist":            1.5,
                 "avoid_offset_m":       3.0,
+                "require_depth_for_navigation": False,
+                "altitude_policy_mode": "TerrainFollow",
             }],
             output="screen",
         )],

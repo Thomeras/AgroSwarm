@@ -89,16 +89,12 @@ ros2 run scout_control obstacle_avoidance_runtime --ros-args \
 ```
 
 
-TERMINAL 6 — obstacle avoidance mission (route provider)
+TERMINAL 6 — route provider
 ---------------------------------------
 ```bash
-cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 run scout_control obstacle_avoidance_mission --ros-args \
-  -p drone_id:=0 \
-  -p altitude_m:=5.0 \
-  -p cruise_speed:=2.5
+# Legacy obstacle_avoidance_mission is archived source-only and is no longer
+# installed as a scout_control console script. Publish typed/JSON target_cmd
+# messages from swarm_agent, Swarm Center, or a temporary external test node.
 ```
 
 Poznamka:
@@ -110,7 +106,7 @@ Poznamka:
   - dela depth obstacle detection
   - dela scan / detour / PX4 offboard rizeni
   - prijima route cile zvenci pres `/drone_N/avoidance/target_cmd`
-- `obstacle_avoidance_mission` uz jen publikuje testovaci route / pady pro runtime
+- archivovany `obstacle_avoidance_mission` uz neni instalovany jako entrypoint
 - mise se po kazdem clearu vraci zpet na `home` pad a teprve potom leti na dalsi
   mission pad
 - aktualni avoidance scan dela:
@@ -151,8 +147,7 @@ ros2 run scout_control gimbal_cam_viz --ros-args \
 CO CEKAT PRI TESTU
 ------------------
 - `obstacle_avoidance_runtime` bere depth z `/drone_0/depth/image_raw`
-- `obstacle_avoidance_mission` provadi 4 testovaci prulety smerem na prekazky
-  jako externi route provider
+- route provider musi publikovat cile na `/drone_0/avoidance/target_cmd`
 - pri `warn` zpomaluje
 - pri `critical` planuje bocni detour
 - po projeti detour bodu pokracuje na puvodni target

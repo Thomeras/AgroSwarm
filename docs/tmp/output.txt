@@ -1,0 +1,483 @@
+SCOUT WS - NODE AUDIT
+Date: 2026-04-22
+Workspace: scout_ws
+Scope: audit vsech ROS2 nodu v src/scout_control/scout_control, porovnani s aktualni architekturou v docs
+
+======================================================================
+1. EXECUTIVE SUMMARY
+======================================================================
+
+Repo uz ma docela citelnou architekturu a v docs je pomerne jasne definovany cil:
+- mission vrstva ma rozhodovat o tom "kam"
+- runtime / avoidance vrstva ma rozhodovat o tom "jak se tam bezpecne dostat"
+- UI, debug a operator tooling nema lezet v produkcni flight-control ceste
+
+Nejvetsi realne nesoulady, ktere dnes v kodu vidim:
+
+1. System je silne zavisly na `std_msgs/String` + JSON payloads.
+   To je videt skoro vsude: `swarm_agent`, `swarm_coordinator`, `field_setup_coordinator`,
+   `mission_launcher`, `home_manager`, `gcs_bridge`, `spray_controller`, `cell_data_recorder`,
+   `ml_interface`, `obstacle_avoidance_runtime`, `obstacle_avoidance_mission`.
+   Dlouhodobe to zhorsuje typovou bezpecnost, validaci a kompatibilitu QoS i verzovani payloadu.
+
+2. `swarm_agent` stale neni cisty "mission executor / route provider", ale porad umi byt
+   flight-control owner a ma vlastni avoidance / terrain-following logiku.
+   To je v primem napeti s cilovou architekturou popsanou v `docs/plans/update_plans.txt`.
+   Konkretne je to videt uz v hlavicce a publishers na PX4 v
+   `src/scout_control/scout_control/swarm_agent.py:13-27` a `:219-232`.
+
+3. `obstacle_avoidance_runtime` je produkcne spravny smer, ale stale je to velmi velky orchestrator.
+   Ma 1504 radku, desitky parametru a drzi najednou state machine, PX4 offboard, perception,
+   local mapping, planning, scan lifecycle i logging. Interni moduly uz vznikly, ale node samotny
+   je stale "god object". Viz `src/scout_control/scout_control/obstacle_avoidance_runtime.py:149-191`.
+
+4. Nektere nody maji spravnou roli, ale duplicitu odpovednosti:
+   - `field_setup_coordinator` si grid generuje sam, prestoze existuje `grid_generator`
+   - `manual_commander`, `manual_controller`, `field_commander`, `offboard_control`,
+     `terrain_follower` a cast `swarm_agent` vsechny resi vlastni PX4 offboard loop
+   - `home_manager` a `manual_controller` oba pracuji s RTH/pad assignment flow
+
+5. Tooling/debug nody jsou zdrave jako reference, ale jsou ulozene ve stejnem runtime baliku
+   jako produkcni core. To dnes neblokuje vyvoj, ale casem to ztezi launch composition,
+   ownership i onboarding.
+
+======================================================================
+2. SYSTEMOVE SLABINY
+======================================================================
+
+A. Typed messages chybi tam, kde uz system prerostl experiment fazi
+- Dnes to jeste funguje, ale mezivrstva mezi nodama je krehka.
+- Chybi schema, validace, discovery, autocomplete i jasna migrace payloadu.
+- Nejvic bych typoval:
+  - `/swarm/drone_status`
+  - `/swarm/task_status`
+  - `/swarm/rth_request`
+  - `/swarm/mission_ready`
+  - `/{drone_ns}/avoidance/target_cmd`
+  - `/{drone_ns}/avoidance/status`
+  - `/swarm/pad_assignment`
+  - `/field/setup_complete`
+
+B. Prilis mnoho flight-control owneru
+- Dnes umi primo publikovat do PX4 minimalne:
+  `offboard_control`, `perimeter_flight`, `field_commander`, `manual_commander`,
+  `manual_controller`, `terrain_follower`, `swarm_agent`, `obstacle_avoidance_runtime`.
+- To je hodne na jeden workspace.
+- Doporuceni: explicitne oznacit jen dva povolene production ownery:
+  1. `obstacle_avoidance_runtime`
+  2. pripadne minimalisticky fallback / test owner
+
+C. Nekonzistentni lifecycle nodu
+- `grid_generator` spousti hlavni praci primo v `__init__` (`grid_generator.py:42-64`).
+- `mission_launcher` ukoncuje proces pres `raise SystemExit(0)` z timeru (`mission_launcher.py:151-156`).
+- Nektere UI nody maji `curses` nebo `cv2.imshow` a vlastni thread model.
+- To je rozumne u tooling nodu, ale je dobre to jasne oddelit od production path.
+
+D. Hardcoded drone topology
+- Nektere nody jsou uz parametrictejsi (`swarm_coordinator`, `field_setup_coordinator`, `gcs_bridge`).
+- Jine porad predpokladaji konkretne `drone_0` a `drone_1`, napr. `cell_data_recorder.py:64-74`
+  nebo workflow kolem `manual_controller`.
+- Pokud ma roj rust, tohle zacne bolet.
+
+E. Prilis mnoho domacich protokolu a topic conventions
+- Misi, UI, GCS bridge a avoidance cast propojuji vlastni JSON protokoly a topic naming.
+- Neni to spatne jako mezikrok, ale chce to zapsat jako oficialni kontrakty a postupne typovat.
+
+======================================================================
+3. NODE-BY-NODE HODNOCENI
+======================================================================
+
+Legenda:
+- KEEP = role je v poradku, staci drobne upravy
+- REFACTOR = role je spravna, ale implementace nebo hranice odpovednosti chce upravit
+- TOOLING = uzitecne, ale nema byt v produkcni ceste
+- DEPRECATE = drzet jen docasne / reference / test harness
+
+1. `obstacle_avoidance_runtime` - REFACTOR, ale zustava production core
+- Plus:
+  - odpovida cilove architekture, mission target prijima zvenci
+  - uz pouziva interni moduly `depth_projector`, `local_mapper`, `local_planner`, `scan_manager`
+- Slabe:
+  - je prilis velky a nese moc odpovednosti najednou
+  - ma prilis mnoho parametru a stavu v jednom objektu
+  - porad pouziva JSON prikazy a JSON status rozhrani
+- Co upravit:
+  - vytahnout command/status schema do typed msgs nebo aspon central parser layer
+  - oddelit phase machine, PX4 publisher adapter a ROS IO adapter do samostatnych trid
+  - zmenit node z "god object" na tenky orchestrator
+
+2. `swarm_agent` - REFACTOR, architektonicky nejdulezitejsi dluh
+- Plus:
+  - jako mission executor dava smysl
+  - umi frontu bunek, report progressu a vazbu na swarm vrstvu
+- Slabe:
+  - stale primo publikuje PX4 commandy (`swarm_agent.py:219-228`)
+  - drzi vlastni avoidance, terrain-following a direct navigation logiku (`:109-124`, `:191-217`)
+  - je prilis velky (1071 radku)
+- Co upravit:
+  - dotahnout ho do role route provideru nad `obstacle_avoidance_runtime`
+  - nechat mu jen mission state, cell queue, reporting a high-level command generation
+  - odstranit z nej direct PX4 owner path po stabilizaci runtime
+
+3. `field_setup_coordinator` - REFACTOR, role spravna, hranice ne
+- Plus:
+  - jasny stavovy automat
+  - dobra orchestrace setup workflow
+- Slabe:
+  - dela i generovani gridu, i kdyz na to existuje `grid_generator`
+  - velka cast komunikace je String JSON
+- Co upravit:
+  - delegovat grid generation do `grid_generator` nebo sdilene service/library
+  - ponechat si jen setup orchestration a readiness gating
+
+4. `grid_generator` - KEEP/REFACTOR
+- Plus:
+  - dela jednu vec a dela ji celkem ciste
+  - single-shot charakter je rozumny
+- Slabe:
+  - prace se spousti uz v `__init__` (`grid_generator.py:42-64`)
+  - vedle node-like chovani tu je i cisty batch job
+- Co upravit:
+  - presunout hlavni beh do explicitni `run()` volane z `main()`
+  - udelat z jadra cistou knihovni funkci, aby ji mohly pouzit `field_setup_coordinator` i testy
+
+5. `home_manager` - KEEP
+- Plus:
+  - role je uzka a srozumitelna
+  - umi startup load i dynamicke pad assignmenty
+- Slabe:
+  - stale JSON-over-String u requestu a home state
+  - cast workflow znalosti o pad assignmentu je rozprostrena i v `manual_controller`
+- Co upravit:
+  - ztyped messages pro RTH/pad assignment
+  - zvazit, zda `home_manager` nema byt jediny vlastnik stavu padu
+
+6. `swarm_coordinator` - KEEP/REFACTOR
+- Plus:
+  - dobre drzi allocator mimo ROS2 vrstvu
+  - role wrapperu kolem `TaskAllocator` sedi
+- Slabe:
+  - stale serializuje vse pres JSON payloady
+  - umi i manual override flow, cimz se mu trochu siri boundary
+- Co upravit:
+  - ponechat jako ROS adapter nad allocator knihovnou
+  - typed status / next-cell payload
+  - zapsat, zda `cell_override` patri sem, nebo uz do samostatne operator vrstvy
+
+7. `gcs_bridge` - KEEP/REFACTOR
+- Plus:
+  - uzka a rozumna alternativa k rosbridge
+  - ma jasne komentovanou QoS kompatibilitu
+- Slabe:
+  - je to druhy protokol nad existujicim ROS protokolem
+  - thread + socket + camera encoding + command dispatch v jednom nodu
+  - 724 radku uz je dost na bridge vrstvu
+- Co upravit:
+  - oddelit transport, serialization a ROS adapter
+  - formalizovat wire protocol verzi a compat strategii
+  - zvazit samostatny package mimo `scout_control` core
+
+8. `mission_launcher` - KEEP, ale je skoro zbytecne tenky
+- Plus:
+  - dela jednoduchy trigger
+- Slabe:
+  - je to hlavne glue node nad JSON eventy
+  - shutdown pres `SystemExit` z timeru neni moc cisty lifecycle
+- Co upravit:
+  - bud ho nechat opravdu minimalisticky
+  - nebo jeho logiku absorbovat do vyssi orchestrace / GCS
+
+9. `spray_controller` - KEEP
+- Plus:
+  - uzka odpovednost
+  - funguje jako dobry adapter na pozdejsi ML vrstvu
+- Slabe:
+  - po kazdem eventu prepise cely JSON log (`spray_controller.py:116-120`, `:183-185`)
+  - stale String JSON protocol
+- Co upravit:
+  - append-friendly log format nebo rotace
+  - typovana zprava pro spray command/event
+
+10. `cell_data_recorder` - KEEP/REFACTOR
+- Plus:
+  - jasna role
+  - per-drone topics a TTL kontrola jsou spravne
+- Slabe:
+  - hardcoded jen pro `drone_0` a `drone_1` (`cell_data_recorder.py:64-74`)
+  - zapisuje synchronne pri eventu
+- Co upravit:
+  - parametrizovat drony a topic templates
+  - zvazit frontu / async writer pokud poroste objem dat
+
+11. `ml_interface` - TOOLING/PLACEHOLDER
+- Plus:
+  - uzitecny placeholder pro integraci
+- Slabe:
+  - neni to realna ML vrstva, ale dummy generator
+  - vypada jako produkcni node, i kdyz je jen simulacni stub
+- Co upravit:
+  - jasne ho oznacit jako `mock_ml_interface` nebo `ml_stub`
+  - drzet mimo produkcni launch defaulty
+
+12. `obstacle_avoidance_mission` - DEPRECATE jako production path, KEEP jako test harness
+- Plus:
+  - dobre oddeluje mission test od runtime
+- Slabe:
+  - je to test harness a nema byt bran jako produkcni node
+- Co upravit:
+  - drzet jen pro obstacle test scenare
+  - jasne v docs oznacit jako test-only
+
+13. `obstacle_detector` - DEPRECATE z production path
+- Plus:
+  - porad uzitecny pro izolovany debug a srovnani perception
+- Slabe:
+  - logika uz je koncepcne absorbovana do runtime
+  - hrozi dalsi divergence heuristik
+- Co upravit:
+  - nechat jen debug/reference
+  - nepokracovat v rozvoji produkcni funkcionality zde
+
+14. `obstacle_viz` - TOOLING
+- Plus:
+  - dobra ladici hodnota
+- Slabe:
+  - nema byt v runtime ceste
+- Co upravit:
+  - nechat jako RViz tooling
+  - klidne presunout do debug/tools oblasti
+
+15. `gimbal_cam_viz` - TOOLING
+- Plus:
+  - uzitecny operatorsky nahled
+- Slabe:
+  - UI, cv2 loop a ROS node v jednom
+- Co upravit:
+  - nechat jako tooling
+  - neplest ho do produkcni autonomie
+
+16. `camera_hud` - TOOLING
+- Plus:
+  - prakticke pro operatora
+- Slabe:
+  - opet mix OpenCV UI + ROS callback vrstvy
+- Co upravit:
+  - nechat mimo production path
+
+17. `manual_controller` - TOOLING/REFACTOR
+- Plus:
+  - pro field setup dava velkou operacni hodnotu
+  - umi dva drony a dobre resi operator workflow
+- Slabe:
+  - je velmi velky (911 radku)
+  - kombinuje UI, PX4 direct control, setup eventy, pad assignment, RTH publisher i mission confirm
+- Co upravit:
+  - rozdelit minimalne na:
+    - manual flight backend
+    - setup workflow publisher
+    - curses UI
+  - ponechat jen jako operator tool
+
+18. `manual_commander` - TOOLING, spis starsi workflow
+- Plus:
+  - jednoducha a srozumitelna utility
+- Slabe:
+  - prekryva se s `manual_controller`
+  - z pohledu dnesni architektury je to starsi jednodeonovy workflow
+- Co upravit:
+  - bud ho nechat jako light single-drone tool
+  - nebo casem sloucit / nahradit `manual_controller`
+
+19. `field_commander` - TOOLING, ale funkcne tezky
+- Plus:
+  - operator-friendly grid ovladani
+- Slabe:
+  - 884 radku
+  - obsahuje vlastni PX4 offboard loop a curses UI
+  - architektonicky je to bokem vedle swarm/autonomy cesty
+- Co upravit:
+  - nechat jako specializovany operator/debug tool
+  - nesdilet flight-control logiku copy-paste s dalsimi nody
+
+20. `terrain_follower` - TOOLING/REFERENCE
+- Plus:
+  - dobra referencni implementace altitude policy
+- Slabe:
+  - neni integrovany do hlavni production path
+  - je to dalsi direct PX4 owner
+- Co upravit:
+  - drzet jako reference nebo zdroj pro policy uvnitr runtime
+  - ne jako dalsi rovnocenny production node
+
+21. `perimeter_flight` - TOOLING/SETUP
+- Plus:
+  - uzka role a pouzitelny setup krok
+- Slabe:
+  - dalsi samostatny offboard owner
+  - workflow se casti prekryva s manual setup cestou
+- Co upravit:
+  - rozhodnout, zda oficialni setup je manualni mapovani nebo perimeter flight
+  - podle toho ho nechat jako primary nebo debug path
+
+22. `offboard_control` - TOOLING/REFERENCE
+- Plus:
+  - dobry minimalni PX4 test
+- Slabe:
+  - nema byt soucast produkcni architektury
+- Co upravit:
+  - nechat jako reference smoke test node
+
+23. `position_monitor` - TOOLING
+- Plus:
+  - trivialni, uzitecny smoke test
+- Slabe:
+  - nema dalsi architektonickou roli
+- Co upravit:
+  - nic zasadniho, jen drzet jako debug utilitu
+
+======================================================================
+4. KTERE NODY JSOU DNES ARCHITEKTONICKY NEJPROBLEMOVEJSI
+======================================================================
+
+1. `swarm_agent`
+- nejvetsi nesoulad mezi docs a implementaci
+- ma byt mission vrstva, ale stale umi byt flight-control vrstva
+
+2. `obstacle_avoidance_runtime`
+- spravny smer, ale potrebuje druhou vlnu rozdeleni odpovednosti
+
+3. `manual_controller`
+- vysoky coupling UI + control + setup orchestration
+
+4. `field_setup_coordinator`
+- orchestrace + business pravidla + grid generation v jednom
+
+5. `gcs_bridge`
+- uzitecny, ale protokolove i implementacne roste do velkeho integracniho bodu
+
+======================================================================
+5. DOPORUCENE KROKY PODLE PRIORITY
+======================================================================
+
+P0 - nejvyssi navratnost
+1. Dokoncit prechod `swarm_agent` na cisty mission/route-provider model nad `obstacle_avoidance_runtime`.
+2. Zavest typed messages aspon pro swarm/avoidance core kontrakty.
+3. Udelat z `obstacle_avoidance_runtime` tenky orchestrator a vytahnout z nej dalsi adapter vrstvy.
+
+P1
+4. Oddelit operator/debug tooling od produkcnich nodu aspon dokumentacne a launchi, idealne i strukturou baliku.
+5. Prestat duplikovat grid generation mezi `field_setup_coordinator` a `grid_generator`.
+6. Parametrizovat nody, ktere jsou dnes tvrde navazane na `drone_0` / `drone_1`.
+
+P2
+7. Sjednotit lifecycle patterny:
+   - single-shot nodes
+   - graceful shutdown
+   - timer ownership
+   - background thread policy
+8. Zapsat oficialni topic contracts a naming conventions do jedne centralni docs stranky.
+
+======================================================================
+6. NAVRH CILOVE KATEGORIZACE NODU
+======================================================================
+
+Production core:
+- `obstacle_avoidance_runtime`
+- `swarm_agent`
+- `swarm_coordinator`
+- `field_setup_coordinator`
+- `grid_generator`
+- `home_manager`
+- `mission_launcher`
+- `spray_controller`
+- `cell_data_recorder`
+- `gcs_bridge`
+
+Production-support / setup:
+- `perimeter_flight`
+
+Tooling / operator / debug:
+- `manual_controller`
+- `manual_commander`
+- `field_commander`
+- `camera_hud`
+- `gimbal_cam_viz`
+- `obstacle_viz`
+- `position_monitor`
+- `offboard_control`
+- `terrain_follower`
+- `obstacle_detector`
+- `obstacle_avoidance_mission`
+- `ml_interface`
+
+======================================================================
+7. ZAVER
+======================================================================
+
+Zaklad projektu je dobry a docs uz dnes popisuji rozumnou cilovou architekturu.
+Problem neni, ze by nody byly nahodne navrzene; problem je spis to, ze jste uprostred
+prechodu mezi starsim "kazdy node si dela vic veci sam" stylem a novejsim rozdelenim
+na mission vrstvu, runtime safety vrstvu a tooling.
+
+Kdybych mel vybrat jednu hlavni osu dalsiho uklidu, byla by to tato:
+
+`swarm_agent` = jen mission executor
+`obstacle_avoidance_runtime` = jediny production flight-control owner
+typed msgs = misto dalsiho sireni JSON-over-String
+
+Tohle podle me prinese nejvetsi architektonicke vycisteni bez toho, aby se rozbila
+prakticka pouzitelnost systemu.
+
+======================================================================
+8. UPDATE 2026-04-22 - SWARM_AGENT / RUNTIME REFACTOR STATUS
+======================================================================
+
+Od puvodniho auditu uz probehl dulezity refaktor kolem `swarm_agent` a
+`obstacle_avoidance_runtime`.
+
+Aktualni stav:
+
+1. `swarm_agent` je prakticky prepnuty na runtime-first model
+- default `navigation_backend=avoidance_runtime`
+- v runtime backendu se nespousti direct PX4 ownership vetev
+- `swarm_agent` posila high-level commandy do `/{drone}/avoidance/target_cmd`
+- dokoncenou bunku odvozuje z runtime feedbacku, konkretne z `last_completed_target_id`
+
+2. `obstacle_avoidance_runtime` je posilen jako execution owner
+- robustnejsi ingestion commandu
+- lepsi tolerance na aliasy command / envelope / target payloadu
+- nove additive eventy:
+  - `command_accepted`
+  - `command_rejected`
+- rozsiren `avoidance/status` o additive mission-feedback pole:
+  - owner
+  - execution state
+  - feedback state
+
+3. Dokumentace byla prubezne synchronizovana
+- `CLAUDE.md` aktualizovan podle runtime-first modelu
+- `codex.md` aktualizovan podle noveho rozdeleni odpovednosti
+
+Co je timto uz architektonicky splneno:
+- `swarm_agent` uz neni hlavni preferovany flight-control owner
+- `obstacle_avoidance_runtime` je pro tuto execution path povazovan za produkcniho ownera
+- hlavni zlom ve smeru "mission provider -> runtime executor" uz probehl
+
+Co je zatim prechodove:
+- `navigation_backend=direct` stale existuje jako fallback kompatibilita
+- stara direct-control logika je v `swarm_agent.py` jeste fyzicky pritomna
+- pro runtime backend je ale odpojena a neni primarni cestou
+
+Co jeste zbyva do uplneho dokonceni:
+1. odstranit legacy `direct` backend ze `swarm_agent`
+2. udelat launch/config cleanup, aby `avoidance_runtime` byl konzistentni default ve vsech scenarich
+3. potvrdit full E2E swarm mission flow pred definitivnim smazanim stare direct vetve
+
+Overeni po integraci:
+- `pytest`: 23 passed
+- `py_compile` pro `swarm_agent.py` a `obstacle_avoidance_runtime.py` proslo
+
+Dopad na puvodni audit:
+- puvodni hodnoceni `swarm_agent` jako nejdulezitejsiho architektonickeho dluhu bylo spravne
+- nejvetsi cast tohoto dluhu uz byla zmensena
+- dalsi krok uz neni "velky redesign", ale dokonceni cleanupu a odstraneni legacy fallback cesty

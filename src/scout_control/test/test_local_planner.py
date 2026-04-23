@@ -91,6 +91,29 @@ def test_local_planner_returns_no_path_when_wall_closes_map() -> None:
     assert result.failure_reason
 
 
+def test_local_planner_refuses_stale_or_unready_map() -> None:
+    planner = LocalPlanner()
+    grid = _make_grid()
+    stale_grid = LocalGridSnapshot(
+        occupancy=grid.occupancy,
+        resolution_m=grid.resolution_m,
+        origin_x=grid.origin_x,
+        origin_y=grid.origin_y,
+        state="STALE_INPUT",
+        valid_for_planning=False,
+        validity_reason="stale_input_age_2.00s",
+    )
+
+    result = planner.plan(
+        grid=stale_grid,
+        start=PlannerPose(0.0, 0.0),
+        mission_target=PlannerTarget(6.0, 0.0),
+    )
+
+    assert result.status == PlannerResultStatus.NO_PATH
+    assert result.failure_reason == "stale_input_age_2.00s"
+
+
 def test_local_planner_returns_blocked_when_start_cell_is_occupied() -> None:
     planner = LocalPlanner()
     grid = _make_grid()

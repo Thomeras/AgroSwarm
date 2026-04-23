@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from scout_control.avoidance.depth_projector import DepthProjector
+from scout_control.avoidance.depth_projector import CameraIntrinsics, DepthProjector
 from scout_control.avoidance.peer_tracks import PeerTrackStore
 from scout_control.avoidance.types import PointBatch, TargetCommand
 
@@ -40,6 +40,43 @@ def test_depth_projector_filters_invalid_depth_samples() -> None:
     assert batch.count == 3
     assert np.all(batch.points_xyz[:, 0] >= 0.3)
     assert np.all(batch.points_xyz[:, 0] <= 20.0)
+
+
+def test_depth_projector_uses_camera_info_intrinsics() -> None:
+    depth = np.full((3, 3), 2.0, dtype=np.float32)
+    projector = DepthProjector(default_stride=1)
+
+    batch = projector.depth_to_body_points(
+        depth,
+        pixel_stride=1,
+        stamp_s=12.5,
+        camera_info={"width": 3, "height": 3, "k": [2.0, 0.0, 1.0, 0.0, 4.0, 1.0, 0.0, 0.0, 1.0]},
+        encoding="32FC1",
+    )
+
+    center = batch.points_xyz[4]
+    np.testing.assert_allclose(center, np.array([2.0, 0.0, 0.0], dtype=np.float32))
+    meta = projector.last_projection_metadata
+    assert meta["camera_intrinsics"]["source"] == "camera_info"
+    assert meta["camera_intrinsics"]["fx"] == 2.0
+    assert meta["camera_intrinsics"]["fy"] == 4.0
+    assert meta["encoding"] == "32FC1"
+    assert meta["stride"] == 1
+    assert meta["timestamp_provenance"] == "sensor"
+
+
+def test_camera_intrinsics_scale_camera_info_to_frame_shape() -> None:
+    intrinsics = CameraIntrinsics.from_camera_info(
+        {"width": 4, "height": 2, "k": [4.0, 0.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0]}
+    )
+
+    scaled = intrinsics.for_shape(width=8, height=4, fallback_hfov_rad=math.radians(72.0))
+
+    assert scaled.source == "camera_info_scaled"
+    assert scaled.fx == 8.0
+    assert scaled.fy == 4.0
+    assert scaled.cx == 4.0
+    assert scaled.cy == 2.0
 
 
 def test_depth_projector_world_projection_drops_ground_points_outside_band() -> None:
@@ -128,3 +165,24 @@ def test_peer_track_store_limits_speed_from_bad_jump() -> None:
     track = store.update_track(drone_id=1, x=100.0, y=0.0, stamp_s=11.0)
 
     assert track.speed_mps <= 5.01
+
+
+def test_peer_track_store_exports_planner_mask_payload() -> None:
+    store = PeerTrackStore(track_ttl_s=5.0, base_radius_m=1.0, soft_shell_m=2.0)
+    store.update_track(drone_id=3, x=1.0, y=2.0, vx=0.0, vy=0.0, stamp_s=10.0)
+
+    payload = store.build_planner_mask_payload(now_s=10.0)
+
+    assert payload == [
+        {
+            "zone_id": "peer_3",
+            "source": "peer_track",
+            "drone_id": 3,
+            "center_ned": [1.0, 2.0],
+            "hard_radius_m": 1.0,
+            "soft_radius_m": 3.0,
+            "weight": 1.0,
+            "age_s": 0.0,
+            "status": "active",
+        }
+    ]

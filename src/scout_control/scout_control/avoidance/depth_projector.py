@@ -4,10 +4,127 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 import numpy as np
 
 from .types import PointBatch
+
+
+@dataclass(frozen=True, slots=True)
+class CameraIntrinsics:
+    """Pinhole camera intrinsics used by the depth projection path."""
+
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    model: str = "pinhole"
+    source: str = "hfov_fallback"
+
+    @classmethod
+    def from_hfov(
+        cls,
+        *,
+        width: int,
+        height: int,
+        hfov_rad: float,
+    ) -> "CameraIntrinsics":
+        fx = (float(width) / 2.0) / math.tan(float(hfov_rad) / 2.0)
+        return cls(
+            width=int(width),
+            height=int(height),
+            fx=float(fx),
+            fy=float(fx),
+            cx=float(width) / 2.0,
+            cy=float(height) / 2.0,
+            source="hfov_fallback",
+        )
+
+    @classmethod
+    def from_camera_info(cls, camera_info: Mapping[str, Any] | Any) -> "CameraIntrinsics":
+        """Create intrinsics from a ROS CameraInfo-like object or mapping."""
+
+        def _get(name: str, default: Any = None) -> Any:
+            if isinstance(camera_info, Mapping):
+                return camera_info.get(name, default)
+            return getattr(camera_info, name, default)
+
+        width = int(_get("width"))
+        height = int(_get("height"))
+        k = _get("k", _get("K", None))
+        if k is None:
+            p = _get("p", _get("P", None))
+            if p is None:
+                raise ValueError("CameraInfo must provide K/k or P/p")
+            if len(p) < 7:
+                raise ValueError("CameraInfo P/p must contain at least 7 values")
+            fx, fy, cx, cy = float(p[0]), float(p[5]), float(p[2]), float(p[6])
+        else:
+            if len(k) < 6:
+                raise ValueError("CameraInfo K/k must contain at least 6 values")
+            fx, fy, cx, cy = float(k[0]), float(k[4]), float(k[2]), float(k[5])
+
+        if width <= 0 or height <= 0 or fx <= 0.0 or fy <= 0.0:
+            raise ValueError("CameraInfo intrinsics must have positive dimensions and focal lengths")
+        return cls(
+            width=width,
+            height=height,
+            fx=fx,
+            fy=fy,
+            cx=cx,
+            cy=cy,
+            source="camera_info",
+        )
+
+    def for_shape(
+        self,
+        *,
+        width: int,
+        height: int,
+        fallback_hfov_rad: float,
+    ) -> "CameraIntrinsics":
+        """Return intrinsics matching a frame shape, scaling CameraInfo if needed."""
+
+        width = int(width)
+        height = int(height)
+        if width <= 0 or height <= 0:
+            raise ValueError("frame dimensions must be positive")
+        if self.width == width and self.height == height:
+            return self
+        if self.source != "camera_info":
+            return CameraIntrinsics.from_hfov(
+                width=width,
+                height=height,
+                hfov_rad=fallback_hfov_rad,
+            )
+        sx = float(width) / float(self.width)
+        sy = float(height) / float(self.height)
+        return CameraIntrinsics(
+            width=width,
+            height=height,
+            fx=self.fx * sx,
+            fy=self.fy * sy,
+            cx=self.cx * sx,
+            cy=self.cy * sy,
+            model=self.model,
+            source="camera_info_scaled",
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "width": int(self.width),
+            "height": int(self.height),
+            "fx": float(self.fx),
+            "fy": float(self.fy),
+            "cx": float(self.cx),
+            "cy": float(self.cy),
+            "model": self.model,
+            "source": self.source,
+        }
 
 
 class DepthProjector:
@@ -32,6 +149,34 @@ class DepthProjector:
             float(collision_band_m[1]),
         )
         self._ground_epsilon_m = float(ground_epsilon_m)
+        self._intrinsics: CameraIntrinsics | None = None
+        self._last_projection_meta: dict[str, Any] = {}
+
+    @property
+    def camera_intrinsics(self) -> CameraIntrinsics | None:
+        return self._intrinsics
+
+    @property
+    def last_projection_metadata(self) -> dict[str, Any]:
+        return dict(self._last_projection_meta)
+
+    def set_camera_info(self, camera_info: Mapping[str, Any] | Any | None) -> None:
+        """Install CameraInfo intrinsics; pass None to restore HFOV fallback."""
+
+        self._intrinsics = None if camera_info is None else CameraIntrinsics.from_camera_info(camera_info)
+
+    def intrinsics_for_frame(self, width: int, height: int) -> CameraIntrinsics:
+        if self._intrinsics is None:
+            return CameraIntrinsics.from_hfov(
+                width=int(width),
+                height=int(height),
+                hfov_rad=self._camera_hfov_rad,
+            )
+        return self._intrinsics.for_shape(
+            width=int(width),
+            height=int(height),
+            fallback_hfov_rad=self._camera_hfov_rad,
+        )
 
     def depth_to_body_points(
         self,
@@ -41,6 +186,8 @@ class DepthProjector:
         stamp_s: float | None = None,
         source: str = "depth_camera",
         is_dense_scan: bool = False,
+        camera_info: Mapping[str, Any] | Any | None = None,
+        encoding: str = "32FC1",
     ) -> PointBatch:
         """Return body-frame points in forward-right-down coordinates."""
 
@@ -50,10 +197,26 @@ class DepthProjector:
 
         stride = self._default_stride if pixel_stride is None else max(1, int(pixel_stride))
         height, width = depth.shape
-        fx = (width / 2.0) / math.tan(self._camera_hfov_rad / 2.0)
-        fy = fx
-        cx = width / 2.0
-        cy = height / 2.0
+        intrinsics = (
+            CameraIntrinsics.from_camera_info(camera_info).for_shape(
+                width=width,
+                height=height,
+                fallback_hfov_rad=self._camera_hfov_rad,
+            )
+            if camera_info is not None
+            else self.intrinsics_for_frame(width, height)
+        )
+        stamp = time.time() if stamp_s is None else float(stamp_s)
+        self._last_projection_meta = {
+            "camera_intrinsics": intrinsics.as_dict(),
+            "encoding": str(encoding),
+            "stride": int(stride),
+            "source": source,
+            "stamp_s": float(stamp),
+            "timestamp_provenance": "wall_time" if stamp_s is None else "sensor",
+            "min_range_m": float(self._min_range_m),
+            "max_range_m": float(self._max_range_m),
+        }
 
         rows = np.arange(0, height, stride, dtype=np.int32)
         cols = np.arange(0, width, stride, dtype=np.int32)
@@ -69,7 +232,7 @@ class DepthProjector:
             return PointBatch.empty(
                 source=source,
                 frame="body_frd",
-                stamp_s=time.time() if stamp_s is None else float(stamp_s),
+                stamp_s=stamp,
                 sensor_range_m=self._max_range_m,
             )
 
@@ -77,14 +240,14 @@ class DepthProjector:
         u_v = uu[valid].astype(np.float32)
         v_v = vv[valid].astype(np.float32)
 
-        right_m = (u_v - cx) * d_v / fx
-        down_m = (v_v - cy) * d_v / fy
+        right_m = (u_v - intrinsics.cx) * d_v / intrinsics.fx
+        down_m = (v_v - intrinsics.cy) * d_v / intrinsics.fy
         forward_m = d_v
         points = np.column_stack((forward_m, right_m, down_m)).astype(np.float32)
         return PointBatch(
             source=source,
             frame="body_frd",
-            stamp_s=time.time() if stamp_s is None else float(stamp_s),
+            stamp_s=stamp,
             points_xyz=points,
             sensor_range_m=self._max_range_m,
             is_dense_scan=bool(is_dense_scan),

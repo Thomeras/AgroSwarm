@@ -14,6 +14,7 @@
   <depend>geometry_msgs</depend>
   <depend>builtin_interfaces</depend>
   <depend>visualization_msgs</depend>
+  <depend>scout_control_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
