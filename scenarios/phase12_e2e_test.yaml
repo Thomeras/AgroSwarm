@@ -1,0 +1,123 @@
+name: "Phase 1+2 E2E Verification — Full Stack"
+description: |
+  END-TO-END VERIFICATION SCENARIO for Phase 1 (runtime-owned flight) and
+  Phase 2 (polygon boundary + pad metadata + grid from polygon).
+
+  Purpose: Verify the complete production stack works before starting Phase 3.
+
+  Phase 1 acceptance points (single flight owner):
+    [ ] obstacle_avoidance_runtime is the ONLY publisher on /fmu/in/* topics.
+        Verify with: ros2 topic info /fmu/in/trajectory_setpoint -v
+        Expected: 1 publisher, node = /drone_0/obstacle_avoidance_runtime.
+    [ ] swarm_agent runs with navigation_backend=avoidance_runtime
+        and does NOT publish PX4 setpoints.
+    [ ] EKF / sensor health gates are honored — runtime refuses takeoff
+        until status reports phase=READY.
+    [ ] /drone_N/avoidance/status carries the stable contract subset
+        (phase, planner_mode, scan_state, last_completed_target_id).
+
+  Phase 2 acceptance points (setup workflow):
+    [ ] Pad metadata loads from home_positions.json with full Phase 2A schema
+        (pad_id, status, charging_capable, orientation_deg, service_priority).
+        Older payloads still load with defaults.
+    [ ] Operator can capture polygon boundary via /field/boundary_point and
+        close it via /field/boundary_close (Phase 2B).
+    [ ] field_boundary.json is written with capture_mode="polygon".
+    [ ] grid_generator boundary_mode produces field_grid.json with
+        cell_class per cell (inside/edge), outside cells dropped (Phase 2C).
+    [ ] 4-corner legacy fallback still works (operator presses C four times
+        instead of B-then-F).
+    [ ] field_setup_coordinator state machine:
+        IDLE → ASSIGN_PADS → CAPTURE_BOUNDARY → GENERATE_GRID
+             → WAITING_FOR_LANDING → READY_FOR_MISSION
+
+  Full E2E flow (Phase 1 + 2 together):
+    [ ] Setup completes (boundary + grid + pads).
+    [ ] mission_confirm triggers swarm execution.
+    [ ] swarm_coordinator allocates cells; swarm_agent delegates each cell
+        to runtime as /drone_N/avoidance/target_cmd.
+    [ ] Runtime flies to cell, reports last_completed_target_id; swarm_agent
+        emits CELL_COMPLETE.
+    [ ] RTH all returns drones to assigned pads; landed confirmation
+        flips pad state available → occupied.
+    [ ] No PX4 setpoint conflicts during the run.
+
+  Tilted Field is the production verification world (slope + pads).
+
+world: "tilted_field"
+
+ros2_command: >
+  source /opt/ros/jazzy/setup.bash &&
+  source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
+  ros2 launch scout_control full_e2e_mission.launch.py
+
+extra_terminal_commands:
+  - title: "Field Setup Tool (operator UI — pad C / boundary B+F keys)"
+    command: >
+      source /opt/ros/jazzy/setup.bash &&
+      source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
+      ros2 run scout_control field_setup_tool
+
+  - title: "Camera HUD"
+    command: >
+      source /opt/ros/jazzy/setup.bash &&
+      source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
+      ros2 run scout_control camera_hud --ros-args
+        -p camera_topic:=/drone_0/camera/image_raw
+        -p pos_topic:=/fmu/out/vehicle_local_position_v1
+
+  - title: "Swarm Center GCS"
+    command: "cd /home/tj/_Data/_Projekty/TJlabs/scout_ws/swarm_center && python3 main.py"
+
+  - title: "Phase 1+2 Live Verification (run after setup completes)"
+    command: >
+      source /opt/ros/jazzy/setup.bash &&
+      source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
+      bash -c "
+        echo '=== Phase 1 Check: single PX4 setpoint owner ===';
+        ros2 topic info /fmu/in/trajectory_setpoint -v;
+        echo;
+        echo '=== Phase 1 Check: avoidance status contract ===';
+        timeout 3 ros2 topic echo --once /drone_0/avoidance/status;
+        echo;
+        echo '=== Phase 2 Check: boundary persisted ===';
+        cat /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_boundary.json | python3 -m json.tool || echo 'NOT YET WRITTEN';
+        echo;
+        echo '=== Phase 2 Check: grid with cell_class ===';
+        python3 -c \"
+        import json
+        from pathlib import Path
+        p = Path('/home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_grid.json')
+        if not p.exists():
+            print('NOT YET WRITTEN'); raise SystemExit(0)
+        d = json.loads(p.read_text())
+        cells = d.get('cells', [])
+        classes = {c.get('cell_class','inside') for c in cells}
+        print(f'cells={len(cells)}, classes={classes}')\";
+        echo;
+        echo '=== Phase 2 Check: pad metadata schema ===';
+        python3 -c \"
+        import json
+        from pathlib import Path
+        p = Path('/home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/home_positions.json')
+        if not p.exists():
+            print('NOT YET WRITTEN'); raise SystemExit(0)
+        d = json.loads(p.read_text())
+        pads = d.get('pads', d if isinstance(d,list) else [])
+        keys = set().union(*(set(p.keys()) for p in pads)) if pads else set()
+        required = {'pad_id','status','charging_capable','orientation_deg','service_priority'}
+        missing = required - keys
+        print(f'pad_count={len(pads)}, missing_keys={missing or \\\"none\\\"}')\";
+        echo;
+        echo '=== Unit tests (Phase 1 + 2 coverage) ===';
+        cd /home/tj/_Data/_Projekty/TJlabs/scout_ws &&
+        PYTHONPATH=src/scout_control pytest -q
+          src/scout_control/test/test_local_planner.py
+          src/scout_control/test/test_avoidance_helpers.py
+          src/scout_control/test/test_home_manager.py
+          src/scout_control/test/test_grid_from_polygon.py
+          src/scout_control/test/test_boundary_capture.py
+          src/scout_control/test/test_e2e_setup_flow.py;
+        echo;
+        echo '=== DONE — review acceptance checkboxes in scenario header ===';
+        exec bash"

@@ -63,6 +63,8 @@ class SwarmTopicContract:
     rth_request: str = "/swarm/rth_request"
     landed_confirmation: str = "/swarm/landed_confirmation"
     pad_assignment: str = "/swarm/pad_assignment"
+    pad_query: str = "/swarm/pad_query"
+    pad_response: str = "/swarm/pad_response"
     home_positions: str = "/swarm/home_positions"
     task_status: str = "/swarm/task_status"
     mission_complete: str = "/swarm/mission_complete"

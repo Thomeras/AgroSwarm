@@ -3,5 +3,4 @@ description: "Produkční autonomie: obstacle_avoidance_runtime je jediný fligh
 world: "tilted_field"
 ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py"
 extra_terminal_commands:
-  - "ros2 run scout_control field_setup_tool"
   - "ros2 run scout_control camera_hud --ros-args -p camera_topic:=/drone_0/camera/image_raw -p pos_topic:=/fmu/out/vehicle_local_position_v1"

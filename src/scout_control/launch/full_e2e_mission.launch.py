@@ -24,9 +24,8 @@ Launches all background nodes for the full E2E tilted field spray mission.
     camera_bridge drone_0   — Gz Image     → /drone_0/camera/image_raw
     camera_bridge drone_1   — Gz Image     → /drone_1/camera/image_raw
 
-  NOTE: field_setup_tool is opened in a separate terminal via
-  extra_terminal_commands in scenarios/full_e2e_mission.yaml. It does not
-  publish PX4 setpoints; obstacle_avoidance_runtime remains the flight owner.
+  NOTE: field_setup_tool is setup-only. It does not publish PX4 setpoints;
+  obstacle_avoidance_runtime remains the flight owner.
 
 World: tilted_field (5° slope + terrain bump, 2 landing pads outside field boundary)
   pad_0: Gazebo ENU(-8, 10) = NED(10, -8)
@@ -91,6 +90,21 @@ def generate_launch_description() -> LaunchDescription:
             package="scout_control",
             executable="home_manager",
             name="home_manager",
+            output="screen",
+        )],
+    )
+
+    # 2b. Setup-only operator helper — no PX4 setpoint publishers.
+    field_setup_tool = TimerAction(
+        period=2.0,
+        actions=[Node(
+            package="scout_control",
+            executable="field_setup_tool",
+            name="field_setup_tool",
+            parameters=[{
+                "ui": False,
+                "reject_origin_pad": False,
+            }],
             output="screen",
         )],
     )
@@ -357,6 +371,7 @@ def generate_launch_description() -> LaunchDescription:
         # Setup phase
         field_setup,
         home_mgr,
+        field_setup_tool,
         # Mission phase — runtimes first, then delegating swarm agents
         runtime_0,
         runtime_1,

@@ -1,3 +1,0 @@
-name: "Archived Legacy Terrain Follower"
-description: "Archived/source-only debug flight node. Production terrain following is owned by obstacle_avoidance_runtime AltitudeController."
-ros2_command: "python3 -c \"raise SystemExit('Archived legacy node: not installed. See src/scout_control/scout_control/legacy/terrain_follower.py')\""

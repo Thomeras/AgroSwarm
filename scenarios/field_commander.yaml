@@ -1,3 +1,0 @@
-name: "Archived Legacy Field Commander"
-description: "Archived/source-only debug PX4 flight tool. Legacy nodes are no longer installed as scout_control console scripts."
-ros2_command: "python3 -c \"raise SystemExit('Archived legacy node: not installed. See src/scout_control/scout_control/manual/field_commander.py')\""

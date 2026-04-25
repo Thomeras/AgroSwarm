@@ -1,3 +1,0 @@
-name: "Archived Legacy Perimeter Flight"
-description: "Archived/source-only debug PX4 flight node. Legacy nodes are no longer installed as scout_control console scripts."
-ros2_command: "python3 -c \"raise SystemExit('Archived legacy node: not installed. See src/scout_control/scout_control/legacy/perimeter_flight.py')\""

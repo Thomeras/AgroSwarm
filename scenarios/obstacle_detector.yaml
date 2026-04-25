@@ -1,3 +1,0 @@
-name: "Archived Legacy Obstacle Detector"
-description: "Archived/source-only detector node. Production obstacle sensing is owned by obstacle_avoidance_runtime."
-ros2_command: "python3 -c \"raise SystemExit('Archived legacy node: not installed. See src/scout_control/scout_control/legacy/obstacle_detector.py')\""

@@ -25,14 +25,14 @@ description: |
 
 ros2_command: >
   source /opt/ros/jazzy/setup.bash &&
-  source ~/scout_ws/install/setup.bash &&
+  source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
   ros2 launch scout_control obstacle_avoidance_test.launch.py
 
 extra_terminal_commands:
   - title: "Gimbal Camera Viewer (WSAD)"
     command: >
       source /opt/ros/jazzy/setup.bash &&
-      source ~/scout_ws/install/setup.bash &&
+      source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
       ros2 run scout_control gimbal_cam_viz --ros-args
         -p camera_topic:=/camera/image_raw
         -p pan_step_deg:=3.0
@@ -41,5 +41,5 @@ extra_terminal_commands:
   - title: "RViz2 — Obstacle Avoidance"
     command: >
       source /opt/ros/jazzy/setup.bash &&
-      rviz2 -d ~/scout_ws/install/scout_control/share/scout_control/config/obstacle_avoidance.rviz
+      rviz2 -d /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/scout_control/share/scout_control/config/obstacle_avoidance.rviz
       || rviz2

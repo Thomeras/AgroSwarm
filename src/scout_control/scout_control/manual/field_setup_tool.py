@@ -114,6 +114,8 @@ class FieldSetupTool(Node):
             "Setup-only mode: move drones with the autonomy runtime/GCS, then mark pads/corners."
         )
         self._corners: dict[str, tuple[float, float, float]] = {}
+        self._boundary_points: list[tuple[float, float, float]] = []
+        self._boundary_closed = False
         self._pads: dict[str, Optional[tuple[float, float]]] = {
             "pad_0": None,
             "pad_1": None,
@@ -123,6 +125,12 @@ class FieldSetupTool(Node):
             String, self._swarm_topics.pad_assignment, QOS_SWARM
         )
         self._corner_pub = self.create_publisher(String, "/field/corner_marked", QOS_SWARM)
+        self._boundary_point_pub = self.create_publisher(
+            String, "/field/boundary_point", QOS_SWARM
+        )
+        self._boundary_close_pub = self.create_publisher(
+            String, "/field/boundary_close", QOS_SWARM
+        )
         self._mission_confirm_pub = self.create_publisher(String, "/field/mission_confirm", QOS_SWARM)
         self._rth_pubs = {
             d.did: self.create_publisher(Point, d.rth_target_topic, QOS_LATCHED)
@@ -186,6 +194,12 @@ class FieldSetupTool(Node):
             label = str(data.get("corner", "")).upper()
             if label in CORNER_LABELS.values():
                 self._mark_corner(label)
+            return
+        if action == "mark_boundary":
+            self._mark_boundary_point()
+            return
+        if action == "close_boundary":
+            self._close_boundary()
             return
         if action == "start_mission":
             self._confirm_mission(source=str(data.get("source", "field_setup_tool")))
@@ -262,6 +276,49 @@ class FieldSetupTool(Node):
         self._flash(f"Corner {label} marked: NED({x:.2f}, {y:.2f})")
         self.get_logger().info(f"Corner {label} -> NED({x:.2f},{y:.2f},{z:.2f})")
 
+    def _mark_boundary_point(self) -> None:
+        with self._lock:
+            d0 = self._d[0]
+            if not d0.pos_valid:
+                self._flash("No drone_0 position - cannot mark boundary")
+                return
+            if self._boundary_closed:
+                self._flash("Boundary already closed")
+                return
+            x, y, z = d0.x, d0.y, d0.z
+            idx = len(self._boundary_points)
+
+        payload = {
+            "index": idx,
+            "ned": {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
+            "type": "vertex",
+        }
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._boundary_point_pub.publish(msg)
+
+        with self._lock:
+            self._boundary_points.append((x, y, z))
+        self._flash(f"Boundary #{idx + 1}: NED({x:.2f},{y:.2f})")
+        self.get_logger().info(
+            f"Boundary vertex {idx} -> NED({x:.2f},{y:.2f},{z:.2f})"
+        )
+
+    def _close_boundary(self) -> None:
+        with self._lock:
+            n = len(self._boundary_points)
+            if n < 3:
+                self._flash(f"Need >=3 boundary points, have {n}")
+                return
+            self._boundary_closed = True
+
+        payload = {"closed": True, "count": n}
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._boundary_close_pub.publish(msg)
+        self._flash(f"Boundary closed ({n} vertices)")
+        self.get_logger().info(f"Boundary closed with {n} vertices")
+
     def _confirm_mission(self, source: str = "field_setup_tool") -> None:
         confirm_msg = String()
         confirm_msg.data = json.dumps({"source": source, "confirmed": True})
@@ -312,6 +369,10 @@ class FieldSetupTool(Node):
             with self._lock:
                 self._corner_submenu = True
             self._flash("Mark corner: [1]NE [2]NW [3]SE [4]SW")
+        elif key in (ord("b"), ord("B")):
+            self._mark_boundary_point()
+        elif key in (ord("f"), ord("F")):
+            self._close_boundary()
         elif key in (ord("m"), ord("M")):
             self._confirm_mission()
 
@@ -336,6 +397,8 @@ class FieldSetupTool(Node):
             pads = dict(self._pads)
             corners = dict(self._corners)
             submenu = self._corner_submenu
+            boundary_count = len(self._boundary_points)
+            boundary_closed = self._boundary_closed
 
         title = f"  Field Setup Tool  |  setup-only/no PX4 setpoints  |  Active: drone_{active}"
         sa(stdscr, 0, 0, title[:w], curses.color_pair(CP_TITLE) | curses.A_BOLD)
@@ -372,6 +435,16 @@ class FieldSetupTool(Node):
             value = f"NED({c[0]:.2f}, {c[1]:.2f})" if c else "---"
             sa(stdscr, 9 + i, 4, f"{lbl}: {value}", curses.color_pair(CP_CORNER if c else CP_DIM))
 
+        closed_tag = " [closed]" if boundary_closed else ""
+        sa(
+            stdscr,
+            14,
+            2,
+            f"Polygon boundary: {boundary_count} vertices{closed_tag} "
+            "(B=add, F=close)",
+            curses.color_pair(CP_CORNER) | curses.A_BOLD,
+        )
+
         if submenu:
             sa(
                 stdscr,
@@ -395,7 +468,7 @@ class FieldSetupTool(Node):
             stdscr,
             h - 1,
             1,
-            "Tab=switch  H=pad0  J=pad1  C=corner  M=start mission  Q=quit",
+            "Tab=switch  H=pad0  J=pad1  B=boundary  F=close  C=corner  M=start  Q=quit",
             curses.color_pair(CP_ACCENT),
         )
         stdscr.refresh()

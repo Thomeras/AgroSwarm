@@ -13,5 +13,4 @@ description: >
 
 ros2_command: "ros2 launch scout_control isaac_e2e_mission.launch.py"
 extra_terminal_commands:
-  - "ros2 run scout_control field_setup_tool"
   - "cd swarm_center && python3 main.py --drones 1 --base-port 14540 --world-image ../worlds/agro_field_overlay.png"

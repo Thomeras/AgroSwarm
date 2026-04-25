@@ -1,0 +1,329 @@
+PHASE 1+2 E2E VERIFICATION — MANUAL LAUNCH ORDER
+================================================
+
+End-to-end overeni produkcniho stacku PRED zacatkem Phase 3.
+
+Co overujeme:
+- PHASE 1: obstacle_avoidance_runtime je jediny PX4 setpoint owner;
+  swarm_agent bezi jako delegator (`navigation_backend=avoidance_runtime`);
+  EKF / sensor health gates funguji; `/drone_N/avoidance/status` kontrakt.
+- PHASE 2: pad metadata (pad_id, status, charging_capable, orientation_deg,
+  service_priority); polygon boundary capture (B + F klavesy); polygon grid
+  generation s `cell_class` per bunka; 4-corner legacy fallback; full setup
+  state machine az do `READY_FOR_MISSION`.
+
+
+DULEZITE
+--------
+- Tohle je Gazebo varianta. Pro Isaac Sim variantu pouzij
+  `isaac_full_e2e_mission.txt` (ale tam Phase 2 polygon flow musis testovat
+  rucne pres `field_setup_tool` topic publishe).
+- Pokud jsi menil cokoliv v `src/scout_control`, pred spustenim znovu
+  buildni balicek (TERMINAL 4).
+- `obstacle_avoidance_runtime` je jediny vlastnik `/fmu/in/*`. Nespoustej
+  zadny stary direct-control node (manual_controller, offboard_control,
+  obstacle_avoidance_mission) soucasne.
+- Vsechny artefakty Phase 2 se pisou do `perimeters/`:
+  - `field_boundary.json`
+  - `field_grid.json`
+  - `home_positions.json`
+  Pokud jsi menil schema, smaz stare soubory pred testem (zacni cisty).
+
+
+TERMINAL 1 — PX4 SITL
+---------------------
+```bash
+cd ~/PX4-Autopilot
+PX4_GZ_WORLD=tilted_field PX4_SIM_MODEL=gz_x500_mono_cam_down_lidar \
+  ./build/px4_sitl_default/bin/px4 \
+  ROMFS/px4fmu_common/ -s ROMFS/px4fmu_common/init.d-posix/rcS
+```
+
+Pro 2-drone roj pouzij `scout_launcher.py` swarm mode (pousti dva PX4 SITL
+instance s instance ID 0 a 1 a base port 14540).
+
+
+TERMINAL 2 — MicroXRCE-DDS
+--------------------------
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+
+TERMINAL 3 — QGroundControl (volitelne, pro armingu / monitoring)
+-----------------------------------------------------------------
+```bash
+~/QGroundControl-x86_64.AppImage
+```
+
+
+TERMINAL 4 — build scout_control
+--------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths src --packages-select scout_control
+source install/setup.bash
+```
+
+
+TERMINAL 5 — full E2E launch (production stack)
+-----------------------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch scout_control full_e2e_mission.launch.py
+```
+
+Co se v ramci tohoto launchu spusti:
+- `field_setup_coordinator`         — Phase 2 setup state machine
+- `home_manager`                    — Phase 2A pad registry + RTH coordinator
+- `obstacle_avoidance_runtime` x2   — Phase 1 single flight owner per dron
+- `swarm_agent` x2                  — `navigation_backend=avoidance_runtime`
+- `swarm_coordinator`               — cell allocation
+- `mission_launcher`                — fires `/swarm/start_mission`
+- `cell_data_recorder`, `spray_controller`, `ml_interface`
+- `gcs_bridge`                      — TCP pro swarm_center
+- `lidar_bridge` x2, `camera_bridge` x2 — Gazebo sensor bridges
+
+`field_setup_tool` se NEPOUSTI v ramci launchu (potrebuje TTY) — viz
+TERMINAL 6.
+
+
+TERMINAL 6 — field_setup_tool (operator UI, curses)
+---------------------------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run scout_control field_setup_tool
+```
+
+Klavesy:
+- `1..N`  — assign pad k aktualne ovladanemu dronu (pad_id)
+- `M`     — manual control mode toggle
+- `C`     — mark corner (LEGACY 4-corner mode, zpetna kompatibilita)
+- `B`     — mark boundary point (Phase 2B polygon vertex)
+- `F`     — finalize / close polygon (Phase 2B)
+- `S`     — start mission (`/field/mission_confirm`)
+- `R`     — RTH all
+- `Q`     — quit
+
+DOPORUCENY POSTUP PRO PHASE 2 OVERENI:
+1. Po startu drone_0 + drone_1 pockej, az field_setup_coordinator hlasi
+   `ASSIGN_PADS`.
+2. Stiskni `1` -> assign pad_0 dronu_0; `2` -> assign pad_1 dronu_1.
+3. Coordinator prejde do `CAPTURE_BOUNDARY`.
+4. Manualne preleti drone_0 po obvodu pole (manual mode `M`, WSAD).
+5. Na kazdem rohu pole stiskni `B` (boundary point).
+6. Po zachyceni 4-N polygon vertices stiskni `F` (close polygon).
+7. Coordinator prejde do `GENERATE_GRID` -> `WAITING_FOR_LANDING`.
+8. Po landed confirm prejde do `READY_FOR_MISSION`.
+9. Stiskni `S` pro start mise.
+
+
+TERMINAL 7 — swarm_center GCS (volitelne)
+-----------------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws/swarm_center
+python3 main.py --drones 2 --base-port 14540
+```
+
+
+TERMINAL 8 — camera HUD (volitelne, vizualizace)
+------------------------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run scout_control camera_hud --ros-args \
+  -p camera_topic:=/drone_0/camera/image_raw \
+  -p pos_topic:=/fmu/out/vehicle_local_position_v1
+```
+
+
+PHASE 1 ACCEPTANCE CHECKS
+-------------------------
+
+[ ] **Single PX4 setpoint owner.**
+```bash
+ros2 topic info /fmu/in/trajectory_setpoint -v
+```
+Ocekavani: 1 publisher, node = `/drone_0/obstacle_avoidance_runtime` (resp.
+drone_1). Pokud vidis publishera ze `swarm_agent` nebo cehokoliv jineho,
+PHASE 1 SELHALA — nekde se vrati direct-control cesta.
+
+[ ] **swarm_agent bez PX4 setpointu.**
+```bash
+ros2 node info /drone_0/swarm_agent | grep -A2 Publishers | grep fmu/in
+```
+Ocekavani: ZADNE radky (`fmu/in/*` nesmi byt v publishers swarm_agentu).
+
+[ ] **avoidance status kontrakt.**
+```bash
+ros2 topic echo --once /drone_0/avoidance/status
+```
+Ocekavana pole: `phase`, `state`, `planner_mode`, `planner_state`,
+`scan_state`, `no_path_streak`, `blocked_severity`, `last_runtime_event`,
+`last_completed_target_id`.
+
+[ ] **EKF / health gating.**
+Pred armingem runtime hlasi `phase != READY` dokud nejsou senzory ok.
+Po `Play` v PX4 a po EKF konvergenci prejde na `READY`.
+
+
+PHASE 2 ACCEPTANCE CHECKS
+-------------------------
+
+[ ] **Pad metadata schema.**
+```bash
+python3 -c "
+import json
+from pathlib import Path
+d = json.loads(Path('/home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/home_positions.json').read_text())
+pads = d.get('pads', d if isinstance(d,list) else [])
+required = {'pad_id','status','charging_capable','orientation_deg','service_priority'}
+keys = set().union(*(set(p.keys()) for p in pads)) if pads else set()
+missing = required - keys
+print(f'pads={len(pads)}  missing={missing or \"none\"}')"
+```
+Ocekavani: `missing=none`.
+
+[ ] **Pad state machine.**
+Po landed confirm na pad_0 ocekavej v `/swarm/home_positions`:
+`status: occupied` (nebo `charging`, pokud `charging_capable=true`).
+Manualni release -> `available`.
+
+[ ] **Polygon boundary persisted.**
+```bash
+cat /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_boundary.json | python3 -m json.tool
+```
+Ocekavani: `capture_mode: "polygon"`, `closed: true`, `vertices_ned` list,
+`inset_buffer_m` numeric.
+
+[ ] **Grid s cell_class.**
+```bash
+python3 -c "
+import json
+from pathlib import Path
+d = json.loads(Path('/home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_grid.json').read_text())
+cells = d.get('cells', [])
+classes = {c.get('cell_class','inside') for c in cells}
+print(f'cells={len(cells)}  classes={classes}')"
+```
+Ocekavani: classes obsahuje `inside` a/nebo `edge`. `outside` v listu byt
+nesmi (outside cells se dropuji).
+
+[ ] **4-corner legacy fallback.**
+Restart cisty test: smaz `field_boundary.json`, znova spust setup.
+V `field_setup_tool` stiskni `C` ctyrikrat. Coordinator musi prejit
+do `GENERATE_GRID` a `field_grid.json` se musi vygenerovat (cell_class
+`inside` defaultne).
+
+[ ] **Setup state machine pruchod.**
+Prubeh stavu (sleduj `/field/setup_state` nebo log
+`field_setup_coordinator`):
+IDLE -> ASSIGN_PADS -> CAPTURE_BOUNDARY -> GENERATE_GRID -> WAITING_FOR_LANDING -> READY_FOR_MISSION
+
+
+FULL E2E ACCEPTANCE CHECKS
+--------------------------
+
+[ ] **Mission start.**
+Po stisku `S` ve `field_setup_tool` (nebo `mission_confirm` z swarm_center)
+swarm_coordinator alokuje cely a posila `/{drone}/next_cell`.
+
+[ ] **Cell delegation.**
+swarm_agent forwarduje cell jako `/{drone}/avoidance/target_cmd`.
+Sledovat:
+```bash
+ros2 topic echo /drone_0/avoidance/target_cmd
+```
+
+[ ] **CELL_COMPLETE z runtime feedbacku.**
+Po dorazeni runtime nastavi `last_completed_target_id`. swarm_agent
+emituje `CELL_COMPLETE` (`/swarm/task_status`).
+
+[ ] **RTH all + landed confirm.**
+RTH `R` -> oba drony se vrati na assigned pad. landed confirmation flipne
+pad state.
+
+[ ] **Zadne PX4 conflicty.**
+Behem celeho behu `ros2 topic info /fmu/in/trajectory_setpoint -v` musi
+porad hlasit prave 1 publisher per dron.
+
+
+UNIT TEST SUITE (Phase 1 + 2 coverage)
+--------------------------------------
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+PYTHONPATH=src/scout_control pytest -q \
+  src/scout_control/test/test_local_planner.py \
+  src/scout_control/test/test_avoidance_helpers.py \
+  src/scout_control/test/test_home_manager.py \
+  src/scout_control/test/test_grid_from_polygon.py \
+  src/scout_control/test/test_boundary_capture.py \
+  src/scout_control/test/test_e2e_setup_flow.py
+```
+Vse zelene = Phase 1+2 unit coverage ok.
+
+
+RYCHLA DIAGNOSTIKA
+------------------
+
+Topic prehled:
+```bash
+ros2 topic list | grep -E '(avoidance|field|swarm|fmu/in)'
+ros2 topic info /fmu/in/trajectory_setpoint -v
+ros2 topic echo --once /drone_0/avoidance/status
+ros2 topic echo --once /swarm/home_positions
+```
+
+Setup flow live:
+```bash
+ros2 topic echo /field/setup_state
+ros2 topic echo /field/boundary_point
+ros2 topic echo /field/setup_complete
+```
+
+Swarm mission live:
+```bash
+ros2 topic echo /swarm/task_status
+ros2 topic echo /drone_0/avoidance/target_cmd
+ros2 topic echo /drone_0/avoidance/status
+```
+
+Logy:
+```bash
+ls -1t /home/tj/_Data/_Projekty/TJlabs/scout_ws/logs/avoidance_logs | head
+tail -n 120 /home/tj/_Data/_Projekty/TJlabs/scout_ws/logs/avoidance_logs/<soubor>.jsonl
+```
+
+Pokud neco selze:
+- Runtime nepublikuje setpointy -> overit `/fmu/out/vehicle_local_position_v1`
+  (PX4 SITL musi tect) a EKF status.
+- swarm_agent stale publikuje na `/fmu/in/*` -> verifikuj v launch souboru
+  ze `navigation_backend=avoidance_runtime` je nastaveno.
+- field_setup_coordinator nezustane v `ASSIGN_PADS` -> pad_assignment
+  topic neni potvrzeny; stiskni `1`/`2` v field_setup_tool.
+- `field_grid.json` po close polygon nevznikl -> overit ze jsi stiskl
+  `F` (close), nejen `B` (vertices); zkontroluj log coordinatoru pro
+  `GENERATE_GRID` prechod.
+
+
+CISTKA PRED OPAKOVANYM TESTEM
+-----------------------------
+```bash
+rm -f /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_boundary.json \
+      /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_grid.json
+# home_positions.json NEMAZAT (obsahuje pad layout pro tilted_field)
+```
+
+
+PO USPESNEM RUNU
+----------------
+- Vse zelene -> Phase 1+2 stack je ready pro Phase 3 (mapping mission
+  pipeline). Plan v `docs/prompts/phase3_prompt.md`.
+- Pokud nektery checkpoint selze, zapis ho do `codex.md` jako finding
+  pred zahajenim Phase 3 (Phase 3 spoleha na Phase 1+2 invarianty).

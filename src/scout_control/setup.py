@@ -53,6 +53,7 @@ setup(
             'obstacle_avoidance_runtime = scout_control.core.obstacle_avoidance_runtime:main',
             # utils
             'grid_generator            = scout_control.utils.grid_generator:main',
+            'task_allocator            = scout_control.utils.task_allocator:main',
             # viz
             'camera_hud                = scout_control.viz.camera_hud:main',
             'obstacle_viz              = scout_control.viz.obstacle_viz:main',
@@ -60,6 +61,7 @@ setup(
             'scan_cloud_viz            = scout_control.viz.scan_cloud_viz:main',
             # manual
             'field_setup_tool          = scout_control.manual.field_setup_tool:main',
+            'legacy_manual_controller  = scout_control.manual.manual_controller:main',
         ],
     },
 )
