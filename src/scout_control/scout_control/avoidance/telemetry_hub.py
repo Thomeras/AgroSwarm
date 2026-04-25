@@ -22,6 +22,9 @@ class DroneTopicContract:
     camera_info: str
     terrain_range: str
     vehicle_local_position: str
+    vehicle_status: str
+    vehicle_control_mode: str
+    vehicle_command_ack: str
     px4_in_offboard_control_mode: str
     px4_in_trajectory_setpoint: str
     px4_in_vehicle_command: str
@@ -102,6 +105,9 @@ class TelemetryHub:
             terrain_range=_clean_topic(terrain_range_topic)
             or f"/{self.drone_ns}/downward_lidar/scan",
             vehicle_local_position=f"{self.px4_ns}/fmu/out/vehicle_local_position_v1",
+            vehicle_status=f"{self.px4_ns}/fmu/out/vehicle_status_v3",
+            vehicle_control_mode=f"{self.px4_ns}/fmu/out/vehicle_control_mode",
+            vehicle_command_ack=f"{self.px4_ns}/fmu/out/vehicle_command_ack_v1",
             px4_in_offboard_control_mode=f"{self.px4_ns}/fmu/in/offboard_control_mode",
             px4_in_trajectory_setpoint=f"{self.px4_ns}/fmu/in/trajectory_setpoint",
             px4_in_vehicle_command=f"{self.px4_ns}/fmu/in/vehicle_command",

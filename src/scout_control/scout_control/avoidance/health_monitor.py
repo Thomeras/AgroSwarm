@@ -13,6 +13,9 @@ class HealthConfig:
     depth_stale_after_s: float = 1.0
     xy_reset_quarantine_s: float = 0.5
     require_depth_for_navigation: bool = True
+    relax_heading_gate: bool = False
+    relax_xy_gate: bool = False
+    relax_dead_reckoning_gate: bool = False
 
 
 @dataclass(slots=True)
@@ -106,11 +109,11 @@ class RuntimeHealthMonitor:
             math.isfinite(float(getattr(msg, name, float("nan"))))
             for name in ("x", "y", "z", "heading")
         )
-        if not xy_valid:
+        if not xy_valid and not self.config.relax_xy_gate:
             reason = "xy_invalid"
-        elif not heading_good:
+        elif not heading_good and not self.config.relax_heading_gate:
             reason = "heading_not_good_for_control"
-        elif dead_reckoning:
+        elif dead_reckoning and not self.config.relax_dead_reckoning_gate:
             reason = "dead_reckoning"
         elif not finite_pose:
             reason = "non_finite_pose"

@@ -34,7 +34,10 @@ from px4_msgs.msg import (
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleCommand,
+    VehicleCommandAck,
+    VehicleControlMode,
     VehicleLocalPosition,
+    VehicleStatus,
 )
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -148,6 +151,7 @@ STOP_HOVER_REPLAN_TICKS = 10
 SCAN_RETRY_LIMIT = 2
 NO_PATH_BLOCKED_THRESHOLD = 3
 BLOCKED_RETRY_TICKS = 100
+COMMAND_RETRY_INTERVAL_S = 1.0
 
 
 class RuntimePhase(Enum):
@@ -214,6 +218,10 @@ class ObstacleAvoidanceRuntime(Node):
         self.declare_parameter("depth_stale_after_s", 1.0)
         self.declare_parameter("xy_reset_quarantine_s", 0.5)
         self.declare_parameter("require_depth_for_navigation", True)
+        self.declare_parameter("relax_heading_gate", False)
+        self.declare_parameter("relax_xy_gate", False)
+        self.declare_parameter("relax_dead_reckoning_gate", False)
+        self.declare_parameter("force_arm", False)
         self.declare_parameter("altitude_policy_mode", "FixedNED")
 
         self._drone_id = int(self.get_parameter("drone_id").value)
@@ -296,8 +304,18 @@ class ObstacleAvoidanceRuntime(Node):
                 require_depth_for_navigation=bool(
                     self.get_parameter("require_depth_for_navigation").value
                 ),
+                relax_heading_gate=bool(
+                    self.get_parameter("relax_heading_gate").value
+                ),
+                relax_xy_gate=bool(
+                    self.get_parameter("relax_xy_gate").value
+                ),
+                relax_dead_reckoning_gate=bool(
+                    self.get_parameter("relax_dead_reckoning_gate").value
+                ),
             )
         )
+        self._force_arm = bool(self.get_parameter("force_arm").value)
         self._runtime_readiness = self._health_monitor.evaluate(
             now_s=time.time(),
             command_active=False,
@@ -326,6 +344,13 @@ class ObstacleAvoidanceRuntime(Node):
         self._phase_enter_ts = time.time()
         self._ticks = 0
         self._land_sent = False
+        self._px4_armed = False
+        self._px4_offboard_enabled = False
+        self._px4_nav_state = -1
+        self._px4_failsafe = False
+        self._last_arm_request_ts = 0.0
+        self._last_offboard_request_ts = 0.0
+        self._last_vehicle_command_ack: dict[str, Any] | None = None
 
         self._drone_x = 0.0
         self._drone_y = 0.0
@@ -536,6 +561,24 @@ class ObstacleAvoidanceRuntime(Node):
             self._pos_cb,
             QOS_PX4_SUB,
         )
+        self.create_subscription(
+            VehicleStatus,
+            topics.vehicle_status,
+            self._vehicle_status_cb,
+            QOS_PX4_SUB,
+        )
+        self.create_subscription(
+            VehicleControlMode,
+            topics.vehicle_control_mode,
+            self._vehicle_control_mode_cb,
+            QOS_PX4_SUB,
+        )
+        self.create_subscription(
+            VehicleCommandAck,
+            topics.vehicle_command_ack,
+            self._vehicle_command_ack_cb,
+            QOS_PX4_SUB,
+        )
         self.create_subscription(Image, self._camera_topic, self._rgb_cb, QOS_SENSOR)
         self.create_subscription(Image, self._depth_topic, self._depth_cb, QOS_SENSOR)
         self.create_subscription(
@@ -625,6 +668,36 @@ class ObstacleAvoidanceRuntime(Node):
             time.time(),
         )
         self._publish_peer_telemetry(msg)
+
+    def _vehicle_status_cb(self, msg: VehicleStatus) -> None:
+        self._px4_armed = bool(msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        self._px4_nav_state = int(msg.nav_state)
+        self._px4_failsafe = bool(msg.failsafe)
+
+    def _vehicle_control_mode_cb(self, msg: VehicleControlMode) -> None:
+        self._px4_armed = bool(msg.flag_armed)
+        self._px4_offboard_enabled = bool(msg.flag_control_offboard_enabled)
+
+    def _vehicle_command_ack_cb(self, msg: VehicleCommandAck) -> None:
+        ack_payload = {
+            "command": int(msg.command),
+            "result": int(msg.result),
+            "result_param1": int(msg.result_param1),
+            "result_param2": int(msg.result_param2),
+            "from_external": bool(msg.from_external),
+        }
+        self._last_vehicle_command_ack = ack_payload
+        self._run_log.log("vehicle_command_ack", **ack_payload)
+        if msg.command in {
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+        }:
+            self._publish_runtime_event(
+                {
+                    "event": "vehicle_command_ack",
+                    **ack_payload,
+                }
+            )
 
     def _publish_peer_telemetry(self, msg: VehicleLocalPosition) -> None:
         if self._pub_peer_telemetry is None or PeerTelemetry is None:
@@ -1015,6 +1088,8 @@ class ObstacleAvoidanceRuntime(Node):
         self._blocked_severity = "none"
         self._blocked_since_s = 0.0
         self._land_sent = False
+        self._last_arm_request_ts = 0.0
+        self._last_offboard_request_ts = 0.0
         self._scan_manager.reset()
         if previous_target != target_xy:
             self._actual_path.clear()
@@ -1049,6 +1124,8 @@ class ObstacleAvoidanceRuntime(Node):
         self._no_path_streak = 0
         self._scan_attempts_for_target = 0
         self._blocked_reason = ""
+        self._last_arm_request_ts = 0.0
+        self._last_offboard_request_ts = 0.0
         self._blocked_severity = "none"
         self._blocked_since_s = 0.0
         self._scan_manager.reset()
@@ -1264,13 +1341,13 @@ class ObstacleAvoidanceRuntime(Node):
         self._vsp_z = 0.0
         if self._active_target_xy is not None and self._pos_valid and self._ticks >= ARM_TICKS:
             self._capture_home_if_needed()
-            self._arm()
-            self._set_offboard_mode()
             self._vsp_z = self._target_z_setpoint()
-            self._transition_to(RuntimePhase.TAKEOFF, reason="target_active_arm_and_offboard")
+            self._transition_to(RuntimePhase.TAKEOFF, reason="target_active_begin_takeoff")
 
     def _do_takeoff(self) -> None:
+        self._capture_home_if_needed()
         self._vsp_z = self._target_z_setpoint()
+        self._ensure_takeoff_activation()
         self._publish_setpoint(self._vsp_x, self._vsp_y, self._vsp_z)
         if self._pos_valid and abs(self._drone_z - self._vsp_z) < ALT_TOL:
             self._transition_to(RuntimePhase.CRUISE_TO_TARGET, reason="takeoff_altitude_reached")
@@ -1650,27 +1727,27 @@ class ObstacleAvoidanceRuntime(Node):
             "scan_attempts_for_target": int(self._scan_attempts_for_target),
             **fields,
         }
-        self._run_log.log(
-            "phase_transition",
-            from_phase=old_phase.name,
-            to_phase=new_phase.name,
-            reason=reason,
-            target_id=self._active_target_id,
-            target_name=self._active_target_name,
-            drone_ned=[
+        log_fields = {
+            "from_phase": old_phase.name,
+            "to_phase": new_phase.name,
+            "reason": reason,
+            "target_id": self._active_target_id,
+            "target_name": self._active_target_name,
+            "drone_ned": [
                 round(float(self._drone_x), 3),
                 round(float(self._drone_y), 3),
                 round(float(self._drone_z), 3),
             ],
-            setpoint_ned=[
+            "setpoint_ned": [
                 round(float(self._vsp_x), 3),
                 round(float(self._vsp_y), 3),
                 round(float(self._vsp_z), 3),
             ],
-            planner_mode=planner_mode,
-            planner_state=planner_state,
-            **fields,
-        )
+            "planner_mode": planner_mode,
+            "planner_state": planner_state,
+        }
+        log_fields.update(fields)
+        self._run_log.log("phase_transition", **log_fields)
         self._publish_runtime_event(event_payload)
 
     def _planner_mode(self) -> str:
@@ -1816,7 +1893,10 @@ class ObstacleAvoidanceRuntime(Node):
         msg = TrajectorySetpoint()
         msg.position = [x, y, z]
         msg.velocity = [float("nan")] * 3
-        msg.yaw = yaw
+        msg.acceleration = [float("nan")] * 3
+        msg.jerk = [float("nan")] * 3
+        msg.yaw = self._drone_yaw if math.isnan(yaw) else yaw
+        msg.yawspeed = float("nan")
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self._pub_sp.publish(msg)
 
@@ -1847,8 +1927,24 @@ class ObstacleAvoidanceRuntime(Node):
             param3=float(param3),
         )
 
+    def _ensure_takeoff_activation(self) -> None:
+        if self._active_target_xy is None or self._ticks < ARM_TICKS:
+            return
+        now = time.time()
+        if not self._px4_offboard_enabled and (now - self._last_offboard_request_ts) >= COMMAND_RETRY_INTERVAL_S:
+            self._set_offboard_mode()
+            self._last_offboard_request_ts = now
+        if not self._px4_armed and (now - self._last_arm_request_ts) >= COMMAND_RETRY_INTERVAL_S:
+            self._arm()
+            self._last_arm_request_ts = now
+
     def _arm(self) -> None:
-        self._send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
+        param2 = 21196.0 if self._force_arm else 0.0
+        self._send_command(
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+            param1=1.0,
+            param2=param2,
+        )
 
     def _set_offboard_mode(self) -> None:
         self._send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
@@ -1906,6 +2002,13 @@ class ObstacleAvoidanceRuntime(Node):
             "home_captured": bool(self._home_captured),
             "navigator_ready": bool(self._runtime_readiness.navigation_allowed),
             "runtime_ready": bool(self._runtime_readiness.ready),
+            "px4_state": {
+                "armed": bool(self._px4_armed),
+                "offboard_enabled": bool(self._px4_offboard_enabled),
+                "nav_state": int(self._px4_nav_state),
+                "failsafe": bool(self._px4_failsafe),
+                "last_vehicle_command_ack": self._last_vehicle_command_ack,
+            },
             "readiness": self._runtime_readiness.to_payload(),
             "health": self._runtime_readiness.to_payload(),
             "px4_input_ownership": self._px4_ownership_guard.to_payload(),
@@ -1994,7 +2097,6 @@ class ObstacleAvoidanceRuntime(Node):
                 "runtime_status",
                 **payload,
                 obstacle_sectors={k: round(float(v), 3) for k, v in self._obstacle_sectors.items()},
-                subgoal_ned=payload["subgoal_ned"],
                 depth_stats=self._last_depth_stats,
                 mapper_summary=mapper_summary,
             )

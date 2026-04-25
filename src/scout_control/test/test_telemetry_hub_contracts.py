@@ -22,6 +22,9 @@ def test_telemetry_hub_builds_canonical_drone_zero_topics() -> None:
         "trajectory_setpoint": "/fmu/in/trajectory_setpoint",
         "vehicle_command": "/fmu/in/vehicle_command",
     }
+    assert topics.vehicle_status == "/fmu/out/vehicle_status_v3"
+    assert topics.vehicle_control_mode == "/fmu/out/vehicle_control_mode"
+    assert topics.vehicle_command_ack == "/fmu/out/vehicle_command_ack_v1"
     assert topics.avoidance_target_cmd == "/drone_0/avoidance/target_cmd"
     assert topics.avoidance_status_json == "/drone_0/avoidance/status_json"
     assert topics.next_cell == "/drone_0/next_cell"
@@ -46,6 +49,9 @@ def test_telemetry_hub_builds_namespaced_drone_topics_and_sensor_overrides() -> 
     assert topics.depth_image == "/custom/depth"
     assert topics.camera_info == "/custom/info"
     assert topics.terrain_range == "/custom/range"
+    assert topics.vehicle_status == "/px4_2/fmu/out/vehicle_status_v3"
+    assert topics.vehicle_control_mode == "/px4_2/fmu/out/vehicle_control_mode"
+    assert topics.vehicle_command_ack == "/px4_2/fmu/out/vehicle_command_ack_v1"
     assert topics.px4_in_vehicle_command == "/px4_2/fmu/in/vehicle_command"
     assert topics.rth_target == "/drone_2/rth_target"
 

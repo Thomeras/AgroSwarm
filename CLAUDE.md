@@ -272,6 +272,11 @@ Dulezite:
 - pokud se `simulation_cam.py` spusti dvakrat v jedne Isaac session, vzniknou
   duplicitni publishery
 - `camera_info` neni v tomto workflow garantovany
+- route/mission command `altitude_m` je kladna vyska nad zemi, ne PX4 NED `z`
+  - spravne: `altitude_m: 5.0`
+  - runtime pak vyrobi PX4 setpoint `z=-5.0`
+  - spatne: `altitude_m: -5.0` -> runtime vyrobi `z=+5.0`
+    a dron se bude snazit jit dolu do zeme misto vzletu
 
 ## 3. Obstacle Avoidance Test Harness
 
@@ -287,6 +292,15 @@ Tento test dnes oddeluje role takto:
 - `obstacle_avoidance_mission` jen posila high-level `goto` / `return_home`
   commandy na `/{drone_ns}/avoidance/target_cmd`
 - `obstacle_viz` je jen vizualizace
+
+Pri manualnim JSON testu pouzij:
+
+```bash
+ros2 topic pub --once /drone_0/avoidance/target_cmd_json std_msgs/String \
+  '{data: "{\"target_id\":\"test1\",\"command\":\"goto\",\"target_ned\":[3.0,0.0],\"altitude_m\":5.0}"}' \
+  --qos-durability transient_local \
+  --qos-reliability best_effort
+```
 
 Logy bezhu jdou do:
 

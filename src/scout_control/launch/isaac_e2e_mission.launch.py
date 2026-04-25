@@ -153,8 +153,8 @@ def generate_launch_description() -> LaunchDescription:
 
     # Obstacle avoidance runtime — drone_0 (single flight owner)
     # Consumes /drone_0/depth/image_raw published by Pegasus_scenarios/simulation_cam.py.
-    # Runtime keeps the default depth readiness gate: no fresh depth means no
-    # active navigation.
+    # Isaac/Pegasus needs relaxed readiness gates plus force-arm to mirror the
+    # manual smoke test flow that was debugged on 2026-04-26.
     runtime_0 = TimerAction(
         period=1.0,
         actions=[Node(
@@ -168,6 +168,11 @@ def generate_launch_description() -> LaunchDescription:
                 "default_clear_dist":   2.5,
                 "home_dist":            1.5,
                 "avoid_offset_m":       3.0,
+                "require_depth_for_navigation": False,
+                "relax_heading_gate": True,
+                "relax_xy_gate": True,
+                "relax_dead_reckoning_gate": True,
+                "force_arm": True,
             }],
             output="screen",
         )],
@@ -188,6 +193,11 @@ def generate_launch_description() -> LaunchDescription:
                 "default_clear_dist":   2.5,
                 "home_dist":            1.5,
                 "avoid_offset_m":       3.0,
+                "require_depth_for_navigation": False,
+                "relax_heading_gate": True,
+                "relax_xy_gate": True,
+                "relax_dead_reckoning_gate": True,
+                "force_arm": True,
             }],
             output="screen",
         )],

@@ -68,6 +68,29 @@ msg.velocity = [nan, nan, nan]   # POVINNĚ nan, ne 0.0
 | QoS mismatch `/swarm/rth_request` (Bug 3) | `field_setup_coordinator` pub BEST_EFFORT, `swarm_agent` sub RELIABLE | `field_setup_coordinator.QOS_VOL.reliability = RELIABLE` |
 | Camera recorder `img=NO` (Bug 4) | Sub na `/camera/image_raw`, bridge outputuje `/drone_N/camera/image_raw` | Per-drone camera subscriber + 10s TTL check s WARN |
 | Pad uložen na (0,0) místo skutečné polohy (Bug 6) | `pos_valid=True` i bez `xy_valid` z PX4 EKF | Kontrola `msg.xy_valid`, blokování H/J dokud EKF není ready, `[xy OK]` v UI |
+| Isaac obstacle runtime „neletí" i když je ARMED+OFFBOARD | Test target posílal `altitude_m=-5.0`, ale runtime očekává kladnou výšku nad zemí a sám převádí na NED `z=-altitude` | Posílat `altitude_m=5.0`; zapsat explicitně do Isaac runbooků |
+
+## Isaac / PX4 Poznámka — semantika `altitude_m`
+
+V runtime a route-provider kontraktu je `altitude_m` vzdy **kladna vyska nad zemi**.
+Neni to primo PX4 NED `z`.
+
+Plati:
+
+```python
+z_ned = -altitude_m
+```
+
+Priklady:
+
+- `altitude_m = 5.0` -> PX4 setpoint `z = -5.0` -> vzlet do 5 m
+- `altitude_m = -5.0` -> PX4 setpoint `z = +5.0` -> prikaz jit dolu do zeme
+
+Tohle bylo root cause pri Isaac live testu 2026-04-26:
+- arm/offboard path byl funkcni
+- runtime posilal setpointy
+- ale test command mel obracene znamenko vysky
+- dron se proto fyzicky nezvedl a po case prisel auto-disarm / failsafe
 
 ---
 

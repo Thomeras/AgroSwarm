@@ -97,6 +97,20 @@ TERMINAL 6 — route provider
 # messages from swarm_agent, Swarm Center, or a temporary external test node.
 ```
 
+Rychly manualni smoke test targetu:
+```bash
+ros2 topic pub --once /drone_0/avoidance/target_cmd_json std_msgs/String \
+  '{data: "{\"target_id\":\"test1\",\"command\":\"goto\",\"target_ned\":[3.0,0.0],\"altitude_m\":5.0}"}' \
+  --qos-durability transient_local \
+  --qos-reliability best_effort
+```
+
+POZOR:
+- `altitude_m` je kladna vyska nad zemi, napr. `5.0`
+- runtime ji prevadi na PX4 NED `z=-5.0`
+- poslat `altitude_m:-5.0` je spatne a vysledny setpoint bude `z=+5.0`
+  (tj. dron se snazi jit 5 m dolu do zeme misto vzletu)
+
 Poznamka:
 - pokud ladis konkretni beh, muzes obema nodum dat stejny `log_run_label:=...`
   a logy pak najdes v `logs/avoidance_logs/`
