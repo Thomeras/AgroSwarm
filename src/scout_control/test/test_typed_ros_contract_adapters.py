@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from scout_control.avoidance.types import (
     AvoidanceStatus,
     TargetCommand,
@@ -39,6 +41,32 @@ def test_target_command_round_trips_through_typed_message_shape() -> None:
     assert parsed.target_id == "cell_x1_y2"
     assert parsed.target_ned == (4.5, -2.0)
     assert parsed.source == "swarm_agent"
+
+
+def test_target_command_from_typed_message_rejects_negative_altitude_m() -> None:
+    msg = SimpleNamespace(
+        command="goto",
+        target_id="bad_altitude",
+        cmd_id="bad_altitude",
+        route_id="",
+        name="goto",
+        frame="local_ned",
+        target_ned=[3.0, 0.0],
+        altitude_mode="relative_ned",
+        altitude_m=-5.0,
+        cruise_speed_mps=2.0,
+        acceptance_radius_m=1.5,
+        clear_radius_m=2.5,
+        allow_replan=True,
+        max_blocked_time_s=30.0,
+        priority="mission",
+        source="test",
+        stamp_ms=1,
+        json_payload="",
+    )
+
+    with pytest.raises(ValueError, match="altitude_m must be >= 0.0"):
+        target_command_from_msg(msg)
 
 
 def test_readiness_message_keeps_agent_a_payload_shape() -> None:

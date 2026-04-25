@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from scout_control.avoidance.depth_projector import CameraIntrinsics, DepthProjector
 from scout_control.avoidance.peer_tracks import PeerTrackStore
@@ -22,6 +23,18 @@ def test_target_command_normalizes_runtime_payload() -> None:
     assert command.cmd_id == "pad_1"
     assert command.target_ned == (12.0, -3.5)
     assert command.to_payload()["target_ned"] == [12.0, -3.5]
+
+
+def test_target_command_rejects_negative_altitude_m() -> None:
+    with pytest.raises(ValueError, match="altitude_m must be >= 0.0"):
+        TargetCommand.from_payload(
+            {
+                "command": "goto",
+                "target_id": "bad_altitude",
+                "target_ned": [3.0, 0.0],
+                "altitude_m": -5.0,
+            }
+        )
 
 
 def test_depth_projector_filters_invalid_depth_samples() -> None:

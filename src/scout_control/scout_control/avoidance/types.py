@@ -173,6 +173,11 @@ class TargetCommand:
             or payload.get("route_id")
             or f"{command}_{int(time.time() * 1000)}"
         )
+        altitude_m = float(payload.get("altitude_m", 5.0))
+        if altitude_m < 0.0:
+            raise ValueError(
+                f"altitude_m must be >= 0.0 (height above ground), got {altitude_m}"
+            )
         return cls(
             command=command,
             target_id=target_id,
@@ -182,7 +187,7 @@ class TargetCommand:
             frame=str(payload.get("frame", "local_ned")),
             target_ned=_xy_tuple(payload.get("target_ned")),
             altitude_mode=str(payload.get("altitude_mode", "relative_ned")),
-            altitude_m=float(payload.get("altitude_m", 5.0)),
+            altitude_m=altitude_m,
             cruise_speed_mps=float(payload.get("cruise_speed_mps", 2.5)),
             acceptance_radius_m=float(
                 payload.get(
