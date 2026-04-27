@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "created_at_s": 1777275470.9519255,
+      "heightmap_json": "heightmap_20260427_093750.json",
+      "heightmap_npy": "heightmap_20260427_093750.npy",
+      "obstacle_count": 0,
+      "obstacles_json": "obstacles_20260427_093750.json",
+      "point_count": 0,
+      "version": 1
+    }
+  ],
+  "latest": {
+    "created_at_s": 1777275470.9519255,
+    "heightmap_json": "heightmap_20260427_093750.json",
+    "heightmap_npy": "heightmap_20260427_093750.npy",
+    "obstacle_count": 0,
+    "obstacles_json": "obstacles_20260427_093750.json",
+    "point_count": 0,
+    "version": 1
+  },
+  "version": 1
+}

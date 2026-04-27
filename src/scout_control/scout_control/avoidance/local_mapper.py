@@ -303,6 +303,17 @@ class LocalMapper:
     def clear_blocked_history(self) -> None:
         self._blocked_layer.fill(0.0)
 
+    def clear_sensor_layers(self) -> None:
+        """Clear accumulated depth observations (fast + scan layers).
+
+        Call this on takeoff completion so ground-level detections captured
+        during ascent don't persist as ghost obstacles at cruise altitude.
+        """
+        self._fast_layer.fill(0.0)
+        self._scan_layer.fill(0.0)
+        self._last_nonempty_insert_stamp = 0.0
+        self._dense_scan_voxels.clear()
+
     def update(self, now_s: float | None = None) -> tuple[LocalMapperSnapshot, LocalClearanceSummary]:
         ref = time.time() if now_s is None else float(now_s)
         self._recenter_grid()
@@ -512,10 +523,9 @@ class LocalMapper:
             return False, f"stale_input_age_{age_s:.2f}s"
         if not self._origin_ready:
             return False, "degraded_origin_not_ready"
-        if observed_cell_count <= 0:
-            return False, self._last_validity_reason or "degraded_no_observed_obstacle_cells"
-        if self._last_nonempty_insert_stamp <= 0.0:
-            return False, "degraded_no_inserted_points"
+        # TRACKING + origin ready → map is valid even if no obstacle cells were observed.
+        # An open field with no obstacles is a valid (clear) map; requiring observed_cell_count > 0
+        # would block planning whenever the depth camera sees only ground below the collision band.
         return True, "tracking"
 
     def _recenter_grid(self) -> None:

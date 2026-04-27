@@ -102,7 +102,7 @@ class SwarmCoordinator(Node):
 
         # ── Initial allocator (placeholder grid — reloaded on mission_ready) ──
         self._cell_by_id: dict = {}
-        self._allocator = self._build_allocator_from_file()
+        self._allocator = self._build_allocator_from_file(required=False)
 
         # ── Subscriptions ─────────────────────────────────────────────────────
         self.create_subscription(
@@ -147,14 +147,25 @@ class SwarmCoordinator(Node):
 
     # ── Allocator helpers ─────────────────────────────────────────────────────
 
-    def _build_allocator_from_file(self) -> TaskAllocator:
+    def _build_allocator_from_file(self, *, required: bool = True) -> TaskAllocator:
         """Load field_grid.json and return a fresh TaskAllocator instance."""
         try:
             with open(GRID_FILE) as f:
                 grid_data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError) as exc:
-            self.get_logger().fatal(f"Cannot load {GRID_FILE}: {exc}")
-            raise RuntimeError(f"Cannot load {GRID_FILE}") from exc
+            if required:
+                self.get_logger().fatal(f"Cannot load {GRID_FILE}: {exc}")
+                raise RuntimeError(f"Cannot load {GRID_FILE}") from exc
+            self.get_logger().warn(
+                f"{GRID_FILE} is not available yet; using empty placeholder "
+                "until /swarm/mission_ready reloads the Phase 2 grid"
+            )
+            grid_data = {
+                "cols": 0,
+                "rows": 0,
+                "cell_size_m": 1.0,
+                "cells": [],
+            }
 
         self._cell_by_id = {c["id"]: c for c in grid_data["cells"]}
         self.get_logger().info(
@@ -226,7 +237,7 @@ class SwarmCoordinator(Node):
         uses the grid that was just surveyed — not whatever was on disk at
         node startup.
         """
-        self._allocator = self._build_allocator_from_file()
+        self._allocator = self._build_allocator_from_file(required=True)
         self._allocator.start_ready_timeout()
         self.get_logger().info(
             "SwarmCoordinator: /swarm/mission_ready received — "

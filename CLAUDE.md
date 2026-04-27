@@ -1,6 +1,6 @@
 # CLAUDE.md — scout_ws
 
-Aktualni stav workspace k 2026-04-22.
+Aktualni stav workspace k 2026-04-27.
 
 Tento dokument je urceny pro praci nad timto repozitarem. Popisuje realnou
 strukturu projektu, aktualni workflow a dulezite rozdily mezi produkcni cestou,
@@ -47,9 +47,10 @@ scout_ws/
 ├── docs/
 │   ├── guides/
 │   ├── internal/
+│   ├── launch_files/             # operatorni runbooky (isaac_phase123_e2e_test.txt atd.)
 │   └── plans/
-├── launch_files/                 # runbooky a rucni postupy
-├── perimeters/                   # perimeter, grid a home JSON data
+├── perimeters/                   # perimeter, grid, home JSON data + field_model/
+│   └── field_model/              # Phase 3 vystup: heightmap, obstacles, manifest
 ├── cell_data/                    # historicka data po navstivenych bunkach
 ├── logs/
 │   └── avoidance_logs/
@@ -65,7 +66,11 @@ scout_ws/
     └── scout_control/
         ├── launch/
         ├── scout_control/
-        │   └── avoidance/
+        │   ├── avoidance/
+        │   ├── mapping/          # Phase 3: Heightmap2D, ObstacleExtractor, FieldModelBuilder
+        │   ├── missions/         # Phase 3: MappingMission node
+        │   ├── vision/           # pomocne vizualni moduly
+        │   └── utils/
         ├── test/
         ├── worlds/
         └── config/
@@ -77,10 +82,12 @@ scout_ws/
 - ROS2 package: `src/scout_control`
 - Gazebo full E2E launch: `src/scout_control/launch/full_e2e_mission.launch.py`
 - Isaac full E2E launch: `src/scout_control/launch/isaac_e2e_mission.launch.py`
+- Isaac Phase 1+2+3 E2E protokol: `docs/launch_files/isaac_phase123_e2e_test.txt`
+- Phase 3 mapping launch: `src/scout_control/launch/mapping_mission.launch.py`
 - obstacle test launch:
   `src/scout_control/launch/obstacle_avoidance_test.launch.py`
 - swarm allocator wrapper:
-  `src/scout_control/scout_control/swarm_coordinator.py`
+  `src/scout_control/scout_control/core/swarm_coordinator.py`
 - interni allocator:
   `src/scout_control/scout_control/task_allocator.py`
 - GCS TCP bridge:
@@ -103,6 +110,20 @@ Tyto komponenty jsou dnes nejbliz aktualni produkcni / operatorni ceste:
 - `spray_controller.py`
 - `cell_data_recorder.py`
 - `ml_interface.py`
+
+### Mapping Pipeline (Phase 3 — k 2026-04-27 funkční)
+
+- `mapping/field_model_builder.py` — ROS2 node; akumuluje depth frames do
+  `Heightmap2D`, na `/swarm/mapping_complete` persistuje do `perimeters/field_model/`
+- `mapping/heightmap.py` — Heightmap2D: 2.5D mřížka, min NED-z per cell
+- `mapping/obstacle_extractor.py` — klasifikace překážek z point cloudu
+- `missions/mapping_mission.py` — generuje lawnmower trasu z `field_boundary.json`,
+  posílá waypoints do runtime, hlásí progress na `/swarm/mapping_progress`
+
+Klíčová gotcha depth→heightmap:
+- `depth_projector.project_to_world_points()` filtruje přes collision band —
+  terrain body na world_z≈0 jsou vyhozeny. Pro heightmap vždy volat
+  `depth_to_body_points()` + ruční world projekce (opraveno 2026-04-27).
 
 ### Runtime-Centric Obstacle Avoidance Branch (Phase 1 Finalized)
 
@@ -174,6 +195,11 @@ uprav.
   - pousti headless `manual_controller` s `ui:=False`
   - defaultne `drone_count:=1`
   - predava `camera_topic_template` a `depth_topic_template` do `gcs_bridge`
+- `mapping_mission.launch.py`
+  - Phase 3 mapping pipeline: `obstacle_avoidance_runtime` + `field_model_builder`
+    + `mapping_mission`
+  - parametry: `altitude_m`, `line_spacing_m`, `side_overlap_pct`, `cruise_speed`
+  - spousti se az po ukonceni Phase 1+2 backendu (samostatny terminal)
 - `obstacle_avoidance_test.launch.py`
   - pousti `obstacle_avoidance_runtime`, `obstacle_avoidance_mission`,
     `obstacle_viz`
@@ -278,7 +304,32 @@ Dulezite:
   - spatne: `altitude_m: -5.0` -> runtime vyrobi `z=+5.0`
     a dron se bude snazit jit dolu do zeme misto vzletu
 
-## 3. Obstacle Avoidance Test Harness
+## 3. Phase 3 — Mapping Mission
+
+Spousti se az po ukonceni Phase 1+2 backendu (Ctrl+C v terminalu Phase 1+2).
+PX4, MicroXRCE a Isaac nechat bezet.
+
+```bash
+ros2 launch scout_control mapping_mission.launch.py \
+  drone_count:=1 \
+  altitude_m:=8.0 \
+  line_spacing_m:=4.0 \
+  side_overlap_pct:=30.0 \
+  cruise_speed:=2.0
+```
+
+Sledovani:
+
+```bash
+ros2 topic echo /swarm/mapping_progress
+```
+
+Vystup v `perimeters/field_model/` — viz sekce Data nizse.
+
+Dulezite: `field_model_builder` potrebuje tect depth z `/drone_0/depth/image_raw`
+a pozici z `/drone_0/.../vehicle_local_position_v1`. Obe musi tect i v Phase 3.
+
+## 4. Obstacle Avoidance Test Harness
 
 Pouziva se:
 
@@ -362,12 +413,19 @@ Na path konstanty nepouzivej hardcoded rooty tam, kde jde pouzit:
 
 ### Data, Ktera Mise Produkuje
 
-- `perimeters/field_perimeter.json`
+Phase 1+2 (field setup + swarm mise):
+- `perimeters/field_boundary.json`
 - `perimeters/field_grid.json`
 - `perimeters/home_positions.json`
 - `spray_log.json`
 - `cell_data/<cell_id>/...`
 - `logs/avoidance_logs/*.jsonl`
+
+Phase 3 (mapping):
+- `perimeters/field_model/heightmap_<ts>.json`  — 2.5D terrain mapa (NED z per cell)
+- `perimeters/field_model/heightmap_<ts>.npy`   — numpy dump stejnych dat
+- `perimeters/field_model/obstacles_<ts>.json`  — klasifikovane prekazky
+- `perimeters/field_model/manifest.json`        — index vsech verzi, pointer na latest
 
 ### PX4 / NED
 
@@ -426,6 +484,16 @@ python3 scout_launcher.py
 - nektere scenare a starsi poznamky stale pocitaji s `~/scout_ws`
 - `scout_launcher.py` ma workspace root natvrdo, neni plne prenositelny
 - worktree muze byt spinavy; nevracet cizi zmeny bez explicitniho zadani
+
+### Runtime RTH — kriticky poznatek (opraveno 2026-04-27)
+
+- `obstacle_avoidance_runtime` musi dostat home pozici z `/drone_N/rth_target`
+  (posila `home_manager`, `geometry_msgs/Point`, TRANSIENT_LOCAL).
+- Bez tohoto subscriberu runtime pouzival fyzickou spawn pozici dronu jako home.
+- V Isaac Sim dron spawni na NED(0,0), pad muze byt na NED(0,-5) → RTH smer jinam.
+- Po pridani `_rth_target_cb` subscriberu je home vzdy roven prirazenemu padu.
+- `_complete_target()` po `return_home` prechazi do `LANDING` (drive IDLE → dron
+  hoveroal bez pristani).
 
 ## Dokumentacni Konvence V Teto Repu
 

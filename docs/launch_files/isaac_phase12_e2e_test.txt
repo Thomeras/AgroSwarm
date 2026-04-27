@@ -182,13 +182,13 @@ ros2 run scout_control field_setup_tool
 ```
 
 Klavesy:
-- `1..N`  — assign pad k aktualne ovladanemu dronu (pad_id)
-- `M`     — manual control mode toggle
-- `C`     — mark corner (LEGACY 4-corner mode)
+- `H`     — assign pad_0 podle aktualni pozice drone_0
+- `J`     — assign pad_1 podle aktualni pozice drone_1
+- `Tab`   — prepnout aktivni dron v UI
+- `C`     — mark corner submenu (LEGACY 4-corner mode: 1=NE, 2=NW, 3=SE, 4=SW)
 - `B`     — mark boundary point (Phase 2B polygon vertex)
 - `F`     — finalize / close polygon (Phase 2B)
-- `S`     — start mission
-- `R`     — RTH all
+- `M`     — confirm/start mission az po READY_FOR_MISSION
 - `Q`     — quit
 
 ALTERNATIVA pro Isaac/headless: `field_setup_tool` ma TTY zavislost.
@@ -266,8 +266,8 @@ QoS, runtime crashi ani EKF healthy gates. Zbyva arm/offboard handoff do PX4.
 DOPORUCENY POSTUP PRO PHASE 2 OVERENI V ISAAC
 ---------------------------------------------
 1. Po startu drone_0 pockej, az field_setup_coordinator hlasi `ASSIGN_PADS`.
-2. Ve `field_setup_tool` (T6) nebo Swarm Center (T7) stiskni `1` ->
-   assign pad_0 dronu_0.
+2. Ve `field_setup_tool` (T6) stiskni `H`, nebo ve Swarm Center posli
+   `assign_pad` pro `pad_0` -> assign pad_0 dronu_0.
 3. Coordinator prejde do `CAPTURE_BOUNDARY`.
 4. V Swarm Center tab `Manual` (nebo curses M-mode v T6) preleti drona po
    obvodu pole.
@@ -275,7 +275,7 @@ DOPORUCENY POSTUP PRO PHASE 2 OVERENI V ISAAC
 6. Po zachyceni N polygon vertices stiskni `F` (close polygon).
 7. Coordinator prejde do `GENERATE_GRID` -> `WAITING_FOR_LANDING`.
 8. Po landed confirm prejde do `READY_FOR_MISSION`.
-9. Stiskni `S` pro start mise.
+9. Stiskni `M` pro start mise.
 
 
 RUCNE PUBLISHE BEZ field_setup_tool (headless varianta)
@@ -286,7 +286,7 @@ Pokud Isaac session nema volny TTY pro curses, lze polygon nahodit pres
 ```bash
 # Pad assignment
 ros2 topic pub --once /swarm/pad_assignment std_msgs/String \
-  '{data: "{\"drone_id\":\"drone_0\",\"pad_id\":\"pad_0\"}"}'
+  '{data: "{\"drone_id\":\"drone_0\",\"pad_id\":\"pad_0\",\"x\":0.0,\"y\":0.0,\"z\":-0.5}"}'
 
 # Boundary points (publikuj per vertex; pohled v NED z aktualni polohy)
 ros2 topic pub --once /field/boundary_point std_msgs/String \
@@ -302,7 +302,8 @@ ros2 topic pub --once /field/boundary_point std_msgs/String \
 ros2 topic pub --once /field/boundary_close std_msgs/String '{data: "{}"}'
 
 # Mission confirm
-ros2 topic pub --once /field/mission_confirm std_msgs/String '{data: "{}"}'
+ros2 topic pub --once /field/mission_confirm std_msgs/String \
+  '{data: "{\"source\":\"manual_topic\",\"confirmed\":true}"}'
 ```
 
 
@@ -391,7 +392,7 @@ prejde do `GENERATE_GRID` a `field_grid.json` se vygeneruje.
 
 [ ] **Setup state machine pruchod.**
 ```bash
-ros2 topic echo /field/setup_state
+ros2 topic echo /field/setup_status
 ```
 IDLE -> ASSIGN_PADS -> CAPTURE_BOUNDARY -> GENERATE_GRID -> WAITING_FOR_LANDING -> READY_FOR_MISSION
 
@@ -400,7 +401,7 @@ FULL E2E ACCEPTANCE CHECKS
 --------------------------
 
 [ ] **Mission start.**
-Po stisku `S` (curses) nebo `Start Mission` (Swarm Center) swarm_coordinator
+Po stisku `M` (curses) nebo `Start Mission` (Swarm Center) swarm_coordinator
 alokuje cely a posila `/{drone}/next_cell`.
 
 [ ] **Cell delegation.**
@@ -455,7 +456,7 @@ ros2 topic echo --once /swarm/home_positions
 
 Setup flow live:
 ```bash
-ros2 topic echo /field/setup_state
+ros2 topic echo /field/setup_status
 ros2 topic echo /field/boundary_point
 ros2 topic echo /field/setup_complete
 ```

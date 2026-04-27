@@ -1,0 +1,236 @@
+ISAAC PHASE 1+2+3 E2E - LAUNCH RUNBOOK
+======================================
+
+Co se overuje:
+  Phase 1: obstacle_avoidance_runtime je jediny PX4 flight owner
+  Phase 2: setup zapise home_positions.json, field_boundary.json, field_grid.json
+  Phase 3: mapping mission leti lawnmower a ulozi perimeters/field_model/*
+
+Souradnice:
+  HOME_PAD pad_0:  NED(0.0, -5.0, -0.5)
+  FIELD SW:        NED(5.0,  0.0, -5.0)
+  FIELD SE:        NED(5.0, 20.0, -5.0)
+  FIELD NE:        NED(35.0, 20.0, -5.0)
+  FIELD NW:        NED(35.0, 0.0, -5.0)
+
+
+0. CLEAN
+--------
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+rm -f perimeters/field_boundary.json perimeters/field_grid.json perimeters/home_positions.json
+rm -rf perimeters/field_model && mkdir -p perimeters/field_model
+```
+
+
+1. PX4 SITL
+-----------
+
+```bash
+cd ~/PX4-Autopilot
+PX4_SIM_MODEL=gazebo-classic_iris ./build/px4_sitl_default/bin/px4 \
+  ROMFS/px4fmu_common/ -s ROMFS/px4fmu_common/init.d-posix/rcS
+```
+
+Pokud parametry jeste nejsou nastavene (jen jednou):
+
+```
+param set CBRK_SUPPLY_CHK 894281
+param set COM_LOW_BAT_ACT 0
+param set BAT_CRIT_THR 0.0
+param set BAT_LOW_THR 0.0
+param set BAT_EMERGEN_THR 0.0
+param set EKF2_MAG_TYPE 0
+param set EKF2_MAG_CHECK 0
+param save
+```
+
+
+2. MicroXRCE
+------------
+
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+
+3. BUILD
+--------
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select scout_control
+source install/setup.bash
+```
+
+
+4. ISAAC SIM
+------------
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+export ROS_DISTRO=jazzy
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+ISAAC_ROS2=~/isaac_env_511/lib/python3.11/site-packages/isaacsim/exts/isaacsim.ros2.bridge
+export LD_LIBRARY_PATH=${ISAAC_ROS2}/jazzy/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=${ISAAC_ROS2}/jazzy/rclpy:$PYTHONPATH
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH
+source ~/isaac_env_511/bin/activate
+isaacsim
+```
+
+V Isaac UI:
+  1. Open stage: /home/tj/_Data/_Projekty/TJlabs/scout_ws/worlds/agro_field.usd
+  2. Pegasus UI: PX4 backend -> Load Vehicle
+  3. Window > Script Editor, spust JEDNOU:
+       exec(open("/home/tj/_Data/_Projekty/TJlabs/scout_ws/Pegasus_scenarios/simulation_cam.py").read())
+  4. Play
+  5. V PX4 terminalu zmizi "Waiting for simulator to accept connection"
+
+
+5. PHASE 1+2 BACKEND
+---------------------
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+
+ros2 launch scout_control isaac_e2e_mission.launch.py \
+  drone_count:=1 \
+  altitude:=5.0 \
+  cell_size_m:=5.0 \
+  cruise_speed:=2.0 \
+  ready_timeout:=600.0 \
+  camera_topic_template:=/drone_{index}/camera/image_raw \
+  depth_topic_template:=/drone_{index}/depth/image_raw
+```
+
+Ocekavany stav v logu:
+  field_setup_coordinator: Waiting for pad assignments
+  swarm_agent_0: waiting for /swarm/mission_ready
+
+
+6. SETUP - HEADLESS INJECT
+--------------------------
+
+Spust v novem terminalu (source setup.bash neni potreba, jde o plain ros2 CLI):
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+
+# pad_0
+ros2 topic pub --once /swarm/pad_assignment std_msgs/String \
+  '{data: "{\"drone_id\":\"drone_0\",\"pad_id\":\"pad_0\",\"x\":0.0,\"y\":-5.0,\"z\":-0.5}"}'
+
+# pole - 4 vertexy
+ros2 topic pub --once /field/boundary_point std_msgs/String \
+  '{data: "{\"index\":0,\"ned\":{\"x\":5.0,\"y\":0.0,\"z\":-5.0},\"type\":\"vertex\"}"}'
+ros2 topic pub --once /field/boundary_point std_msgs/String \
+  '{data: "{\"index\":1,\"ned\":{\"x\":5.0,\"y\":20.0,\"z\":-5.0},\"type\":\"vertex\"}"}'
+ros2 topic pub --once /field/boundary_point std_msgs/String \
+  '{data: "{\"index\":2,\"ned\":{\"x\":35.0,\"y\":20.0,\"z\":-5.0},\"type\":\"vertex\"}"}'
+ros2 topic pub --once /field/boundary_point std_msgs/String \
+  '{data: "{\"index\":3,\"ned\":{\"x\":35.0,\"y\":0.0,\"z\":-5.0},\"type\":\"vertex\"}"}'
+
+# uzavri polygon -> zapise field_boundary.json + field_grid.json
+ros2 topic pub --once /field/boundary_close std_msgs/String \
+  '{data: "{\"source\":\"manual_topic\"}"}'
+
+# over ze soubory existuji
+cat perimeters/home_positions.json | python3 -m json.tool
+cat perimeters/field_boundary.json | python3 -m json.tool
+cat perimeters/field_grid.json | python3 -m json.tool
+```
+
+Coordinator prejde do WAITING_FOR_LANDING. Posli landed confirmation:
+
+```bash
+ros2 topic pub --once /swarm/landed_confirmation std_msgs/String \
+  '{data: "{\"drone_id\":\"drone_0\"}"}'
+```
+
+
+7. PHASE 1+2 MISE - START
+--------------------------
+
+```bash
+ros2 topic pub --once /field/mission_confirm std_msgs/String \
+  '{data: "{\"source\":\"manual_topic\",\"confirmed\":true}"}'
+```
+
+Sleduj progress:
+
+```bash
+ros2 topic echo /drone_0/avoidance/status
+```
+
+Ocekavani: dron vzleti, leti po bunkach, swarm_coordinator hlasi PROGRESS N/24.
+Nechej doletit nebo ukonci Ctrl+C az uvidir ze mise bezi (aspon 2-3 bunky done).
+
+
+8. STOP PHASE 1+2 PRED PHASE 3
+--------------------------------
+
+Ukonci Terminal z kroku 5 (Ctrl+C).
+PX4, MicroXRCE a Isaac nech bezet.
+
+
+9. PHASE 3 MAPPING
+------------------
+
+```bash
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+
+ros2 launch scout_control mapping_mission.launch.py \
+  drone_count:=1 \
+  altitude_m:=8.0 \
+  line_spacing_m:=4.0 \
+  side_overlap_pct:=30.0 \
+  cruise_speed:=2.0
+```
+
+Sleduj:
+
+```bash
+ros2 topic echo /swarm/mapping_progress
+```
+
+Over vystup:
+
+```bash
+ls -lah perimeters/field_model
+cat perimeters/field_model/manifest.json | python3 -m json.tool
+```
+
+Ocekavane soubory:
+  perimeters/field_model/heightmap_<ts>.json
+  perimeters/field_model/heightmap_<ts>.npy
+  perimeters/field_model/obstacles_<ts>.json
+  perimeters/field_model/manifest.json
+
+
+TROUBLESHOOTING
+---------------
+
+Dron se po mission_confirm nehybe:
+
+```bash
+ros2 topic echo --once /drone_0/avoidance/status | grep -E 'phase|state|planner'
+ros2 topic hz /drone_0/depth/image_raw
+```
+
+  planner_state=DEGRADED -> depth netece nebo mapper nema pose; over hz depth
+  phase=BLOCKED -> viz blocked_reason v status
+
+Depth netece -> v Isaac Script Editoru spust simulation_cam.py (jen jednou!)
+
+PX4 "Waiting for simulator...":
+  -> ROS2 backend nezapinaj pred Isaac Play
+
+vic nez 1 publisher na /fmu/in/trajectory_setpoint:
+  -> zustavaji bezet dva backendy paralelne; ukonci Phase 1+2 pred spustenim Phase 3

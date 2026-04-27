@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
 from px4_msgs.msg import (
     OffboardControlMode,
@@ -125,6 +125,18 @@ QOS_EVENTS = QoSProfile(
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
+)
+QOS_TARGET_CMD = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+QOS_RTH_TARGET = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
 )
 
 DT = 0.1
@@ -597,14 +609,14 @@ class ObstacleAvoidanceRuntime(Node):
             ScoutTargetCommandMsg or String,
             topics.avoidance_target_cmd,
             self._target_cmd_cb,
-            QOS_STATUS,
+            QOS_TARGET_CMD,
         )
         if ScoutTargetCommandMsg is not None:
             self.create_subscription(
                 String,
                 topics.avoidance_target_cmd_json,
                 self._target_cmd_json_cb,
-                QOS_STATUS,
+                QOS_TARGET_CMD,
             )
         self._peer_pos_subs = []
         if PeerTelemetry is not None:
@@ -616,6 +628,12 @@ class ObstacleAvoidanceRuntime(Node):
                     QOS_SENSOR,
                 )
             )
+        self.create_subscription(
+            Point,
+            topics.rth_target,
+            self._rth_target_cb,
+            QOS_RTH_TARGET,
+        )
 
         self.create_timer(DT, self._control_loop)
         self.create_timer(0.1, self._publish_obstacle_state)
@@ -807,6 +825,14 @@ class ObstacleAvoidanceRuntime(Node):
             self._altitude_controller.update_terrain_reference(
                 terrain_z_ned=float(self._drone_z) + terrain_range_m,
             )
+
+    def _rth_target_cb(self, msg: Point) -> None:
+        self._home_x = float(msg.x)
+        self._home_y = float(msg.y)
+        self._home_captured = True
+        self.get_logger().info(
+            f"home set from rth_target: NED({self._home_x:.2f}, {self._home_y:.2f})"
+        )
 
     def _depth_cb(self, msg: Image) -> None:
         try:
@@ -1350,6 +1376,7 @@ class ObstacleAvoidanceRuntime(Node):
         self._ensure_takeoff_activation()
         self._publish_setpoint(self._vsp_x, self._vsp_y, self._vsp_z)
         if self._pos_valid and abs(self._drone_z - self._vsp_z) < ALT_TOL:
+            self._local_mapper.clear_sensor_layers()
             self._transition_to(RuntimePhase.CRUISE_TO_TARGET, reason="takeoff_altitude_reached")
 
     def _do_cruise_to_target(self) -> None:
@@ -1645,9 +1672,13 @@ class ObstacleAvoidanceRuntime(Node):
             target_name=self._active_target_name,
             target_ned=[round(self._active_target_xy[0], 3), round(self._active_target_xy[1], 3)],
         )
+        was_return_home = self._active_command == "return_home"
         self._clear_active_target()
         self._avoidance_active = False
-        self._transition_to(RuntimePhase.IDLE, reason=reason)
+        if was_return_home:
+            self._transition_to(RuntimePhase.LANDING, reason="return_home_reached")
+        else:
+            self._transition_to(RuntimePhase.IDLE, reason=reason)
 
     def _distance_to(self, x: float, y: float) -> float:
         return math.hypot(x - self._drone_x, y - self._drone_y)

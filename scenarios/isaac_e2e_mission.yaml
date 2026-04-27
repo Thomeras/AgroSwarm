@@ -1,16 +1,43 @@
-name: "Full E2E Mission — Isaac Sim (agro_field)"
-description: >
-  Swarm spray E2E mise s Isaac Sim / Pegasus backendem.
-  Bez Gazebo sensor bridges — Isaac Sim publikuje ROS2 topicy přímo.
+name: "Phase 1+2+3 E2E — Isaac Sim (agro_field)"
+description: |
+  Phase 1+2+3 E2E mise s Isaac Sim / Pegasus backendem.
+  Bez Gazebo sensor bridges — Isaac Sim publikuje ROS2 topicy primo.
   Produkční flight owner je obstacle_avoidance_runtime; field_setup_tool je
   setup-only bridge bez PX4 setpoint publisherů.
-  Spusť PX4 SITL + MicroXRCE + Isaac Sim RUČNĚ před spuštěním tohoto scénáře.
+  Spust PX4 SITL + MicroXRCE + Isaac Sim RUCNE pred spustenim tohoto scenare.
 
   Prerekvizity (spustit manuálně):
     T1: cd ~/PX4-Autopilot && PX4_SIM_MODEL=gazebo-classic_iris ./build/px4_sitl_default/bin/px4 ROMFS/px4fmu_common/ -s ROMFS/px4fmu_common/init.d-posix/rcS
     T2: MicroXRCEAgent udp4 -p 8888
-    T3: isaac  (otevři agro_field.usd → Load Iris Vehicle → Play ▶)
+    T3: isaacsim, otevrit worlds/agro_field.usd, Load PX4 vehicle,
+        spustit Pegasus_scenarios/simulation_cam.py jen jednou, potom Play.
 
-ros2_command: "ros2 launch scout_control isaac_e2e_mission.launch.py"
+  Phase 3 mapping se spousti po Phase 2 setupu samostatnym scenarem
+  "Phase 3 Mapping Mission" nebo prikazem:
+    ros2 launch scout_control mapping_mission.launch.py drone_count:=1
+
+  Runbook:
+    docs/launch_files/isaac_phase12_e2e_test.txt
+
+ros2_command: >
+  ros2 launch scout_control isaac_e2e_mission.launch.py
+    drone_count:=1
+    altitude:=5.0
+    cell_size_m:=5.0
+    cruise_speed:=2.0
+    ready_timeout:=600.0
+
 extra_terminal_commands:
-  - "cd swarm_center && python3 main.py --drones 1 --base-port 14540 --world-image ../worlds/agro_field_overlay.png"
+  - title: "Field Setup Tool"
+    command: >
+      ros2 run scout_control field_setup_tool
+
+  - title: "Swarm Center GCS"
+    command: >
+      cd /home/tj/_Data/_Projekty/TJlabs/scout_ws/swarm_center &&
+      python3 main.py --drones 1 --base-port 14540
+        --world-image ../worlds/agro_field_overlay.png
+
+  - title: "Isaac Phase 1+2+3 Checks"
+    command: >
+      bash /home/tj/_Data/_Projekty/TJlabs/scout_ws/scripts/isaac_phase123_checks.sh

@@ -740,14 +740,28 @@ def _build_and_run(
 
     # Extra terminals declared in scenario yaml (e.g. curses UI nodes that need a real TTY)
     for extra_cmd_template in scenario.extra_terminal_commands:
-        extra_cmd = extra_cmd_template.format(world=world, model=model, gz_model=gz_model)
+        if isinstance(extra_cmd_template, dict):
+            title_template = str(extra_cmd_template.get("title", "Extra"))
+            cmd_template = str(extra_cmd_template.get("command", ""))
+        else:
+            title_template = ""
+            cmd_template = str(extra_cmd_template)
+        if not cmd_template.strip():
+            continue
+        extra_cmd = cmd_template.format(world=world, model=model, gz_model=gz_model)
         extra_full = (
             f"source {ROS2_SETUP} && "
             f"source {WS_SETUP} && "
             f"{extra_cmd}"
         )
         # derive a readable title from the command
-        title = extra_cmd.split("ros2 run ")[-1].split(" ")[1] if "ros2 run" in extra_cmd else extra_cmd[:40]
+        title = (
+            title_template.format(world=world, model=model, gz_model=gz_model)
+            if title_template
+            else extra_cmd.split("ros2 run ")[-1].split(" ")[1]
+            if "ros2 run" in extra_cmd
+            else extra_cmd[:40]
+        )
         _open_terminal(title, extra_full)
         print(_dim(f"Extra terminal: {extra_cmd}"))
 

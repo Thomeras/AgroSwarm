@@ -18,6 +18,8 @@ setup(
             'launch/full_e2e_mission.launch.py',
             'launch/isaac_e2e_mission.launch.py',
             'launch/obstacle_avoidance_test.launch.py',
+            'launch/mapping_mission.launch.py',
+            'launch/precision_landing_test.launch.py',
         ]),
         ('share/' + package_name + '/worlds', [
             'worlds/agricultural_field.world',
@@ -51,6 +53,9 @@ setup(
             'cell_data_recorder        = scout_control.core.cell_data_recorder:main',
             'ml_interface              = scout_control.core.ml_interface:main',
             'obstacle_avoidance_runtime = scout_control.core.obstacle_avoidance_runtime:main',
+            'mapping_mission           = scout_control.missions.mapping_mission:main',
+            'field_model_builder       = scout_control.mapping.field_model_builder:main',
+            'precision_landing         = scout_control.vision.precision_landing:main',
             # utils
             'grid_generator            = scout_control.utils.grid_generator:main',
             'task_allocator            = scout_control.utils.task_allocator:main',

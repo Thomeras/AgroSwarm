@@ -192,7 +192,16 @@ class FieldSetupCoordinator(Node):
             )
             return
 
-        self._pads[pad_id] = {"drone_id": drone_id, "x": x, "y": y, "z": z}
+        self._pads[pad_id] = {
+            "drone_id": drone_id,
+            "x": x,
+            "y": y,
+            "z": z,
+            "charging_capable": bool(data.get("charging_capable", False)),
+            "orientation_deg": float(data.get("orientation_deg", 0.0)),
+            "service_priority": int(data.get("service_priority", 0)),
+            "allowed_drone_classes": data.get("allowed_drone_classes", ["*"]),
+        }
         self.get_logger().info(
             f"Pad assigned: {pad_id} -> {drone_id} NED({x:.2f},{y:.2f})"
         )
@@ -554,11 +563,17 @@ class FieldSetupCoordinator(Node):
             drone_id = pad["drone_id"]
             x, y, z  = pad["x"], pad["y"], pad["z"]
             home_positions.append({
-                "pad_id":   pad_id,
+                "pad_id": pad_id,
                 "drone_id": drone_id,
-                "ned":      {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
-                "gz_pose":  {"x": round(y, 3), "y": round(x, 3), "z": 0.0},
-                "status":   "available",
+                "ned": {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
+                "gz_pose": {"x": round(y, 3), "y": round(x, 3), "z": 0.0},
+                "status": "available",
+                "charging_capable": bool(pad.get("charging_capable", False)),
+                "orientation_deg": float(pad.get("orientation_deg", 0.0)),
+                "service_priority": int(pad.get("service_priority", 0)),
+                "allowed_drone_classes": list(
+                    pad.get("allowed_drone_classes", ["*"]) or ["*"]
+                ),
             })
         os.makedirs(PERIMETERS_DIR, exist_ok=True)
         with open(HOME_POS_FILE, "w") as f:

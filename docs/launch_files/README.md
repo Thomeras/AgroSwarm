@@ -6,6 +6,8 @@ Tato slozka obsahuje rucni operatorni postupy a poznamky ke spousteni.
 
 - `launch_info.txt` — obecny prehled spousteni workspace
 - `launch_sim_e2e.txt` — Isaac/Pegasus workflow a odkazy na konkretni postupy
+- `isaac_phase12_e2e_test.txt` — overeni Phase 1 + Phase 2 v Isaac Sim
+- `isaac_phase123_e2e_test.txt` — overeni Phase 1 + Phase 2 + Phase 3 v Isaac Sim
 - `isaac_full_e2e_mission.txt` — rucni postup pro Isaac full E2E flow
 - `isaac_obstacle_avoidance_test.txt` — rucni postup pro obstacle avoidance test
 

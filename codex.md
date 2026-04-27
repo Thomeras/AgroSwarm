@@ -453,3 +453,75 @@ Phase 1 je architektonicky kompletní:
 - Live E2E swarm mise v simulaci pro ověření souhry všech nových komponent.
 - Nástroje pro sběr perimetru a metadata pro home pady.
 - Postupné mazání `navigation_backend=direct` kódu ze `swarm_agent`.
+
+## Codex Log — 2026-04-27 (Phase 1+2+3 — první úspěšný E2E test)
+
+### Kontext
+
+- Proběhl první plný E2E test podle protokolu `docs/launch_files/isaac_phase123_e2e_test.txt`.
+- PX4 SITL + MicroXRCE + Isaac Sim + Pegasus, jeden dron (`drone_0`).
+- Phase 1+2: setup padu a hranice pole, mise 24/24 buněk dokončena.
+- Phase 3: mapping lawnmower 22 waypointů dokončeno, soubory vytvořeny.
+
+### Co bylo zjištěno z logů (logs/tmp/log1, log2, log3)
+
+**Phase 1+2 — status:**
+- `field_setup_coordinator` správně zachytil pad_0 NED(0.00,-5.00), všechny 4 vertexy
+  a uzavřel polygon.
+- Soubory uloženy: `home_positions.json`, `field_boundary.json`, `field_grid.json`.
+- Mise 24/24 buněk proletěna. Každá buňka potvrzena z `last_completed_target_id`.
+- **RTH po misi šel na NED(0.0, 0.0)** místo NED(0.0, -5.0) — dron dolétl ale nepřistál,
+  jen hoveroal. PX4 battery RTL zakročil a přistál samostatně.
+
+**Phase 3 — status:**
+- Lawnmower proletěn, `swarm/mapping_progress` hlásil `drone_route_complete`,
+  `mapping_routes_complete`, `done`.
+- Soubory vytvořeny: `heightmap_*.json`, `heightmap_*.npy`, `obstacles_*.json`,
+  `manifest.json`.
+- **Heightmap byl celý NaN** — `point_count: 0`, 40000/40000 buněk prázdných.
+
+### Dva opravené bugy (2026-04-27)
+
+**Bug 1 — runtime RTH na nesprávné souřadnice:**
+- `obstacle_avoidance_runtime` nikdy neposlouchal na `/{drone_ns}/rth_target`
+  (kde `home_manager` posílá přiřazený pad jako `geometry_msgs/Point`, TRANSIENT_LOCAL).
+- Místo toho zachytil home z fyzické spawn pozice dronu v `_capture_home_if_needed()`
+  — v Isaac Sim dron spawní na NED(0,0), nikoliv na padu NED(0,-5).
+- **Oprava**: přidán subscriber na `topics.rth_target` s `QOS_RTH_TARGET`
+  (RELIABLE, TRANSIENT_LOCAL, depth=1). Callback `_rth_target_cb` okamžitě
+  nastaví `_home_x`, `_home_y`, `_home_captured = True`.
+
+**Bug 2 — dron po RTH nepřistál:**
+- `_complete_target()` vždy přecházel do `RuntimePhase.IDLE` bez ohledu na typ příkazu.
+- **Oprava**: v `_complete_target()` se před `_clear_active_target()` uloží
+  `was_return_home = self._active_command == "return_home"`. Pokud True, přechod
+  do `RuntimePhase.LANDING` místo IDLE.
+
+**Bug 3 — prázdná heightmap:**
+- `field_model_builder._on_depth` volal `project_to_world_points()` — ta filtruje
+  body přes collision band `(-1, 1)` v body FRD + podmínku
+  `world_z < ground_z_ned - epsilon`. Terrain body na world_z ≈ 0 ani jedno
+  nesplňují → vyhozeny, heightmap prázdný.
+- `project_to_world_points` je navržena pro obstacle detection, ne pro heightmap.
+- **Oprava**: `_on_depth` teď volá `depth_to_body_points()` + ruční projekce
+  do world NED bez jakéhokoliv band filtru. Všechny validní depth body se
+  zapisují do heightmapy.
+
+### Výsledný stav po opravách
+
+- Phase 1: ✓ mise, field setup, home pad assignment
+- Phase 2: ✓ perimeter, grid, home_positions uloženy
+- Phase 3: ✓ lawnmower odletěn, soubory vytvořeny — heightmap bude plný při
+  příštím testu (fix nasazen)
+- RTH: ✓ správná poloha padu, automatické přistání (fix nasazen)
+
+### Klíčové soubory změněné v tomto logu
+
+- `src/scout_control/scout_control/core/obstacle_avoidance_runtime.py`
+  - import `Point` z `geometry_msgs.msg`
+  - `QOS_RTH_TARGET` konstanta
+  - subscriber na `topics.rth_target`
+  - callback `_rth_target_cb`
+  - `_complete_target` → LANDING pokud `return_home`
+- `src/scout_control/scout_control/mapping/field_model_builder.py`
+  - `_on_depth` přepsán na `depth_to_body_points` + manuální world projekce

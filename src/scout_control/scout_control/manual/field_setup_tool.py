@@ -475,6 +475,8 @@ class FieldSetupTool(Node):
 
 
 def main(args=None) -> None:
+    import os
+
     rclpy.init(args=args)
     node = FieldSetupTool()
 
@@ -483,7 +485,18 @@ def main(args=None) -> None:
 
     try:
         if node._ui_enabled and sys.stdin.isatty() and sys.stdout.isatty():
-            curses.wrapper(node.run_ui)
+            # Redirect stderr to a log file so ROS2 log lines don't corrupt the curses UI.
+            # Curses owns stdout (fd 1); ROS2 logs go to stderr (fd 2).
+            log_path = "/tmp/field_setup_tool_ui.log"
+            log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            saved_stderr = os.dup(2)
+            os.dup2(log_fd, 2)
+            os.close(log_fd)
+            try:
+                curses.wrapper(node.run_ui)
+            finally:
+                os.dup2(saved_stderr, 2)
+                os.close(saved_stderr)
         else:
             if node._ui_enabled:
                 node.get_logger().warn("UI requested but no TTY detected - running headless")
