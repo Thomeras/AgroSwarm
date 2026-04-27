@@ -5,8 +5,8 @@ Line-delimited JSON over TCP. One JSON object per newline. UTF-8.
 
 Both sides read/write using this schema. Keep in sync in both repos —
 this file is the single source of truth and is duplicated verbatim in:
-  scout_ws:        src/scout_control/scout_control/bridge_protocol.py
-  swarm_center:    core/bridge_protocol.py
+  scout_ws:        src/scout_control/scout_control/utils/bridge_protocol.py
+  swarm_center:    swarm_center/core/bridge_protocol.py
 
 Default endpoint:
   127.0.0.1:17845   (localhost only — no network exposure)
@@ -77,6 +77,15 @@ Swarm Center → ROS2 (received by gcs_bridge):
 
   MSG_PONG
     data: {}
+
+--- v1.3 payloads (planned, not yet implemented) ---
+  MSG_NO_GO_OVERLAY
+    data: {zones: [{bbox_inflated: [xmin, ymin, xmax, ymax], confidence: float}, ...]}
+    Sent after refined_grid.json is generated. Swarm Center renders no-go zones on map.
+
+  MSG_REFINED_GRID_EVENT
+    data: {path, no_go_count, caution_count, total_cells}
+    Notification that refined_grid.json was written (Phase 4A output available).
 """
 
 # Message type constants — string values are wire format
@@ -109,8 +118,9 @@ MSG_DEPTH_FRAME        = "depth_frame"     # {drone_id, seq, data_b64, width, he
 MSG_CAMERA_INFO        = "camera_info"     # {drone_id, width, height, k}
 MSG_CAMERA_CONTROL     = "camera_control"  # GCS→ROS2: {drone_id|"all", enabled, fps_limit}
 
-# Protocol version — wire format stays JSON; 1.3 documents typed ROS internals.
+# Protocol version — wire format stays JSON; 1.3 adds field model overlay payloads.
 BRIDGE_VERSION = "1.3"
+PROTOCOL_VERSION = "1.3"   # alias for forward-compatibility checks
 
 # Default endpoint (localhost-only)
 DEFAULT_HOST = "127.0.0.1"

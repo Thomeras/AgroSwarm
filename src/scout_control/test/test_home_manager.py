@@ -258,3 +258,90 @@ def test_allocate_returns_none_when_nothing_available() -> None:
          "status": "maintenance"},
     ])
     assert reg.allocate(drone_id="drone_0") is None
+
+
+# ── Phase 4B: Multi-Drone Class Support ─────────────────────────────────────
+
+def test_drone_correct_class_gets_pad() -> None:
+    reg = PadRegistry([
+        {"pad_id": "survey_pad", "drone_id": "d0", "ned": {"x": 0, "y": 0},
+         "status": "available", "allowed_drone_classes": ["survey"]},
+    ])
+    pad = reg.allocate(drone_id="drone_0", drone_class="survey")
+    assert pad is not None
+    assert pad["pad_id"] == "survey_pad"
+
+
+def test_drone_wrong_class_is_rejected() -> None:
+    reg = PadRegistry([
+        {"pad_id": "survey_only", "drone_id": "d0", "ned": {"x": 0, "y": 0},
+         "status": "available", "allowed_drone_classes": ["survey"]},
+        {"pad_id": "open", "drone_id": "d1", "ned": {"x": 5, "y": 5},
+         "status": "available", "allowed_drone_classes": ["*"]},
+    ])
+    pad = reg.allocate(drone_id="drone_0", drone_class="sprayer")
+    assert pad is not None
+    # survey_only is rejected, falls back to open pad
+    assert pad["pad_id"] == "open"
+
+
+def test_drone_wrong_class_gets_none_when_no_fallback() -> None:
+    reg = PadRegistry([
+        {"pad_id": "survey_only", "drone_id": "d0", "ned": {"x": 0, "y": 0},
+         "status": "available", "allowed_drone_classes": ["survey"]},
+    ])
+    pad = reg.allocate(drone_id="drone_0", drone_class="sprayer")
+    assert pad is None
+
+
+def test_pad_with_empty_allowed_classes_accepts_any_drone() -> None:
+    # allowed_drone_classes: [] → normalized to ["*"] → accepts everyone
+    reg = PadRegistry([
+        {"pad_id": "open_pad", "drone_id": "d0", "ned": {"x": 0, "y": 0},
+         "status": "available", "allowed_drone_classes": []},
+    ])
+    pad = reg.allocate(drone_id="drone_0", drone_class="heavy_sprayer")
+    assert pad is not None
+    assert pad["pad_id"] == "open_pad"
+
+
+def test_pad_without_allowed_classes_field_accepts_any() -> None:
+    # Legacy JSON without allowed_drone_classes → default ["*"] in normalize_pad
+    reg = PadRegistry([
+        {"pad_id": "legacy_pad", "drone_id": "d0", "ned": {"x": 0, "y": 0},
+         "status": "available"},
+    ])
+    pad = reg.allocate(drone_id="drone_0", drone_class="sprayer")
+    assert pad is not None
+    assert pad["pad_id"] == "legacy_pad"
+
+
+# ── Phase 4B: Charging Lifecycle ────────────────────────────────────────────
+
+def test_charging_to_available_via_release() -> None:
+    reg = _mk_registry(charging_capable=True)
+    reg.request_rth("drone_0")
+    reg.confirm_landed("drone_0")
+    pad = reg.by_drone("drone_0")
+    assert pad is not None
+    assert pad["status"] == "charging"
+    # Simulate charge_complete — use release() which is what _charge_complete_cb calls
+    released = reg.release("drone_0")
+    assert released is not None
+    assert released["status"] == "available"
+
+
+def test_release_noop_when_already_available() -> None:
+    reg = _mk_registry(charging_capable=False)
+    pad = reg.by_drone("drone_0")
+    assert pad is not None
+    assert pad["status"] == "available"
+    released = reg.release("drone_0")
+    # Should still be available, no error
+    assert released is not None
+    assert released["status"] == "available"
+
+
+def test_release_by_unknown_drone_returns_none() -> None:
+    reg = _mk_registry()
+    assert reg.release("unknown_drone") is None

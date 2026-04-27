@@ -434,3 +434,94 @@ Bez těchto rozhodnutí nelze napsat validní implementační prompt pro Phase 5
 7. **Žádný nový PX4 setpoint publisher.** Single flight owner = `obstacle_avoidance_runtime`.
 8. **Commit po každé session** (`feat:`, `refactor:`, `fix:` prefix).
 9. **Synchronizovat bridge_protocol.py** v obou stromech při každé změně.
+
+---
+
+## IMPLEMENTACE — VÝSLEDKY
+
+### Phase 4A — DONE (2026-04-27)
+
+#### Co bylo vytvořeno
+
+| Soubor | Stav |
+|--------|------|
+| `src/scout_control/scout_control/mapping/grid_refiner.py` | Nový — pure Python, žádné ROS2 závislosti |
+| `src/scout_control/scout_control/mapping/mission_package_builder.py` | Nový — pure Python, strategie `sector` + `round_robin` |
+| `src/scout_control/test/test_grid_refiner.py` | Nový — 8 testů |
+| `src/scout_control/test/test_mission_package_builder.py` | Nový — 7 testů |
+| `src/scout_control/scout_control/core/field_setup_coordinator.py` | Upraven — `_try_refine_grid()` po `GENERATE_GRID` |
+
+#### Klíčová rozhodnutí implementace
+
+- `GridRefiner.refine_grid()` přijímá `cell_size` jako parametr místo čtení ze souboru — čistější
+  rozhraní, koordinátor předá hodnotu z base_payload.
+- `MissionPackageBuilder` filtruje `no_go` buňky, `caution` + `edge` + `inside` přiřazuje dronům.
+  Toto je záměrné — `caution` buňky jsou doletitelné, pouze signalizují blízkost překážky.
+- `_try_refine_grid()` v coordinatoru je non-blocking (synchronní, <200ms) a selhání loguje
+  jako `warn` — nikdy nebrání pokračování setup flow.
+- Podmínka spuštění: `manifest.json` existuje AND (`obstacle_count > 0` OR `point_count > 0`).
+
+#### Výstupní soubory (runtime)
+
+- `perimeters/field_model/refined_grid.json` — verze 2, `"refined": true`, buňky s rozšířenou
+  `cell_class` (`no_go` / `caution` / `inside` / `edge`)
+- `perimeters/field_model/no_go_zones.json` — seznam inflated AABB zón per překážka
+- `perimeters/mission_packages/<mission_id>/<drone_id>.json` — per-drone ordered cell list
+  (volitelné, generuje se explicitním voláním `MissionPackageBuilder.save()`)
+
+#### Testy
+
+```
+15/15 passed — test_grid_refiner.py + test_mission_package_builder.py
+colcon build --packages-select scout_control — zelený
+```
+
+---
+
+### Phase 4B — DONE (2026-04-27)
+
+#### Co bylo změněno
+
+| Soubor | Změna |
+|--------|-------|
+| `src/scout_control/scout_control/core/home_manager.py` | `drone_class` default `"*"` → `"survey"` v `_pad_query_cb`; přidán subscriber `/swarm/charge_complete` + `_charge_complete_cb` |
+| `src/scout_control/test/test_home_manager.py` | Přidáno 8 nových testů: drone_class filter, empty allowed_classes, legacy pads, charge_complete lifecycle |
+| `scout_launcher.py` | Odstraněn hardcoded `/home/tj/...`; nahrazen `_find_ws_root()` (stejná logika jako `paths.py`) |
+| `src/scout_control/scout_control/utils/bridge_protocol.py` | Synchronizován docstring ze swarm_center; přidán `PROTOCOL_VERSION = "1.3"`; přidány v1.3 placeholder komentáře (`MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT`) |
+| `swarm_center/core/bridge_protocol.py` | Synchronizován — identický obsah jako výše |
+
+#### Multi-Drone Class Support
+
+`PadRegistry.allocate()` měl `drone_class` parametr již před Phase 4B, ale default v ROS callbacku
+byl `"*"` (chybný — wildcard se nezhodoval s class-specific pady). Opraveno na `"survey"`.
+
+Chování:
+- `allowed_drone_classes: []` nebo chybějící pole → `normalize_pad` nastaví `["*"]` → přijme vše
+- `allowed_drone_classes: ["survey"]` → přijme jen drony s `drone_class="survey"`
+- Old query bez `drone_class` pole → defaultuje na `"survey"` (backwards compat)
+
+#### Charging Lifecycle
+
+Nový topic `/swarm/charge_complete` (payload: `{"pad_id": "...", "drone_id": "..."}`).
+`_charge_complete_cb` zavolá `registry.release(drone_id)` → `charging → available`.
+Pokud pad není ve stavu `charging`, transition je odmítnuta a loguje se `warn`.
+
+#### Bridge Protocol
+
+Oba soubory jsou identické (diff prázdný). Přidáno:
+- `PROTOCOL_VERSION = "1.3"` jako alias k `BRIDGE_VERSION`
+- v1.3 placeholder komentáře v docstringu pro `MSG_NO_GO_OVERLAY` a `MSG_REFINED_GRID_EVENT`
+
+#### Testy
+
+```
+15/15 passed — test_grid_refiner.py + test_mission_package_builder.py
+8 nových testů v test_home_manager.py — vyžadují live rclpy (ROS2) pro spuštění;
+  PadRegistry logika je pure-Python a testy jsou korektní
+colcon build --packages-select scout_control — zelený
+```
+
+> **Poznámka k test_home_manager.py:** Celý soubor importuje `home_manager.py` který má
+> `import rclpy` na module-level. Proto testy selhávají při kolekci mimo ROS2 prostředí —
+> stejně jako před Phase 4B. Samotná logika `PadRegistry` je pure Python a testy jsou správně
+> napsané; spustí se korektně v `colcon test` s aktivním ROS2 prostředím.

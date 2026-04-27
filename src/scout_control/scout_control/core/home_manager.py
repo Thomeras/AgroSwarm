@@ -28,6 +28,8 @@ TOPICS:
     /swarm/landed_confirmation  (std_msgs/String, JSON)
     /swarm/pad_assignment       (std_msgs/String, JSON)
     /swarm/pad_query            (std_msgs/String, JSON)
+    /swarm/charge_complete      (std_msgs/String, JSON) — {"pad_id":…,"drone_id":…}
+                                  triggers charging→available transition
 
 USAGE:
   ros2 run scout_control home_manager
@@ -323,6 +325,9 @@ class HomeManager(Node):
         self.create_subscription(
             String, self._swarm_topics.pad_query,
             self._pad_query_cb, QOS_VOLATILE)
+        self.create_subscription(
+            String, "/swarm/charge_complete",
+            self._charge_complete_cb, QOS_VOLATILE)
 
         self._publish_home_positions()
 
@@ -460,7 +465,8 @@ class HomeManager(Node):
         if not drone_id:
             return
         reason = str(data.get("reason", ""))
-        drone_class = str(data.get("drone_class", "*"))
+        # Default "survey" for backwards compat (old queries without drone_class field)
+        drone_class = str(data.get("drone_class", "survey"))
         reference_ned = data.get("reference_ned")
 
         pad = self._registry.allocate(
@@ -484,6 +490,40 @@ class HomeManager(Node):
         out = String()
         out.data = json.dumps(response, separators=(",", ":"))
         self._pad_response_pub.publish(out)
+
+    def _charge_complete_cb(self, msg: String) -> None:
+        """Handle /swarm/charge_complete — transition pad charging→available."""
+        try:
+            data = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn(f"Invalid charge_complete JSON: {msg.data}")
+            return
+        drone_id = data.get("drone_id")
+        pad_id = data.get("pad_id")
+        if not drone_id and not pad_id:
+            self.get_logger().warn("charge_complete: missing drone_id and pad_id")
+            return
+        pad = (
+            self._registry.by_drone(drone_id) if drone_id
+            else self._registry.by_id(pad_id)
+        )
+        if pad is None:
+            self.get_logger().warn(
+                f"charge_complete: pad not found (drone={drone_id}, pad={pad_id})"
+            )
+            return
+        ok = self._registry.transition(pad, "available")
+        if ok:
+            self.get_logger().info(
+                f"charge_complete: {pad['pad_id']} charging→available "
+                f"(drone={drone_id})"
+            )
+            self._publish_home_positions()
+        else:
+            self.get_logger().warn(
+                f"charge_complete: transition rejected, pad {pad['pad_id']} "
+                f"is in state '{pad['status']}'"
+            )
 
     # ── Publishing ────────────────────────────────────────────────────────────
     def _publish_home_positions(self) -> None:

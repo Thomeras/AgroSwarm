@@ -55,7 +55,9 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from std_msgs.msg import String
 
 from scout_control.avoidance.telemetry_hub import TelemetryHub
-from scout_control.utils.paths import GRID_FILE, HOME_POS_FILE, PERIMETERS_DIR
+from scout_control.mapping.grid_refiner import GridRefiner
+from scout_control.mapping.obstacle_extractor import Obstacle
+from scout_control.utils.paths import FIELD_MODEL_DIR, GRID_FILE, HOME_POS_FILE, PERIMETERS_DIR
 from scout_control.utils.polygon import (
     bounding_box,
     classify_cell,
@@ -402,6 +404,7 @@ class FieldSetupCoordinator(Node):
         self.get_logger().info(
             f"Grid saved: {cell_count} cells | {field_w:.0f}x{field_h:.0f} m"
         )
+        self._try_refine_grid()
         complete_payload = json.dumps({
             "status":        "ready",
             "cells":         cell_count,
@@ -581,6 +584,51 @@ class FieldSetupCoordinator(Node):
         self.get_logger().info(
             f"home_positions.json saved ({len(home_positions)} pads) -> {HOME_POS_FILE}"
         )
+
+    # Grid refinement (Phase 4A)
+    def _try_refine_grid(self) -> None:
+        """Optionally refine field_grid.json with Phase 3 field model obstacles."""
+        manifest_path = os.path.join(FIELD_MODEL_DIR, "manifest.json")
+        if not os.path.exists(manifest_path):
+            self.get_logger().info("No field model found — skipping grid refinement")
+            return
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            latest = manifest.get("latest", {})
+            if not latest.get("obstacle_count", 0) and not latest.get("point_count", 0):
+                self.get_logger().info(
+                    "Field model has no obstacles or points — skipping grid refinement"
+                )
+                return
+            obstacles_file = os.path.join(FIELD_MODEL_DIR, latest["obstacles_json"])
+            with open(obstacles_file) as f:
+                obs_data = json.load(f)
+            obstacles = [
+                Obstacle(
+                    centroid_ned=tuple(o["centroid_ned"]),
+                    bbox_ned=tuple(o["bbox_ned"]),
+                    point_count=int(o.get("point_count", 0)),
+                    confidence=float(o.get("confidence", 1.0)),
+                )
+                for o in obs_data.get("obstacles", [])
+            ]
+            with open(GRID_FILE) as f:
+                base_payload = json.load(f)
+            base_cells = base_payload.get("cells", [])
+            cell_size = float(base_payload.get("cell_size_m", self._cell_size))
+            refiner = GridRefiner()
+            no_go_zones = refiner.build_no_go_zones(obstacles)
+            refined_cells = refiner.refine_grid(base_cells, no_go_zones, cell_size=cell_size)
+            refiner.save(refined_cells, no_go_zones, FIELD_MODEL_DIR, base_payload)
+            no_go_count = sum(1 for c in refined_cells if c.get("cell_class") == "no_go")
+            caution_count = sum(1 for c in refined_cells if c.get("cell_class") == "caution")
+            self.get_logger().info(
+                f"Refined grid: {no_go_count} no_go cells, {caution_count} caution cells "
+                f"out of {len(refined_cells)} total"
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"Grid refinement failed (non-critical): {exc}")
 
     # Mission ready
     def _publish_mission_ready(self) -> None:

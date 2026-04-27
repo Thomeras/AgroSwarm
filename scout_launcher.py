@@ -30,7 +30,16 @@ from typing import Optional
 import yaml
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-WS_DIR        = "/home/tj/_Data/_Projekty/TJlabs/scout_ws"
+def _find_ws_root() -> Path:
+    """Walk up from this file's location until CLAUDE.md is found."""
+    candidate = Path(__file__).resolve().parent
+    for _ in range(6):
+        if (candidate / "CLAUDE.md").exists():
+            return candidate
+        candidate = candidate.parent
+    return Path(__file__).resolve().parent
+
+WS_DIR        = str(_find_ws_root())
 PX4_DIR       = os.path.expanduser("~/PX4-Autopilot")
 QGC_PATH      = os.path.expanduser("~/QGroundControl-x86_64.AppImage")
 RESET_SH      = f"{WS_DIR}/reset.sh"
