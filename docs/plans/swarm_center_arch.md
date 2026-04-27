@@ -1,6 +1,6 @@
 # Swarm Center — architektura a schopnosti
 
-> Stav k 2026-04-27. Samostatná PyQt6 GCS aplikace mimo ROS2 workspace.
+> Stav k 2026-04-27 (Phase 5 dokončena). Samostatná PyQt6 GCS aplikace mimo ROS2 workspace.
 
 ## Spuštění
 
@@ -26,16 +26,19 @@ swarm_center/
 ├── main.py                   # argparse entry point
 ├── core/
 │   ├── app_logger.py         # centrální log s levely
-│   ├── bridge_protocol.py    # MSG_* konstanty, verze protokolu (1.2)
+│   ├── bridge_protocol.py    # MSG_* konstanty, verze protokolu (1.3)
 │   ├── depth_mapper.py       # DepthMapper: depth frame → NED body pointy
 │   ├── field_manager.py      # FieldGrid: load/from_file/synthetic/regrid
+│   ├── field_model_loader.py # Phase 3 výstupy → overlay data (heightmap, obstacles)
 │   ├── mavlink_manager.py    # SwarmMavlinkManager: threaded MAVLink per dron
+│   ├── report_generator.py   # ReportGenerator: post-mission HTML report (Phase 5)
 │   ├── ros2_bridge.py        # Ros2BridgeClient: TCP recv + send commands
 │   └── swarm_manager.py      # SwarmManager: centrální stav (drony, mise, grid)
 └── ui/
     ├── main_window.py        # QMainWindow — wire-up všeho
-    ├── field_view.py         # 2D top-down mapa s gridem a drony
+    ├── field_view.py         # 2D top-down mapa + overlay vrstvy (Phase 5)
     ├── control_panel.py      # pravý sloupec — status, progress, tlačítka
+    ├── avoidance_panel.py    # per-drone avoidance stav s animací (Phase 5)
     ├── drone_list.py         # tabulka dronů s telemetrií
     ├── manual_control.py     # klávesnicové ovládání + field setup flow
     ├── camera_view.py        # live camera + depth streamy
@@ -60,6 +63,11 @@ SwarmManager (peer cells)    ──► 1× /s broadcast  ──► Ros2BridgeCli
 ### Mission (FieldView)
 - Top-down 2D mapa s NED souřadnicemi, overhead PNG s alignmentem
 - Grid overlay — stav buněk: volná / přiřazená / dokončená / blokovaná
+- Sector preview: barevné přiřazení sektorů per dron před startem mise
+- Overlay vrstvy (Phase 5):
+  - No-go zóny (z `field_model/`) — červené transparentní obdélníky
+  - Obstacles — oranžové markery
+  - Terrain heatmap — modrý gradient výšky
 - Live pozice dronů (20 fps repaint, trail)
 - Klik na dron → výběr
 - Pravý klik na buňku → GOTO override (→ `/swarm/cell_override`)
@@ -94,9 +102,45 @@ SwarmManager (peer cells)    ──► 1× /s broadcast  ──► Ros2BridgeCli
 | Start Mission | `/field/mission_confirm` (aktivní jen když field_ready) |
 | RTH all drones | `MSG_RTH_ALL` s potvrzovacím dialogem |
 | EMERGENCY STOP | `MSG_EMERGENCY_STOP` okamžitě |
+| **Export Report** | generuje HTML report posledního mission_id; aktivní po mission_complete |
 | Load grid JSON | ruční načtení field_grid.json |
 | Cell size spinner | vizuální regrid (nemění běžící misi) |
+| Overlay checkboxy | No-go / Obstacles / Terrain / Sector preview |
 | Log panel | posledních 500 řádků MAVLink + bridge logů |
+
+## Avoidance Panel (pod drone list)
+
+- Zobrazuje per-drone avoidance stav: NOMINAL / WARN / CRITICAL / BLOCKED
+- Animovaný pulse pro BLOCKED stav
+- Pole: planner_state, blocked_severity, no_path_streak, blocked_since
+
+## Report Generator (Phase 5)
+
+`swarm_center/core/report_generator.py` — pure Python, žádné ROS2 závislosti.
+
+**Trigger:** po `MSG_MISSION_COMPLETE` se automaticky zobrazí dialog "Generovat report?".
+Tlačítko "Export Report" v Control Panelu umožňuje ruční regeneraci kdykoli po misi.
+
+**Zdroje dat (čte přímo z disku):**
+- In-memory stav gridu (buňky s finálními statusy) → předán z SwarmManager
+- `spray_log.json` — spray eventy per buňka per dron
+- `cell_data/*/visit_N/meta.json` — drone_id, NED, timestamp per visit
+- `perimeters/home_positions.json` — pad registry
+
+**Výstup:**
+```
+reports/<mission_id>/
+  ├── report.html          # self-contained HTML (inline CSS, SVG heatmap)
+  └── grid_snapshot.json   # snapshot gridu pro regeneraci po restartu
+```
+
+**Obsah reportu:**
+- Coverage: total / visited / missed / blocked / skipped s % hodnotami
+- Spray: celková dávka, buňky postříkány, průměrná dávka
+- Blocked events: seznam cell_id s rozlišením blocked/skipped
+- Per-drone: navštívené buňky, spray eventy, celková dávka, odhadnutá vzdálenost letu
+- SVG NED grid heatmap: zelená = visited, červená = missed, oranžová = blocked, žlutá = skipped
+- Spray overlay: semi-transparentní modré kruhy, průměr ∝ dávce
 
 ## Drone List Panel
 
@@ -113,7 +157,7 @@ SwarmManager (peer cells)    ──► 1× /s broadcast  ──► Ros2BridgeCli
 | `MSG_SETUP_STATUS` | progress field setup → MissionState |
 | `MSG_SETUP_COMPLETE` | auto-reload gridu z canonical path |
 | `MSG_MISSION_READY` | mise běží → MissionState |
-| `MSG_MISSION_COMPLETE` | mise dokončena → MissionState |
+| `MSG_MISSION_COMPLETE` | mise dokončena → MissionState → dialog pro generování reportu |
 | `MSG_GRID_RELOAD` | přenačtení gridu (path nebo default) |
 | `MSG_CAMERA_FRAME` | JPEG bytes per dron → CameraView + ManualControl |
 | `MSG_DEPTH_FRAME` | PNG bytes per dron → CameraView + DepthMapper |
@@ -136,7 +180,7 @@ SwarmManager (peer cells)    ──► 1× /s broadcast  ──► Ros2BridgeCli
 
 ## Co chybí / není hotové
 
-- Avoidance status panel — bridge data (`blocked_reason`, `planner_state` atd.) přijdou, ale nejsou zobrazena v samostatném widgetu
-- Phase 3 field model vizualizace — heightmap a obstacles nejsou zobrazeny
+- Bridge v1.3 overlay payloads (`MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT`) nejsou
+  na GCS straně ještě konzumovány — field model se načítá přímo ze souboru, ne přes bridge
 - 3D depth mapping — `DepthMapper` je zabudován, ale Viewport3D ho plně nevykresluje
 - `task_allocator.yaml` scénář není spustitelný bez registrace v `setup.py`

@@ -1,6 +1,6 @@
 # CLAUDE.md — scout_ws
 
-Aktualni stav workspace k 2026-04-27.
+Aktualni stav workspace k 2026-04-27. Phase 1–5 dokončeny.
 
 Tento dokument je urceny pro praci nad timto repozitarem. Popisuje realnou
 strukturu projektu, aktualni workflow a dulezite rozdily mezi produkcni cestou,
@@ -378,15 +378,22 @@ Pripojuje se:
 
 Umi dnes:
 
-- top-down mapu a grid
-- mission progress
+- top-down mapu a grid s overlay vrstvami (no-go zóny, překážky, terrain heatmap)
+- sector preview před startem mise (z task_status před mission_ready)
+- mission progress a per-drone stav
 - assignment / current cell per drone
+- avoidance panel: per-drone NOMINAL/WARN/CRITICAL/BLOCKED stav s animací
 - mode prepinac pres `/swarm/mode`
 - `RTH all`
 - start mise pres `/field/mission_confirm`
 - manual `goto_cell` override
 - camera a depth stream pres bridge
 - zakladni 3D view, pokud jsou dostupne UI zavislosti
+- post-mission HTML report (`swarm_center/core/report_generator.py`):
+  - automaticky nabídnut po `mission_complete`
+  - tlačítko "Export Report" pro ruční re-generaci
+  - self-contained HTML s inline CSS, SVG gridem a spray dose overlajem
+  - výstup: `reports/<mission_id>/report.html`
 
 Bridge protokol je sdileny v:
 
@@ -409,6 +416,8 @@ Na path konstanty nepouzivej hardcoded rooty tam, kde jde pouzit:
 - `HOME_POS_FILE`
 - `SPRAY_LOG_FILE`
 - `CELL_DATA_DIR`
+- `FIELD_MODEL_DIR`
+- `REPORTS_DIR`
 
 `paths.py` hleda workspace root podle pritomnosti `CLAUDE.md`. Fallback na
 `~/scout_ws` zustava jen kvuli kompatibilite se starsim layoutem.

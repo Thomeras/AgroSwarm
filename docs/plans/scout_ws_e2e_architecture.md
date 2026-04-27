@@ -1,7 +1,7 @@
 # SCOUT_WS – End-to-End Agrodrone Swarm Architecture
 
-**Status:** Phase 1 [DONE], Phase 2 [DONE]
-**Last Update:** 2026-04-25
+**Status:** Phase 1 [DONE], Phase 2 [DONE], Phase 3 [DONE], Phase 4 [DONE], Phase 5 [DONE]
+**Last Update:** 2026-04-27
 
 ## 1. Executive Summary
 The system is intentionally split into two planning horizons. Before an operational mission, the field is bounded, mapped and converted into a field model. During an operational mission, each drone follows a preplanned task assignment while onboard obstacle avoidance remains active as a local safety and recovery layer.
@@ -211,11 +211,27 @@ python3 scout_launcher.py
 - [ ] Remove deprecated `navigation_backend=direct` after full Phase 3 verification.
 - [ ] Replace ad-hoc `task_allocator.yaml` scenario or register a proper entry point.
 
-### Phase 4 – Operational Hardening [PLANNED]
-- [ ] Multi-drone class support in pad allocator (`allowed_drone_classes`).
-- [ ] Charging lifecycle integration with real hardware feedback.
-- [ ] Bridge protocol v1.3 (any new payloads kept backwards-compatible).
-- [ ] Workspace path portability — remove the hard-coded `WS_DIR` in `scout_launcher.py`.
+### Phase 4 – Operational Hardening [DONE]
+- [x] Grid refiner (`mapping/grid_refiner.py`) — marks cells `no_go`/`caution`/`available` from field model.
+- [x] Mission package builder (`mapping/mission_package_builder.py`) — bundles mission snapshot for dispatch/archive.
+- [x] Bridge protocol v1.3 — added `MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT` (both files kept in sync).
+- [x] Home manager improvements — occupancy state machine, pad service_priority.
+- [x] Field setup coordinator improvements — boundary RTH gating.
+- [ ] Workspace path portability — `WS_DIR` in `scout_launcher.py` still hard-coded (deferred).
+- [ ] Charging lifecycle integration with real hardware feedback (deferred to hardware phase).
+
+### Phase 5 – Swarm Center GCS Completion [DONE]
+- [x] `field_model_loader.py` — loads Phase 3 outputs (heightmap, obstacles) for overlay rendering.
+- [x] `avoidance_panel.py` — per-drone NOMINAL/WARN/CRITICAL/BLOCKED state with animated pulse.
+- [x] `field_view.py` — overlay layers: no-go zones, obstacles, terrain heatmap; sector preview before mission.
+- [x] `control_panel.py` — overlay toggle checkboxes; `export_report_clicked` signal; "Export Report" button.
+- [x] `report_generator.py` — pure-Python post-mission HTML report:
+  - Aggregates: coverage stats, spray summary, blocked events, per-drone summary (flight distance estimate).
+  - SVG grid heatmap (green/red/orange/yellow by cell status) + spray dose overlay.
+  - Saves `grid_snapshot.json` for re-generation after session.
+  - Output: `reports/<mission_id>/report.html` (self-contained, offline-ready).
+  - Auto-opened in browser on mission_complete; re-generable via "Export Report" button.
+- [x] `paths.py` — added `FIELD_MODEL_DIR`, `NO_GO_FILE`, `OBSTACLES_FILE`, `TERRAIN_FILE`, `REPORTS_DIR`.
 
 ## 16. Known Risks & Compatibility Notes
 

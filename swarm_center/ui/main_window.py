@@ -41,6 +41,7 @@ from core.bridge_protocol import DEFAULT_HOST, DEFAULT_PORT
 from core.depth_mapper import DepthMapper
 from core.field_manager import FieldGrid, find_default_grid_file
 from core.mavlink_manager import DroneTelemetry, SwarmMavlinkManager
+from core.report_generator import ReportGenerator
 from core.ros2_bridge import Ros2BridgeThreadRunner
 from core.swarm_manager import MissionState, SwarmManager
 
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
         self._last_setup_text: str = ""
         self._last_mission_ready: bool = False
         self._last_mission_complete: bool = False
+        self._last_mission_id: Optional[str] = None
 
         # ── MAVLink ─────────────────────────────────────────────────────────
         self._mav = SwarmMavlinkManager(
@@ -158,6 +160,7 @@ class MainWindow(QMainWindow):
         self._control.rth_all_clicked.connect(self._on_rth_all)
         self._control.start_mission_clicked.connect(self._on_start_mission)
         self._control.emergency_stop_clicked.connect(self._on_emergency_stop)
+        self._control.export_report_clicked.connect(self._on_export_report)
 
         # DroneList signals
         self._drone_list.arm_clicked.connect(self._on_arm)
@@ -524,11 +527,60 @@ class MainWindow(QMainWindow):
         self._last_mission_ready = ms.ready
 
         if ms.complete and not self._last_mission_complete:
+            from datetime import datetime, timezone as tz
+            self._last_mission_id = datetime.now(tz.utc).strftime("%Y%m%dT%H%M%SZ")
             self._logger.info(
                 "mission",
                 f"Mission complete | {ms.completed_cells}/{ms.total_cells} cells"
             )
+            self._prompt_generate_report()
         self._last_mission_complete = ms.complete
+
+    # ── Report generation ───────────────────────────────────────────────────
+
+    def _prompt_generate_report(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Mission complete",
+            "Mission complete!\n\nGenerate and open HTML report now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._on_export_report()
+
+    def _on_export_report(self) -> None:
+        from datetime import datetime, timezone as tz
+        grid = self._swarm.grid
+        cells = [
+            {
+                "id":     c.id,
+                "col":    c.col,
+                "row":    c.row,
+                "x":      c.x,
+                "y":      c.y,
+                "status": c.status,
+            }
+            for c in grid.cells
+        ]
+
+        if self._last_mission_id is None:
+            self._last_mission_id = datetime.now(tz.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        try:
+            path = ReportGenerator.generate(
+                cells=cells,
+                mission_id=self._last_mission_id,
+                cols=grid.cols,
+                rows=grid.rows,
+                cell_size_m=grid.cell_size_m,
+                open_browser=True,
+            )
+            self._logger.info("report", f"Report saved: {path}")
+            self.statusBar().showMessage(f"Report: {path}", 6000)
+        except Exception as exc:
+            self._logger.error("report", f"Report generation failed: {exc}")
+            QMessageBox.warning(self, "Report", f"Generation failed:\n{exc}")
 
     # ── Menu ────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scout Mission Report — 20260427T120000Z</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif;
+       font-size: 14px; padding: 24px; }
+h1 { color: #4cbb72; font-size: 22px; margin-bottom: 4px; }
+h2 { color: #a0d0ff; font-size: 16px; margin: 20px 0 8px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+.meta { color: #888; font-size: 12px; margin-bottom: 20px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.card { background: #16213e; border-radius: 8px; padding: 14px; }
+.card .val { font-size: 28px; font-weight: bold; color: #fff; }
+.card .lbl { font-size: 11px; color: #888; margin-top: 4px; text-transform: uppercase; }
+.good  { color: #4cbb72; }
+.warn  { color: #f1c40f; }
+.bad   { color: #e74c3c; }
+.info  { color: #5dade2; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #2a2a4a; }
+th { background: #16213e; color: #a0d0ff; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+tr:hover td { background: #1e2d4a; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 0; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.legend-swatch { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #444; }
+.vis-wrap { overflow-x: auto; margin: 12px 0; }
+.two-col { display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: start; }
+@media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>Scout Mission Report</h1>
+<div class="meta">
+  Mission: <strong>2026-04-27 12:00 UTC</strong> &nbsp;|&nbsp;
+  Field: 30 × 20 m (6×4 cells, 5.0 m each) &nbsp;|&nbsp;
+  Generated: 2026-04-27 19:39 UTC
+</div>
+
+<div class="two-col">
+  <div>
+    <h2>Coverage</h2>
+    <div class="grid"><div class="card"><div class="val">24</div><div class="lbl">Total cells</div></div><div class="card"><div class="val good">18</div><div class="lbl">Completed</div></div><div class="card"><div class="val warn">75.0%</div><div class="lbl">Coverage</div></div><div class="card"><div class="val bad">5</div><div class="lbl">Missed</div></div><div class="card"><div class="val warn">1</div><div class="lbl">Blocked</div></div><div class="card"><div class="val">0</div><div class="lbl">Skipped</div></div></div>
+
+    <h2>Spray Summary</h2>
+    <div class="grid"><div class="card"><div class="val info">14900.0 ml</div><div class="lbl">Total dose</div></div><div class="card"><div class="val">272</div><div class="lbl">Cells sprayed</div></div><div class="card"><div class="val">0</div><div class="lbl">Cells missed</div></div><div class="card"><div class="val">54.8 ml</div><div class="lbl">Avg dose/cell</div></div></div>
+
+    <h2>Blocked Events</h2>
+    <div><p><strong>Blocked:</strong> x0_y3</p></div>
+    <p style="font-size:12px; color:#666; margin-top:6px;">Total: 1 cell(s) not completed normally.</p>
+
+    <h2>Per-Drone Summary</h2>
+    <table>
+      <tr><th>Drone</th><th>Cells visited</th><th>Spray events</th><th>Total dose</th><th>Est. distance</th></tr>
+      <tr><td>drone_0</td><td>272</td><td>298</td><td>14900 ml</td><td>115 m</td></tr>
+    </table>
+
+    <h2>Home Pads</h2>
+    <table>
+      <tr><th>Pad</th><th>Drone</th><th>NED (N, E)</th><th>Status</th></tr>
+      <tr><td>pad_0</td><td>drone_0</td><td>0.0, -5.0</td><td>available</td></tr>
+    </table>
+  </div>
+
+  <div>
+    <h2>Field Heatmap</h2>
+    <div class="legend"><div class="legend-item"><div class="legend-swatch" style="background:#4cbb72"></div>Visited</div><div class="legend-item"><div class="legend-swatch" style="background:#c0392b"></div>Missed</div><div class="legend-item"><div class="legend-swatch" style="background:#e67e22"></div>Blocked</div><div class="legend-item"><div class="legend-swatch" style="background:#f1c40f"></div>Skipped</div><div class="legend-item"><div class="legend-swatch" style="background:rgba(0,100,255,0.55)"></div>Spray overlay</div></div>
+    <div class="vis-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160" style="border:1px solid #444; border-radius:4px;">
+<rect x="0" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x0_y0 — visited</title></rect>
+<circle cx="20.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.8)" stroke="none"><title>x0_y0: 150 ml</title></circle>
+<rect x="40" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x1_y0 — visited</title></rect>
+<circle cx="60.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.8)" stroke="none"><title>x1_y0: 150 ml</title></circle>
+<rect x="80" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x2_y0 — visited</title></rect>
+<circle cx="100.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x2_y0: 100 ml</title></circle>
+<rect x="120" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x3_y0 — visited</title></rect>
+<circle cx="140.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x3_y0: 100 ml</title></circle>
+<rect x="160" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x4_y0 — visited</title></rect>
+<circle cx="180.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x4_y0: 100 ml</title></circle>
+<rect x="200" y="120" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x5_y0 — visited</title></rect>
+<circle cx="220.0" cy="140.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x5_y0: 100 ml</title></circle>
+<rect x="0" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x0_y1 — visited</title></rect>
+<circle cx="20.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x0_y1: 100 ml</title></circle>
+<rect x="40" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x1_y1 — visited</title></rect>
+<circle cx="60.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x1_y1: 100 ml</title></circle>
+<rect x="80" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x2_y1 — visited</title></rect>
+<circle cx="100.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x2_y1: 100 ml</title></circle>
+<rect x="120" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x3_y1 — visited</title></rect>
+<circle cx="140.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x3_y1: 100 ml</title></circle>
+<rect x="160" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x4_y1 — visited</title></rect>
+<circle cx="180.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x4_y1: 100 ml</title></circle>
+<rect x="200" y="80" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x5_y1 — visited</title></rect>
+<circle cx="220.0" cy="100.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x5_y1: 100 ml</title></circle>
+<rect x="0" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x0_y2 — visited</title></rect>
+<circle cx="20.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x0_y2: 100 ml</title></circle>
+<rect x="40" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x1_y2 — visited</title></rect>
+<circle cx="60.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x1_y2: 100 ml</title></circle>
+<rect x="80" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x2_y2 — visited</title></rect>
+<circle cx="100.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x2_y2: 100 ml</title></circle>
+<rect x="120" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x3_y2 — visited</title></rect>
+<circle cx="140.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x3_y2: 100 ml</title></circle>
+<rect x="160" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x4_y2 — visited</title></rect>
+<circle cx="180.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x4_y2: 100 ml</title></circle>
+<rect x="200" y="40" width="40" height="40" fill="#4cbb72" stroke="#1a1a2e" stroke-width="1"><title>x5_y2 — visited</title></rect>
+<circle cx="220.0" cy="60.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x5_y2: 100 ml</title></circle>
+<rect x="0" y="0" width="40" height="40" fill="#e67e22" stroke="#1a1a2e" stroke-width="1"><title>x0_y3 — blocked</title></rect>
+<circle cx="20.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x0_y3: 100 ml</title></circle>
+<rect x="40" y="0" width="40" height="40" fill="#c0392b" stroke="#1a1a2e" stroke-width="1"><title>x1_y3 — unvisited</title></rect>
+<circle cx="60.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x1_y3: 100 ml</title></circle>
+<rect x="80" y="0" width="40" height="40" fill="#c0392b" stroke="#1a1a2e" stroke-width="1"><title>x2_y3 — unvisited</title></rect>
+<circle cx="100.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x2_y3: 100 ml</title></circle>
+<rect x="120" y="0" width="40" height="40" fill="#c0392b" stroke="#1a1a2e" stroke-width="1"><title>x3_y3 — unvisited</title></rect>
+<circle cx="140.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x3_y3: 100 ml</title></circle>
+<rect x="160" y="0" width="40" height="40" fill="#c0392b" stroke="#1a1a2e" stroke-width="1"><title>x4_y3 — unvisited</title></rect>
+<circle cx="180.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x4_y3: 100 ml</title></circle>
+<rect x="200" y="0" width="40" height="40" fill="#c0392b" stroke="#1a1a2e" stroke-width="1"><title>x5_y3 — unvisited</title></rect>
+<circle cx="220.0" cy="20.0" r="15.2" fill="rgba(0,100,255,0.62)" stroke="none"><title>x5_y3: 100 ml</title></circle>
+<text x="120" y="14" text-anchor="middle" font-size="12" fill="#ccc" font-family="sans-serif">N ↑</text>
+</svg></div>
+    <p style="font-size:11px; color:#666; margin-top:6px;">
+      Axes: North ↑ / East →. Blue dots = spray dose (opacity ∝ dose).
+    </p>
+  </div>
+</div>
+
+</body>
+</html>

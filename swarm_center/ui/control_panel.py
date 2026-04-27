@@ -35,6 +35,7 @@ class ControlPanel(QWidget):
     start_mission_clicked  = pyqtSignal()
     emergency_stop_clicked = pyqtSignal()
     overlay_toggled        = pyqtSignal(str, bool)  # (layer, visible)
+    export_report_clicked  = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -97,6 +98,13 @@ class ControlPanel(QWidget):
         self._estop_btn.setStyleSheet(
             "background-color: #cc2222; color: white; font-weight: bold;")
         ctrl_layout.addWidget(self._estop_btn)
+
+        self._report_btn = QPushButton("Export Report")
+        self._report_btn.clicked.connect(self.export_report_clicked)
+        self._report_btn.setEnabled(False)
+        self._report_btn.setToolTip(
+            "Generate HTML report for the last completed mission")
+        ctrl_layout.addWidget(self._report_btn)
 
         layout.addWidget(ctrl_group)
 
@@ -225,6 +233,9 @@ class ControlPanel(QWidget):
         # Start Mission: enabled when field setup is done and mission hasn't started yet
         self._start_btn.setEnabled(
             self._bridge_connected and ms.field_ready and not ms.ready and not ms.complete)
+
+        # Export Report: available once mission completes
+        self._report_btn.setEnabled(ms.complete)
 
         # Sector preview checkbox is only relevant before the mission starts
         self._chk_sector_preview.setVisible(not ms.ready and not ms.complete)

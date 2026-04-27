@@ -525,3 +525,92 @@ Phase 1 je architektonicky kompletní:
   - `_complete_target` → LANDING pokud `return_home`
 - `src/scout_control/scout_control/mapping/field_model_builder.py`
   - `_on_depth` přepsán na `depth_to_body_points` + manuální world projekce
+
+## Codex Log — 2026-04-27 (Phase 4 — Operational Hardening)
+
+### Kontext
+
+- Phase 4 se zaměřila na zlepšení backendu swarm_center a přípravu na produkční
+  nasazení: grid refiner, mission package builder, aktualizace bridge protokolu
+  na v1.3, vylepšení home_manager a field_setup_coordinator.
+
+### Co bylo provedeno
+
+- `mapping/grid_refiner.py` — refine mission gridu na základě field modelu
+  (no-go zóny, překážky z Phase 3 výstupů); klasifikuje buňky jako
+  `available`, `no_go`, `caution`
+- `mapping/mission_package_builder.py` — balíčkuje misijní data
+  (grid, boundary, home_positions, field_model) do kompaktního JSON snapshotu
+  pro dispatch a archivaci
+- `home_manager.py` — vylepšena logika přidělování padů a occupancy state machine
+- `field_setup_coordinator.py` — zpřesněna boundary capture, RTH gating
+- `bridge_protocol.py` (obě kopie) — aktualizace na v1.3; přidány
+  `MSG_NO_GO_OVERLAY` a `MSG_REFINED_GRID_EVENT` payloady (plánované, zatím
+  neimplementované na GCS straně)
+- Přidány testy: `test_grid_refiner.py`, `test_home_manager.py`,
+  `test_mission_package_builder.py`
+- `scout_launcher.py` — drobné opravy
+
+### Stav Phase 4
+
+Phase 4 je dokončena. Všechny klíčové položky nasazeny, testy zelené.
+
+## Codex Log — 2026-04-27 (Phase 5 — Swarm Center GCS dokončení)
+
+### Kontext
+
+- Phase 5 přinesla dvě vlny vylepšení Swarm Center:
+  1. Field model integrace v UI (avoidance panel, field view overlays, field model loader)
+  2. Post-mission report generator
+
+### Co bylo provedeno — vlna 1 (commit 0445e6f)
+
+- `swarm_center/core/field_model_loader.py` — načítá `field_model/manifest.json`
+  a serializuje heightmap + překážky pro field_view overlay
+- `swarm_center/ui/avoidance_panel.py` — nový panel zobrazující avoidance stav
+  každého dronu (NOMINAL/WARN/CRITICAL/BLOCKED), planner state, blocked_severity,
+  no_path_streak; animovaný pulse pro BLOCKED stav
+- `swarm_center/ui/field_view.py` — přidány overlay vrstvy: no-go zóny,
+  překážky, terrain heatmap; přidán sector preview před startem mise; načítání
+  field model při grid_reload
+- `swarm_center/ui/control_panel.py` — overlay checkboxy (No-go / Obstacles /
+  Terrain / Sector preview)
+- `swarm_center/ui/main_window.py` — zapojení avoidance_panel a field_model_loader
+- `docs/plans/swarm_center_arch.md` — nový architektonický přehled GCS
+- `src/scout_control/scout_control/utils/paths.py` — přidány `FIELD_MODEL_DIR`,
+  `NO_GO_FILE`, `OBSTACLES_FILE`, `TERRAIN_FILE`
+
+### Co bylo provedeno — vlna 2 (tato session)
+
+- `swarm_center/core/report_generator.py` — nová třída `ReportGenerator`:
+  - `generate(cells, mission_id, cols, rows, cell_size_m)` — agreguje data
+    z `field_grid.json` (in-memory stav), `spray_log.json`, `cell_data/` meta,
+    `home_positions.json`; ukládá `grid_snapshot.json` pro pozdější regeneraci;
+    generuje self-contained HTML s inline CSS dark theme a SVG gridem
+  - `regenerate(mission_id)` — re-generuje z uloženého snapshotu
+  - `last_mission_id()` — najde nejnovější report v `reports/`
+  - SVG heatmap: zelená = visited, červená = unvisited/missed, oranžová =
+    blocked, žlutá = skipped; semi-transparentní modré kruhy = spray dose overlay
+  - Žádné ROS2 závislosti — pure Python, čte soubory přímo
+- `swarm_center/ui/control_panel.py` — signál `export_report_clicked`,
+  tlačítko "Export Report" (povoleno po dokončení mise)
+- `swarm_center/ui/main_window.py` — `_prompt_generate_report()` dialog po
+  `mission_complete`; `_on_export_report()` generuje report; `_last_mission_id`
+  se nastavuje při mission_complete (ISO timestamp)
+- `src/scout_control/scout_control/utils/paths.py` — přidáno `REPORTS_DIR`
+
+### Výstupní soubory reportu
+
+```
+reports/<mission_id>/
+  ├── report.html          — self-contained HTML, offline-ready
+  └── grid_snapshot.json   — snapshot gridu pro regeneraci
+```
+
+### Stav Phase 5
+
+Phase 5 je dokončena. Swarm Center je plně funkční GCS s:
+- Živou mapou mise, sektory, overlay vrstvami (field model)
+- Avoidance panelem s per-drone animovaným stavem
+- Post-mission HTML reportem generovaným automaticky po `mission_complete`
+- Export Report tlačítkem pro ruční re-generaci kdykoli po misi
