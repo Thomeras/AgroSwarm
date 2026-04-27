@@ -44,6 +44,7 @@ from core.mavlink_manager import DroneTelemetry, SwarmMavlinkManager
 from core.ros2_bridge import Ros2BridgeThreadRunner
 from core.swarm_manager import MissionState, SwarmManager
 
+from ui.avoidance_panel import AvoidancePanel
 from ui.camera_view import CameraView
 from ui.control_panel import ControlPanel
 from ui.drone_list import DroneListPanel
@@ -119,6 +120,7 @@ class MainWindow(QMainWindow):
         # ── UI ──────────────────────────────────────────────────────────────
         self._field_view = FieldView(self._swarm)
         self._drone_list = DroneListPanel(self._swarm)
+        self._avoidance_panel = AvoidancePanel(self._swarm)
         self._control = ControlPanel()
         self._logger.entry_added.connect(self._control.append_log_entry)
         self._manual_control = ManualControlWidget(
@@ -149,6 +151,7 @@ class MainWindow(QMainWindow):
             self._manual_control.load_overhead_image(world_image)
 
         self._control.reset_view_clicked.connect(self._field_view.reset_view)
+        self._control.overlay_toggled.connect(self._field_view.set_overlay_visibility)
         self._control.load_grid_clicked.connect(self._load_grid)
         self._control.cell_size_changed.connect(self._on_cell_size_changed)
         self._control.mode_changed.connect(self._on_mode_changed)
@@ -170,12 +173,13 @@ class MainWindow(QMainWindow):
         self._swarm.add_mission_listener(self._control.update_mission)
         self._swarm.add_mission_listener(self._on_mission_state_changed)
 
-        # Right column: control panel (top) + drone list (bottom)
+        # Right column: control panel (top) + drone list + avoidance panel (bottom)
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self._control, stretch=2)
         right_layout.addWidget(self._drone_list, stretch=1)
+        right_layout.addWidget(self._avoidance_panel, stretch=0)
 
         # Left tabs: Mission / Camera / 3D
         self._left_tabs = QTabWidget()
@@ -213,10 +217,11 @@ class MainWindow(QMainWindow):
         self._mav.start_all()
         self._bridge_runner.start()
 
-        # Soft repaint timer — smooths trails even if no new telemetry arrived
+        # Soft repaint timer — smooths trails and avoidance pulse animations
         self._tick = QTimer(self)
         self._tick.setInterval(50)   # 20 fps
         self._tick.timeout.connect(self._field_view.update)
+        self._tick.timeout.connect(self._avoidance_panel.tick)
         self._tick.start()
 
         # Periodic peer-cell broadcast — grid-level swarm awareness
@@ -347,6 +352,7 @@ class MainWindow(QMainWindow):
             self._logger.error("grid", f"grid_reload failed for {path}: {exc}")
             return
         self._apply_grid(grid)
+        self._field_view.reload_field_model()
         self._logger.info("grid", f"Reloaded from {path}")
         self.statusBar().showMessage(f"Grid reloaded: {path}", 5000)
 
@@ -360,6 +366,7 @@ class MainWindow(QMainWindow):
             self._logger.error("grid", f"auto-reload failed for {found}: {exc}")
             return
         self._apply_grid(grid)
+        self._field_view.reload_field_model()
         self._logger.info("grid", f"Auto-reloaded from {found}")
         self.statusBar().showMessage(f"Grid reloaded: {found}", 5000)
 

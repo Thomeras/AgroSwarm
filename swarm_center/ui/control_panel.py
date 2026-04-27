@@ -18,8 +18,8 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout,
+    QLabel, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
 )
 
 from core.swarm_manager import MissionState
@@ -34,6 +34,7 @@ class ControlPanel(QWidget):
     rth_all_clicked        = pyqtSignal()
     start_mission_clicked  = pyqtSignal()
     emergency_stop_clicked = pyqtSignal()
+    overlay_toggled        = pyqtSignal(str, bool)  # (layer, visible)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -129,6 +130,29 @@ class ControlPanel(QWidget):
         size_row.addWidget(self._apply_cell_size_btn)
         view_layout.addLayout(size_row)
 
+        # Overlay layer toggles
+        view_layout.addWidget(QLabel("Overlays:"))
+        self._chk_no_go = QCheckBox("No-go zones")
+        self._chk_no_go.setChecked(True)
+        self._chk_no_go.toggled.connect(
+            lambda v: self.overlay_toggled.emit("no_go", v))
+        self._chk_obstacles = QCheckBox("Obstacles")
+        self._chk_obstacles.setChecked(True)
+        self._chk_obstacles.toggled.connect(
+            lambda v: self.overlay_toggled.emit("obstacles", v))
+        self._chk_terrain = QCheckBox("Terrain")
+        self._chk_terrain.setChecked(True)
+        self._chk_terrain.toggled.connect(
+            lambda v: self.overlay_toggled.emit("terrain", v))
+        self._chk_sector_preview = QCheckBox("Show sector preview")
+        self._chk_sector_preview.setChecked(True)
+        self._chk_sector_preview.toggled.connect(
+            lambda v: self.overlay_toggled.emit("sector_preview", v))
+        view_layout.addWidget(self._chk_no_go)
+        view_layout.addWidget(self._chk_obstacles)
+        view_layout.addWidget(self._chk_terrain)
+        view_layout.addWidget(self._chk_sector_preview)
+
         layout.addWidget(view_group)
 
         # ── Log ─────────────────────────────────────────────────────────────
@@ -201,6 +225,9 @@ class ControlPanel(QWidget):
         # Start Mission: enabled when field setup is done and mission hasn't started yet
         self._start_btn.setEnabled(
             self._bridge_connected and ms.field_ready and not ms.ready and not ms.complete)
+
+        # Sector preview checkbox is only relevant before the mission starts
+        self._chk_sector_preview.setVisible(not ms.ready and not ms.complete)
 
     def set_cell_size(self, cell_size_m: float) -> None:
         """Update the spinbox when a grid is loaded externally."""

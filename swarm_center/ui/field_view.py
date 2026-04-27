@@ -26,18 +26,20 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QPainter, QPen, QPixmap, QPolygonF,
+    QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QPolygonF,
     QPaintEvent, QMouseEvent, QWheelEvent,
 )
 from PyQt6.QtWidgets import QWidget
 
 from core.field_manager import FieldGrid
+from core.field_model_loader import FieldModel, FieldModelLoader
 from core.swarm_manager import DroneRecord, SwarmManager
 
 
@@ -110,6 +112,16 @@ class FieldView(QWidget):
         self._overhead_pixmap: Optional[QPixmap] = None
         # NED bounds of the overhead image: (x_min, x_max, y_min, y_max)
         self._overhead_ned: Optional[tuple[float, float, float, float]] = None
+
+        # Field model overlay
+        self._field_model: FieldModel = FieldModel()
+        self._terrain_pixmap: Optional[QPixmap] = None
+        self._terrain_ned: Optional[tuple[float, float, float, float]] = None
+        self._show_no_go: bool = True
+        self._show_obstacles: bool = True
+        self._show_terrain: bool = True
+        self._show_sector_preview: bool = True
+        self.reload_field_model()
 
         self.setMinimumSize(QSize(600, 500))
         self.setMouseTracking(True)
@@ -219,6 +231,69 @@ class FieldView(QWidget):
 
         self.update()
 
+    # ── Field model overlay ─────────────────────────────────────────────────
+
+    def reload_field_model(self) -> None:
+        """Reload all three field-model overlay files from disk."""
+        self._field_model = FieldModelLoader.load()
+        self._terrain_pixmap, self._terrain_ned = self._build_terrain_pixmap(
+            self._field_model.terrain
+        )
+        self.update()
+
+    def set_overlay_visibility(self, layer: str, visible: bool) -> None:
+        if layer == "no_go":
+            self._show_no_go = visible
+        elif layer == "obstacles":
+            self._show_obstacles = visible
+        elif layer == "terrain":
+            self._show_terrain = visible
+        elif layer == "sector_preview":
+            self._show_sector_preview = visible
+        self.update()
+
+    def _build_terrain_pixmap(
+        self, terrain: Optional[dict]
+    ) -> tuple[Optional[QPixmap], Optional[tuple[float, float, float, float]]]:
+        if terrain is None:
+            return None, None
+        try:
+            origin_x = float(terrain["origin_x"])
+            origin_y = float(terrain["origin_y"])
+            res = float(terrain["resolution_m"])
+            rows = terrain["rows"]
+            if not rows or res <= 0:
+                return None, None
+            nrows = len(rows)
+            ncols = max(len(r) for r in rows)
+            heights = [h for row in rows for h in row if h is not None]
+            if not heights:
+                return None, None
+            h_min = min(heights)
+            h_max = max(heights)
+            h_range = h_max - h_min if h_max != h_min else 1.0
+
+            img = QImage(ncols, nrows, QImage.Format.Format_ARGB32)
+            img.fill(Qt.GlobalColor.transparent)
+            for ri, row in enumerate(rows):
+                img_row = nrows - 1 - ri  # flip: data row 0 = south = bottom of image
+                for ci, h in enumerate(row):
+                    if h is None:
+                        continue
+                    t = (h - h_min) / h_range
+                    hue = (1.0 - t) * 0.667  # blue=low, red=high
+                    img.setPixelColor(ci, img_row, QColor.fromHsvF(hue, 0.8, 0.9, 0.5))
+
+            ned_bounds = (
+                origin_x,
+                origin_x + nrows * res,
+                origin_y,
+                origin_y + ncols * res,
+            )
+            return QPixmap.fromImage(img), ned_bounds
+        except (KeyError, TypeError, ValueError):
+            return None, None
+
     # ── Transform helpers ───────────────────────────────────────────────────
 
     def _effective_scale(self) -> float:
@@ -307,6 +382,8 @@ class FieldView(QWidget):
         else:
             self._paint_field_bg(p, grid)
         self._paint_grid(p, grid)
+        self._paint_sector_preview(p, grid)
+        self._paint_field_model_overlay(p)
         self._paint_axes(p, grid)
         self._paint_markers(p, grid)
         self._paint_trails(p)
@@ -314,6 +391,110 @@ class FieldView(QWidget):
         self._paint_scale_bar(p, grid)
 
         p.end()
+
+    def _paint_sector_preview(self, p: QPainter, grid: FieldGrid) -> None:
+        """Fill each drone's pre-assigned sector cells before mission starts."""
+        if not self._show_sector_preview:
+            return
+        ms = self._swarm.mission
+        if ms.ready or not ms.sector_cells:
+            return
+
+        half = grid.cell_size_m / 2.0
+        cell_px = self._meters_to_pixels(grid.cell_size_m)
+        show_labels = cell_px > 12
+        label_font = QFont("Sans", 7)
+
+        for drone_key, cell_ids in ms.sector_cells.items():
+            try:
+                drone_num = int(drone_key.split("_")[-1])
+            except (ValueError, IndexError):
+                continue
+
+            base = DRONE_COLORS[drone_num % len(DRONE_COLORS)]
+            fill = QColor(base.red(), base.green(), base.blue(), int(255 * 0.4))
+            label_col = QColor(base.red(), base.green(), base.blue(), 200)
+
+            for cell_id in cell_ids:
+                cell = grid.cell_by_id(cell_id)
+                if cell is None:
+                    continue
+                tl = self._ned_to_screen(cell.x + half, cell.y - half)
+                br = self._ned_to_screen(cell.x - half, cell.y + half)
+                rect = QRectF(tl, br)
+                p.fillRect(rect, fill)
+
+                if show_labels:
+                    p.setFont(label_font)
+                    p.setPen(QPen(label_col, 1))
+                    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"D{drone_num}")
+
+    def _paint_field_model_overlay(self, p: QPainter) -> None:
+        if self._show_terrain:
+            self._paint_terrain(p)
+        if self._show_no_go:
+            self._paint_no_go_zones(p)
+        if self._show_obstacles:
+            self._paint_obstacles(p)
+
+    def _paint_terrain(self, p: QPainter) -> None:
+        if self._terrain_pixmap is None or self._terrain_ned is None:
+            return
+        ix_min, ix_max, iy_min, iy_max = self._terrain_ned
+        img_w = self._terrain_pixmap.width()
+        img_h = self._terrain_pixmap.height()
+        ned_w = iy_max - iy_min
+        ned_h = ix_max - ix_min
+        if ned_w <= 0 or ned_h <= 0 or img_w <= 0 or img_h <= 0:
+            return
+        tl = self._ned_to_screen(ix_max, iy_min)
+        br = self._ned_to_screen(ix_min, iy_max)
+        dst = QRectF(tl, br)
+        if dst.width() <= 0 or dst.height() <= 0:
+            return
+        widget_rect = QRectF(0.0, 0.0, float(self.width()), float(self.height()))
+        clipped = dst.intersected(widget_rect)
+        if clipped.isEmpty():
+            return
+        sx = (clipped.left() - dst.left()) / dst.width()
+        sy = (clipped.top()  - dst.top())  / dst.height()
+        sw = clipped.width()  / dst.width()
+        sh = clipped.height() / dst.height()
+        src = QRectF(sx * img_w, sy * img_h, sw * img_w, sh * img_h)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawPixmap(clipped, self._terrain_pixmap, src)
+
+    def _paint_no_go_zones(self, p: QPainter) -> None:
+        fill = QColor(220, 50, 50, 80)
+        border = QPen(QColor(220, 50, 50), 2)
+        p.setPen(border)
+        p.setBrush(QBrush(fill))
+        for zone in self._field_model.no_go_zones:
+            pts = zone.get("points", [])
+            if len(pts) < 3:
+                continue
+            poly = QPolygonF([self._ned_to_screen(x, y) for x, y in pts])
+            p.drawPolygon(poly)
+
+    def _paint_obstacles(self, p: QPainter) -> None:
+        for obs in self._field_model.obstacles:
+            try:
+                nx = float(obs["ned_x"])
+                ny = float(obs["ned_y"])
+                r_m = float(obs.get("radius_m", 1.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            c = self._ned_to_screen(nx, ny)
+            r_px = max(6.0, self._meters_to_pixels(r_m))
+            p.setBrush(QBrush(QColor(255, 200, 0, 160)))
+            p.setPen(QPen(QColor(220, 160, 0), 2))
+            p.drawEllipse(c, r_px, r_px)
+            if r_m > 0:
+                infl_px = max(8.0, self._meters_to_pixels(r_m * 1.5))
+                dash_pen = QPen(QColor(255, 200, 0, 100), 1.5, Qt.PenStyle.DashLine)
+                p.setPen(dash_pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(c, infl_px, infl_px)
 
     def _paint_markers(self, p: QPainter, grid: FieldGrid) -> None:
         """Draw perimeter corners and landing pads."""
@@ -471,6 +652,14 @@ class FieldView(QWidget):
             centre = self._ned_to_screen(t.x_ned, t.y_ned)
             rad = DRONE_RADIUS_PX
 
+            # ── Avoidance aura (CRITICAL/BLOCKED) — drawn before body ────────
+            avoidance = rec.avoidance_state
+            if avoidance in ("CRITICAL", "BLOCKED"):
+                aura_r = rad * 2.0
+                p.setBrush(QBrush(QColor(220, 50, 50, 102)))   # 40% opacity
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(centre, aura_r, aura_r)
+
             # ── Crosshair (black shadow then colour) ─────────────────────────
             cross_len = rad + 14
             cross_lines = [
@@ -526,6 +715,25 @@ class FieldView(QWidget):
                 p.setPen(QPen(QColor(255, 60, 60), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawEllipse(centre, rad + 5, rad + 5)
+
+            # ── Avoidance overlays (drawn on top of body) ────────────────────
+            if avoidance == "WARN":
+                pulse = (math.sin(time.monotonic() * 4.0) + 1.0) * 0.5  # 0..1
+                alpha = int(80 + pulse * 140)
+                p.setPen(QPen(QColor(230, 140, 40, alpha), 2.5))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(centre, rad + 13, rad + 13)
+            elif avoidance == "BLOCKED":
+                x_size = rad * 0.85
+                p.setPen(QPen(QColor(255, 255, 255, 230), 2.5))
+                p.drawLine(
+                    QPointF(centre.x() - x_size, centre.y() - x_size),
+                    QPointF(centre.x() + x_size, centre.y() + x_size),
+                )
+                p.drawLine(
+                    QPointF(centre.x() + x_size, centre.y() - x_size),
+                    QPointF(centre.x() - x_size, centre.y() + x_size),
+                )
 
             # ── Label with shadow ────────────────────────────────────────────
             label = f"D{rec.drone_id}"

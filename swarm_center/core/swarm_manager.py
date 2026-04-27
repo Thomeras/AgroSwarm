@@ -19,6 +19,7 @@ Design:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -39,6 +40,13 @@ class DroneRecord:
     queue_remaining: int = 0               # cells still queued for this drone
     allocator_status: str = "UNKNOWN"      # WAITING/WORKING/SECTOR_DONE/MISSION_DONE/RTH
 
+    # ── From ROS2 bridge (avoidance runtime status) ──────────────────────────
+    avoidance_state: str = "NOMINAL"       # NOMINAL / WARN / CRITICAL / BLOCKED
+    planner_state: str = "—"
+    blocked_severity: str = "NONE"         # NONE / SOFT / HARD
+    blocked_since_wall: float = 0.0        # time.monotonic() when blocking started; 0 = not blocked
+    no_path_streak: int = 0
+
     @property
     def did(self) -> str:
         return f"drone_{self.drone_id}"
@@ -56,6 +64,9 @@ class MissionState:
     setup_status: str = ""                 # latest /field/setup_status text
     field_ready: bool = False              # field_setup_coordinator reached READY_FOR_MISSION
     setup_state: str = ""                  # raw setup state from coordinator
+    # Full pre-mission sector assignment: "drone_0" → [cell_id, ...]
+    # Populated from task_status before mission_ready; cleared on mission_ready.
+    sector_cells: dict = field(default_factory=dict)
 
 
 class SwarmManager:
@@ -71,6 +82,7 @@ class SwarmManager:
         self._drones: dict[int, DroneRecord] = {}
         self._listeners: list[Callable[[DroneRecord], None]] = []
         self._mission_listeners: list[Callable[[MissionState], None]] = []
+        self._avoidance_event_listeners: list[Callable] = []
         self._mission = MissionState()
         self._selected_drone_id: Optional[int] = None
 
@@ -152,6 +164,10 @@ class SwarmManager:
     def add_mission_listener(self, fn: Callable[[MissionState], None]) -> None:
         self._mission_listeners.append(fn)
 
+    def add_avoidance_event_listener(self, fn: Callable) -> None:
+        """fn(rec: DroneRecord, prev_state: str) — called on avoidance_state transitions."""
+        self._avoidance_event_listeners.append(fn)
+
     def _notify(self, rec: DroneRecord) -> None:
         for fn in self._listeners:
             try:
@@ -166,6 +182,13 @@ class SwarmManager:
                 fn(self._mission)
             except Exception as exc:
                 print(f"[swarm_manager] mission listener error: {exc}")
+
+    def _notify_avoidance_event(self, rec: DroneRecord, prev_state: str) -> None:
+        for fn in self._avoidance_event_listeners:
+            try:
+                fn(rec, prev_state)
+            except Exception as exc:
+                print(f"[swarm_manager] avoidance event listener error: {exc}")
 
     # ── Bridge handlers — called from UI thread on bridge signals ──────────
 
@@ -190,6 +213,14 @@ class SwarmManager:
         self._mission.total_cells = int(data.get("total_cells", 0))
         self._mission.completed_cells = int(data.get("completed_cells", 0))
         self._mission.rebalance_count = int(data.get("rebalance_count", 0))
+
+        # Full sector assignments — present in pre-mission task_status payloads.
+        # Stored as-is ("drone_0" → [cell_ids]) for sector preview rendering.
+        if not self._mission.ready:
+            raw_cells = data.get("cells", {})
+            if isinstance(raw_cells, dict) and raw_cells:
+                self._mission.sector_cells = {k: list(v) for k, v in raw_cells.items()
+                                               if isinstance(v, list)}
 
         drones = data.get("drones", {})
         currently_targeted: set[str] = set()
@@ -237,13 +268,15 @@ class SwarmManager:
 
     def apply_drone_status(self, data: dict) -> None:
         """
-        Handle an MSG_DRONE_STATUS payload (READY / CELL_COMPLETE).
+        Handle an MSG_DRONE_STATUS payload (READY / CELL_COMPLETE / AVOIDANCE_STATUS).
 
-        CELL_COMPLETE is the authoritative "this cell is done" event — use
-        it to flip the grid cell to "visited" regardless of what
-        task_status says.
+        CELL_COMPLETE is the authoritative "this cell is done" event.
+        AVOIDANCE_STATUS carries the avoidance runtime state snapshot.
         """
         status = data.get("status")
+        if status == "AVOIDANCE_STATUS":
+            self._apply_avoidance_status(data)
+            return
         if status != "CELL_COMPLETE":
             return
         cell_id = data.get("cell_id")
@@ -253,8 +286,59 @@ class SwarmManager:
         if cell is not None:
             cell.status = "visited"
 
+    def _apply_avoidance_status(self, data: dict) -> None:
+        drone_id_raw = data.get("drone_id", "")
+        if isinstance(drone_id_raw, int):
+            num = drone_id_raw
+        else:
+            try:
+                num = int(str(drone_id_raw).split("_")[-1])
+            except (ValueError, IndexError):
+                return
+
+        av = data.get("avoidance_status", {}) or {}
+        planner_state = str(av.get("planner_state", "") or "—") or "—"
+        blocked_severity = str(av.get("blocked_severity", "NONE") or "NONE")
+        no_path_streak = int(av.get("no_path_streak", 0) or 0)
+        blocked_since_s = float(av.get("blocked_since_s", 0.0) or 0.0)
+
+        if blocked_severity == "HARD":
+            avoidance_state = "BLOCKED"
+        elif blocked_severity == "SOFT":
+            avoidance_state = "CRITICAL"
+        elif no_path_streak >= 3:
+            avoidance_state = "WARN"
+        else:
+            avoidance_state = "NOMINAL"
+
+        blocked_since_wall = (
+            time.monotonic() - blocked_since_s
+            if blocked_since_s > 0 and avoidance_state in ("CRITICAL", "BLOCKED")
+            else 0.0
+        )
+
+        rec = self._drones.get(num)
+        if rec is None:
+            from core.mavlink_manager import DroneTelemetry as _T
+            stub = _T(drone_id=num)
+            rec = DroneRecord(drone_id=num, telemetry=stub)
+            self._drones[num] = rec
+
+        prev_state = rec.avoidance_state
+        rec.planner_state = planner_state
+        rec.blocked_severity = blocked_severity
+        rec.no_path_streak = no_path_streak
+        rec.avoidance_state = avoidance_state
+        rec.blocked_since_wall = blocked_since_wall
+
+        if prev_state != avoidance_state:
+            self._notify_avoidance_event(rec, prev_state)
+
+        self._notify(rec)
+
     def apply_mission_ready(self, data: dict) -> None:
         self._mission.ready = True
+        self._mission.sector_cells = {}
         self._notify_mission()
 
     def apply_mission_complete(self, data: dict) -> None:
