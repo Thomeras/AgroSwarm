@@ -46,10 +46,11 @@ swarm_coordinator (task_allocator) ──► swarm_agent (per drone)
 | Node / Module | Current Status | Role | Key Topics |
 | :--- | :--- | :--- | :--- |
 | **obstacle_avoidance_runtime** | **ACTIVE** | **Single Flight Owner.** Manages PX4 setpoints, local mapping, safety. | `/{drone}/avoidance/target_cmd`, `/{drone}/avoidance/status`, `/fmu/in/*` |
+| **precision_landing** | **ACTIVE** | **Advisory Node.** Detects home pad ArUco marker and publishes offset. | `/{drone}/precision_landing/offset`, `/{drone}/camera/image_raw` |
 | **swarm_agent** | **ACTIVE** | **Mission Delegator.** No direct PX4 ownership in runtime mode. | `/{drone}/next_cell`, `/{drone}/avoidance/target_cmd`, `/swarm/drone_status` |
 | **swarm_coordinator** | ACTIVE | Cell allocation wrapper around `task_allocator`. | `/swarm/task_status`, `/{drone}/next_cell` |
 | **task_allocator** | ACTIVE (internal) | Pure-Python allocator with blocked/deferred semantics (`SOFT/HARD`, `CELL_DEFERRED`, `TEMP_BLOCKED`). | n/a (in-process) |
-| **telemetry_hub** | **ACTIVE** | Central topic registry. Single source of truth for ROS2 topic contracts. | Contract source for drone/swarm topics |
+| **telemetry_hub** | **ACTIVE** | Central topic registry. Single source of truth for ROS2 topic contracts. | Contract source for drone/swarm topics; includes `precision_landing_offset` |
 | **field_setup_coordinator** | ACTIVE | Setup orchestration; polygon boundary capture, grid generation, RTH gating. | `/swarm/pad_assignment`, `/field/boundary_point`, `/field/boundary_close`, `/field/corner_marked` (legacy), `/field/setup_complete`, `/swarm/rth_request` |
 | **field_setup_tool** | ACTIVE | Setup-only operator helper (curses UI). Pad / corner / boundary keys. No PX4 setpoints. | `/swarm/manual_control`, `/swarm/pad_assignment`, `/field/boundary_point`, `/field/boundary_close`, `/field/corner_marked`, `/field/mission_confirm` |
 | **home_manager** | ACTIVE | Pad registry with metadata (id, orientation, charging, occupancy, priority) and RTH coordination. | `/swarm/rth_request`, `/swarm/home_positions`, `/swarm/landed_confirmation`, `/swarm/pad_query`, `/swarm/pad_response` |
@@ -202,11 +203,11 @@ python3 scout_launcher.py
 - [x] **2C** Grid generation from polygon (`boundary_mode`) with ray-cast point-in-polygon and `cell_class` classification. Backwards-compatible `field_grid.json`.
 - [x] **2D** Full E2E swarm field mission verification. Launch/config defaults set to `navigation_backend=avoidance_runtime`. Scenario YAMLs cleaned (workspace path, backend defaults). New `test_e2e_setup_flow.py` covers setup → boundary → grid → RTH.
 
-### Phase 3 – Mapping Mission Pipeline [PLANNED]
-- [ ] Mapping mission flight pattern (lawnmower over polygon with overlap).
-- [ ] Field model outputs: terrain map (2.5D heightmap), static obstacle extraction.
-- [ ] Persist mapping artifacts under `perimeters/field_model/`.
-- [ ] Precision landing / home pad vision integration (deferred from Phase 2).
+### Phase 3 – Mapping Mission Pipeline [DONE]
+- [x] Mapping mission flight pattern (lawnmower over polygon with overlap).
+- [x] Field model outputs: terrain map (2.5D heightmap), static obstacle extraction.
+- [x] Persist mapping artifacts under `perimeters/field_model/`.
+- [x] Precision landing / home pad vision integration (advisory-only).
 - [ ] Remove deprecated `navigation_backend=direct` after full Phase 3 verification.
 - [ ] Replace ad-hoc `task_allocator.yaml` scenario or register a proper entry point.
 

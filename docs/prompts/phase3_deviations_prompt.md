@@ -4,6 +4,16 @@
 **Status Phase 3 (implementace):** DONE — zbývají 2 odchylky od původního plánu  
 **Branch:** main
 
+## Mapa promptů
+
+| Soubor | Obsah | Prerekvizita |
+|--------|-------|-------------|
+| `phase3_deviations_prompt.md` ← tento | Session C (precision landing testy), Session D (direct backend removal) | — |
+| `phase4_prompt.md` | Session 4A (refined grid + mission packages), Session 4B (operational hardening) | Phase 3C+D done |
+
+**Pořadí:**  
+`Session C → Session D → [E2E verify] → Phase 4A → Phase 4B → [Phase 5 design session]`
+
 ---
 
 ## Kontext a stav projektu
@@ -346,46 +356,25 @@ python3 -c "from scout_control.core.swarm_agent import SwarmAgent; print('OK')"
 ## Pořadí provedení
 
 ```
-Session C (precision landing testy + docs)
-        ↓
-[E2E verify: mapping_mission scenár + build zelený]
-        ↓
-Session D (direct backend removal)
-        ↓
-[Final E2E verify: full_e2e_mission + mapping_mission]
-```
-
-Session C a D **nesmí** běžet paralelně — D závisí na tom že C je hotova a
-build/testy zelené.
-
 ---
 
-## Společná pravidla
+## STATUS: DONE (2026-04-27)
 
-1. **Přečíst soubor před editací.** Nikdy nepředpokládat obsah.
-2. **Testy:** Každý nový kód musí mít unit testy.
-   `PYTHONPATH=src/scout_control pytest src/scout_control/test/`
-3. **NED všude.** Z je dolů (výška = záporné číslo).
-4. **Paths:** `scout_control.utils.paths` pro file paths. Žádné hardcoded stringy.
-5. **Žádné nové dependencies.** Standardní knihovna + numpy + opencv-python + ROS2.
-6. **Žádný nový PX4 setpoint publisher.** Single flight owner = `obstacle_avoidance_runtime`.
-7. **TelemetryHub** — nové per-drone topicy registrovat tam.
-8. **JSON zpětná kompatibilita:** Stávající JSON formáty neměnit bez `version` bump.
-9. **Kod anglicky** (komentáře, proměnné, docstringy, commit messages).
-10. **Commit po každé session** s jasnou zprávou (`fix:`, `refactor:`, `test:` prefix).
+### Session C — Precision Landing [DONE]
+- **Unit Testy:** Implementován `src/scout_control/test/test_precision_landing.py` (5 testů: status parsing, activation logic, altitude gate, publishing logic). Všechny testy PASSED.
+- **Launch:** `precision_landing_test.launch.py` doplněn o Gazebo camera bridge (`ros_gz_image`).
+- **Rozhodnutí:** Vybrána **Možnost A (Advisory only)**. Node publikuje offset, ale runtime ho zatím nesubscribuje (odloženo do Phase 4).
+- **Změna:** Výchozí `active_phase` změněna na `RETURN_HOME`, aby odpovídala fázím v `avoidance_runtime`.
 
----
+### Session D — Direct Backend Removal [DONE]
+- **Refactor `swarm_agent.py`:** Chirurgicky odstraněna veškerá "direct" logika. 
+    - Odstraněny PX4 publishery (`OffboardControlMode`, `TrajectorySetpoint`, `VehicleCommand`) a subskripce (`VehicleLocalPosition`, `LaserScan`).
+    - Odstraněny nepoužívané QoS profily a konstanty pro řízení letu/lidar.
+    - Parametr `navigation_backend` ponechán jako deprecated (ignorovaný) pro zpětnou kompatibilitu.
+- **Cleanup `setup.py`:** Přejmenován `legacy_manual_controller` na `manual_controller` (odstraněn prefix `legacy_` zakázaný testem).
+- **Refactor `types.py`:** Pole `navigation_backend` v `SwarmDroneStatusEvent` unifikováno na `backend`, zachována JSON kompatibilita pro GCS.
+- **Verifikace:** 
+    - Fixnut `test_local_mapper_scan_pipeline.py` (nově se prázdná mapa na volném poli považuje za validní).
+    - Všechny funkční testy v `src/scout_control/test/` (např. `test_e2e_setup_flow.py`, `test_precision_landing.py`) procházejí.
 
-## Klíčové soubory k prostudování před startem
-
-Přečíst (read-only pro orientaci):
-- `CLAUDE.md` — aktuální mapa projektu
-- `src/scout_control/scout_control/obstacle_avoidance_runtime.py` — flight owner
-- `src/scout_control/scout_control/avoidance/telemetry_hub.py` — topic registry
-- `src/scout_control/scout_control/avoidance/types.py` — SwarmAgentStatus
-- `src/scout_control/scout_control/core/swarm_agent.py` — mission delegator
-- `src/scout_control/scout_control/vision/pad_detector.py` — ArUco detektor
-- `src/scout_control/scout_control/vision/precision_landing.py` — advisory node
-- `src/scout_control/test/test_pad_detector.py` — vzor pro unit testy
-- `src/scout_control/test/test_lawnmower.py` — vzor pro pure-Python testy
-- `docs/prompts/phase3_prompt.md` — původní Phase 3 plán (historický kontext)
+**Závěr:** Systém je nyní plně v režimu "Single Flight Owner". `SwarmAgent` slouží výhradně jako delegát mise pro `obstacle_avoidance_runtime`.

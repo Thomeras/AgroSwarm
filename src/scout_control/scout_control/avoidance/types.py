@@ -796,7 +796,7 @@ class SwarmDroneStatusEvent:
     cell_id: str = ""
     cmd_id: str = ""
     route_id: str = ""
-    navigation_backend: str = ""
+    backend: str = ""
     nav_state: str = ""
     nav_result: str = ""
     blocked_severity: str = "NONE"
@@ -812,7 +812,7 @@ class SwarmDroneStatusEvent:
             cell_id=str(payload.get("cell_id", "")),
             cmd_id=str(payload.get("cmd_id", "")),
             route_id=str(payload.get("route_id", "")),
-            navigation_backend=str(payload.get("navigation_backend", "")),
+            backend=str(payload.get("backend", payload.get("navigation_backend", ""))),
             nav_state=str(payload.get("nav_state", payload.get("state", ""))),
             nav_result=str(payload.get("nav_result", payload.get("result", ""))),
             blocked_severity=str(payload.get("blocked_severity", "NONE")),
@@ -828,6 +828,7 @@ class SwarmDroneStatusEvent:
                     "cell_id",
                     "cmd_id",
                     "route_id",
+                    "backend",
                     "navigation_backend",
                     "nav_state",
                     "state",
@@ -847,7 +848,8 @@ class SwarmDroneStatusEvent:
             "cell_id": self.cell_id,
             "cmd_id": self.cmd_id,
             "route_id": self.route_id,
-            "navigation_backend": self.navigation_backend,
+            "backend": self.backend,
+            "navigation_backend": self.backend,
             "nav_state": self.nav_state,
             "nav_result": self.nav_result,
             "blocked_severity": self.blocked_severity,

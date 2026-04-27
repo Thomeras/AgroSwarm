@@ -40,6 +40,7 @@ class DroneTopicContract:
     obstacles_clear: str
     next_cell: str
     rth_target: str
+    precision_landing_offset: str
     downward_lidar_scan: str
 
     @property
@@ -123,6 +124,7 @@ class TelemetryHub:
             obstacles_clear=f"/{self.drone_ns}/obstacles/clear",
             next_cell=f"/{self.drone_ns}/next_cell",
             rth_target=f"/{self.drone_ns}/rth_target",
+            precision_landing_offset=f"/{self.drone_ns}/precision_landing/offset",
             downward_lidar_scan=f"/{self.drone_ns}/downward_lidar/scan",
         )
 

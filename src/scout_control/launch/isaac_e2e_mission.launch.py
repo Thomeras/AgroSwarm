@@ -215,7 +215,6 @@ def generate_launch_description() -> LaunchDescription:
                 "home_ned_x":         0.0,    # Isaac Sim Iris spawn NED x
                 "home_ned_y":         0.0,    # Isaac Sim Iris spawn NED y
                 "cruise_speed":       cruise_speed,
-                "navigation_backend": "avoidance_runtime",
             }],
             output="screen",
         )],
@@ -235,7 +234,6 @@ def generate_launch_description() -> LaunchDescription:
                 "home_ned_x":         5.0,    # adjust to match 2nd vehicle spawn
                 "home_ned_y":         0.0,
                 "cruise_speed":       cruise_speed,
-                "navigation_backend": "avoidance_runtime",
             }],
             output="screen",
         )],

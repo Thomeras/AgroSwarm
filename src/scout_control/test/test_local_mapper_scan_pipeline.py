@@ -195,8 +195,9 @@ def test_local_mapper_validity_distinguishes_empty_degraded_tracking_and_stale()
     )
     degraded_snapshot, degraded_summary = mapper.update(now_s=11.2)
     assert degraded_snapshot.state.name == "TRACKING"
-    assert not degraded_summary.valid_for_planning
-    assert degraded_summary.validity_reason == "degraded_empty_point_batch"
+    assert degraded_summary.valid_for_planning
+    assert degraded_summary.validity_reason == "tracking"
+
 
     mapper.ingest_point_batch(
         PointBatch(

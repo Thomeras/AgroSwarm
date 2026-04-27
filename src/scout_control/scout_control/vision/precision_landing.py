@@ -42,7 +42,7 @@ class PrecisionLanding(Node):
         super().__init__("precision_landing")
         self.declare_parameter("drone_id", 0)
         self.declare_parameter("marker_size_m", 0.35)
-        self.declare_parameter("active_phase", "RTH_FINAL")
+        self.declare_parameter("active_phase", "RETURN_HOME")
         self.declare_parameter("max_active_altitude_m", 5.0)
         self.declare_parameter("advisory_only", True)
         self._drone_id = int(self.get_parameter("drone_id").value)
@@ -58,7 +58,7 @@ class PrecisionLanding(Node):
         self.create_subscription(String, topics.avoidance_status_json, self._on_status, QOS_STATUS)
         self.create_subscription(String, "/swarm/home_positions", self._on_home_positions, 10)
         self._offset_pub = self.create_publisher(
-            String, f"/{topics.drone_ns}/precision_landing/offset", 10
+            String, topics.precision_landing_offset, 10
         )
 
     def _on_camera_info(self, msg: CameraInfo) -> None:

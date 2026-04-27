@@ -119,6 +119,8 @@ Tyto komponenty jsou dnes nejbliz aktualni produkcni / operatorni ceste:
 - `mapping/obstacle_extractor.py` — klasifikace překážek z point cloudu
 - `missions/mapping_mission.py` — generuje lawnmower trasu z `field_boundary.json`,
   posílá waypoints do runtime, hlásí progress na `/swarm/mapping_progress`
+- `vision/precision_landing.py` — advisory node pro detekci přistávacího padu
+  (ArUco marker), publikuje offset v `RETURN_HOME` fázi.
 
 Klíčová gotcha depth→heightmap:
 - `depth_projector.project_to_world_points()` filtruje přes collision band —

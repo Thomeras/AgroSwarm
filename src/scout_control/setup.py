@@ -66,7 +66,7 @@ setup(
             'scan_cloud_viz            = scout_control.viz.scan_cloud_viz:main',
             # manual
             'field_setup_tool          = scout_control.manual.field_setup_tool:main',
-            'legacy_manual_controller  = scout_control.manual.manual_controller:main',
+            'manual_controller         = scout_control.manual.manual_controller:main',
         ],
     },
 )

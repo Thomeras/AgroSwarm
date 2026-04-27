@@ -172,7 +172,6 @@ def generate_launch_description() -> LaunchDescription:
                 "home_ned_x":             10.0,   # pad_0 NED x — Gz y=10
                 "home_ned_y":             -8.0,   # pad_0 NED y — Gz x=-8
                 "cruise_speed":           cruise_speed,
-                "navigation_backend":     "avoidance_runtime",
             }],
             output="screen",
         )],
@@ -191,7 +190,6 @@ def generate_launch_description() -> LaunchDescription:
                 "home_ned_x":             40.0,   # pad_1 NED x — Gz y=40
                 "home_ned_y":             -8.0,   # pad_1 NED y — Gz x=-8
                 "cruise_speed":           cruise_speed,
-                "navigation_backend":     "avoidance_runtime",
             }],
             output="screen",
         )],
