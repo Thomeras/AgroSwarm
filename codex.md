@@ -614,3 +614,73 @@ Phase 5 je dokončena. Swarm Center je plně funkční GCS s:
 - Avoidance panelem s per-drone animovaným stavem
 - Post-mission HTML reportem generovaným automaticky po `mission_complete`
 - Export Report tlačítkem pro ruční re-generaci kdykoli po misi
+
+## Codex Log — 2026-04-28 (Node Audit Closure)
+
+### Kontext
+
+- Cílem bylo uzavřít historický `docs/plans/scout_ws_node_audit.md`, aby už
+  nesloužil jako paralelní backlog vedle aktuální architektury a topic
+  kontraktů.
+- Multi-agent průchod předtím vyřešil core hardening, launch/tooling separaci,
+  bridge v1.3 GCS consumption a grid/mission lifecycle položky.
+
+### Co bylo dořešeno
+
+- `obstacle_avoidance_runtime.py`
+  - doplněn `PX4PublisherAdapter` jako hranice pro offboard heartbeat,
+    trajectory setpoint a vehicle command publishing
+  - doplněn `FlightPhaseMachine` jako samostatná hranice pro phase state,
+    phase ticks a transition metadata
+  - doplněn `RosIOAdapter` jako hranice pro runtime status/event/bool publikaci
+  - runtime zůstává jediný PX4 flight-control owner; `swarm_agent` dál deleguje
+    jen high-level intent
+- `avoidance/types.py`
+  - typed JSON-compatible helpers pokrývají P0 core kontrakt set:
+    `TargetCommand`, `AvoidanceStatus`, `SwarmDroneStatusEvent`,
+    `SwarmTaskStatus`, `PadAssignment`, `FieldSetupComplete`,
+    `ReturnHomeRequest`, `MissionReadySignal`
+  - JSON/String fallback je zachovaný; helpery round-tripují přes stávající
+    payload shape a ignorují/nesou dopředná `extras`
+- `docs/topic_contract.md`
+  - nový zdroj pravdy pro topic naming, QoS, ownership pravidla a payload
+    migration policy
+- `docs/plans/scout_ws_node_audit.md`
+  - smazán jako uzavřený historický audit; poslední interní reference odstraněna
+
+### Stav uzavřených auditních položek
+
+- P0 runtime god-object: uzavřeno na úrovni požadovaných hranic
+  `FlightPhaseMachine`, `PX4PublisherAdapter`, `RosIOAdapter`.
+- P0 JSON-over-String core kontrakty: uzavřeno jako kompatibilní typed adapter
+  vrstva; wire formát zůstává JSON-compatible do doby, než budou ROS `.msg`
+  rozhraní dostupná všude.
+- P1/P2 položky: `cell_data_recorder`, production/operator launch separace,
+  `grid_generator.run()`, `mission_launcher` lifecycle, `spray_controller`
+  atomic persistence, `ml_interface` stub označení a topic contract dokumentace
+  jsou hotové.
+- Bridge v1.3 overlay payloady `MSG_NO_GO_OVERLAY` a `MSG_REFINED_GRID_EVENT`
+  jsou synchronní v obou protocol souborech a GCS je konzumuje.
+
+### Ověření
+
+- Targeted pytest:
+  - `test_flight_phase_machine.py`
+  - `test_ros_io_adapter.py`
+  - `test_typed_ros_contract_adapters.py`
+  - `test_px4_publisher_adapter.py`
+  - `test_swarm_core_hardening.py`
+  - `test_grid_generator_lifecycle.py`
+  - výsledek: `25 passed`
+- `colcon build --packages-select scout_control` prošel
+- `git diff --check` bez chyb
+- `cmp -s src/scout_control/scout_control/utils/bridge_protocol.py swarm_center/core/bridge_protocol.py` prošel
+
+### Poznámka pro další práci
+
+- Full `PYTHONPATH=src/scout_control pytest src/scout_control/test/` může v
+  některých prostředích selhat už při collection kvůli chybějícím systémovým
+  balíčkům `rclpy`, `ament_copyright`, `ament_flake8`, `ament_pep257`.
+- Další rozumná práce už není "node audit cleanup", ale live E2E ověření a
+  případné následné odstranění deprecated direct backend kompatibility, pokud
+  je ještě fyzicky přítomná v konkrétních souborech.

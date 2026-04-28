@@ -54,11 +54,11 @@ source install/setup.bash
 
 # Perimeter survey 25×25 m:
 ros2 run scout_control perimeter_flight
-# → ~/scout_ws/field_perimeter.json
+# → /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_perimeter.json
 
 # Grid generator (potřebuje field_perimeter.json):
 ros2 run scout_control grid_generator
-# → ~/scout_ws/field_grid.json
+# → /home/tj/_Data/_Projekty/TJlabs/scout_ws/perimeters/field_grid.json
 
 # Interaktivní grid control:
 ros2 run scout_control field_commander

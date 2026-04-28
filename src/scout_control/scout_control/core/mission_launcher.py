@@ -63,6 +63,8 @@ class MissionLauncher(Node):
 
         self._mission_started  = False
         self._mission_done     = False
+        self._shutdown_requested = False
+        self._shutdown_timer = None
         self._start_time: float = 0.0
         swarm_topics = TelemetryHub(drone_id=0).swarm
 
@@ -152,11 +154,16 @@ class MissionLauncher(Node):
         self.get_logger().info("=" * 60)
 
         # Give drones time to RTH before shutting down this node
-        self.create_timer(5.0, self._shutdown_timer)
+        self._shutdown_timer = self.create_timer(5.0, self._request_shutdown)
 
-    def _shutdown_timer(self) -> None:
+    def _request_shutdown(self) -> None:
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        if self._shutdown_timer is not None:
+            self._shutdown_timer.cancel()
         self.get_logger().info("MissionLauncher: shutdown complete.")
-        raise SystemExit(0)
+        rclpy.try_shutdown()
 
     # ── Task status heartbeat (logged at low verbosity) ───────────────────────
     def _task_status_cb(self, msg: String) -> None:
@@ -190,7 +197,7 @@ def main(args=None) -> None:
     node = MissionLauncher()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()

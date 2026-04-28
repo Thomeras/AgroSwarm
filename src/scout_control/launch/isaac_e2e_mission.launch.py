@@ -24,7 +24,7 @@ Nodes launched here (ROS2 side):
   Setup phase:
     field_setup_coordinator — IDLE→ASSIGN_PADS→MAP_FIELD→GENERATE_GRID→READY
     home_manager            — landing pad RTH coordinator
-    field_setup_tool        — setup-only pad/corner/mission-confirm bridge
+    field_setup_tool        — optional setup-only pad/corner/mission-confirm bridge
 
   Mission phase:
     avoidance_runtime_0     — flight owner for drone_0 (arm/takeoff/setpoints/avoidance)
@@ -36,6 +36,12 @@ Nodes launched here (ROS2 side):
     ml_interface            — dummy NDVI / anomaly publisher
     mission_launcher        — fires /swarm/start_mission, logs summary
     gcs_bridge              — TCP bridge for Swarm Center (port 17845)
+
+  Production launch flow starts backend/autonomy nodes only by default.
+  Operator tools are explicit: pass include_operator_tools:=true or run them
+  in their own terminal from a scenario YAML. legacy/manual PX4 controllers are
+  never included here. If field_setup_tool is enabled, it is setup-only and does
+  not publish PX4 setpoints; obstacle_avoidance_runtime remains the flight owner.
 
   NOTE: No lidar or camera bridges — sensor data comes from Isaac Sim directly.
   obstacle_avoidance_runtime consumes /drone_N/depth/image_raw from simulation_cam.py
@@ -85,6 +91,11 @@ def generate_launch_description() -> LaunchDescription:
     cam_fps_arg = DeclareLaunchArgument(
         "camera_fps_limit", default_value="5.0",
         description="Max camera fps forwarded over TCP bridge to Swarm Center")
+    tools_arg = DeclareLaunchArgument(
+        "include_operator_tools", default_value="false",
+        description=(
+            "Start setup-only operator tooling inside this launch. Default false "
+            "keeps production backend launch free of manual/tooling nodes."))
     cam_topic_arg = DeclareLaunchArgument(
         "camera_topic_template",
         default_value="/drone_{index}/camera/image_raw",
@@ -107,6 +118,7 @@ def generate_launch_description() -> LaunchDescription:
     cruise_speed     = LaunchConfiguration("cruise_speed")
     ready_timeout    = LaunchConfiguration("ready_timeout")
     camera_fps_limit = LaunchConfiguration("camera_fps_limit")
+    include_operator_tools = LaunchConfiguration("include_operator_tools")
     camera_topic_template = LaunchConfiguration("camera_topic_template")
     depth_topic_template = LaunchConfiguration("depth_topic_template")
 
@@ -135,6 +147,7 @@ def generate_launch_description() -> LaunchDescription:
 
     field_setup_tool = TimerAction(
         period=2.0,
+        condition=IfCondition(include_operator_tools),
         actions=[Node(
             package="scout_control",
             executable="field_setup_tool",
@@ -328,6 +341,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         # Args
         drones_arg, alt_arg, cell_arg, dose_arg, speed_arg, timeout_arg,
+        tools_arg,
         cam_fps_arg, cam_topic_arg, depth_topic_arg,
         # Setup phase
         field_setup,

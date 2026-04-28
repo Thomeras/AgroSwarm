@@ -1,8 +1,9 @@
 """
-ml_interface.py — ML placeholder node (Fáze 1: dummy data)
+ml_interface.py — tooling-only ML stub node (Fáze 1: dummy data)
 
-Publikuje tři ML výstupní topicy s vygenerovanými dummy daty.
-V Fázi 2 se dummy generátory nahradí voláním reálných modelů.
+Publikuje tři syntetické výstupní topicy pro vývoj a testování navazujících
+nodů. Tento node není produkční ML inference vrstva a jeho data se nesmí
+považovat za agronomickou predikci.
 
 Topics (publish):
   /field/anomaly      std_msgs/String  JSON — seznam anomálií v buňkách pole
@@ -75,6 +76,9 @@ QOS_VOLATILE = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=5,
 )
+
+TOOLING_PLACEHOLDER = True
+MODEL_MODE = "stub_tooling_placeholder"
 
 # ── Anomálie typy pro dummy generátor ────────────────────────────────────────
 ANOMALY_TYPES = ["drought", "pest", "disease", "nutrient_deficiency", "waterlogging"]
@@ -192,7 +196,7 @@ class DummySprayModel:
 
 class MLInterface(Node):
     """
-    ML Interface node — publikuje dummy ML výstupy.
+    Tooling-only ML stub node — publikuje dummy ML výstupy.
 
     Fáze 1: Syntetická data pro vývoj a testování navazujících nodů.
     Fáze 2: Nahradit _field_model a _spray_model reálnými ML modely.
@@ -237,7 +241,7 @@ class MLInterface(Node):
         self._timer = self.create_timer(period, self._publish)
 
         self.get_logger().info(
-            f"[ml_interface] Start — {len(self._cell_ids)} cells, "
+            f"[ml_interface] Start ({MODEL_MODE}) — {len(self._cell_ids)} cells, "
             f"{self._n_drones} drones, {self._hz:.1f} Hz, "
             f"anomaly_threshold={self._threshold}, max_dose={self._max_dose} ml/m²"
         )
@@ -293,7 +297,11 @@ class MLInterface(Node):
         scores = self._field_model.cell_health_scores(self._cell_ids, stamp)
 
         health_msg = String()
-        health_msg.data = json.dumps({"stamp": stamp, "scores": scores})
+        health_msg.data = json.dumps({
+            "stamp": stamp,
+            "model_mode": MODEL_MODE,
+            "scores": scores,
+        })
         self._pub_health.publish(health_msg)
 
         # ── 2. anomalie ───────────────────────────────────────────────────────
@@ -301,7 +309,11 @@ class MLInterface(Node):
         anomaly_list = self._field_model.anomalies(scores, self._threshold)
 
         anomaly_msg = String()
-        anomaly_msg.data = json.dumps({"stamp": stamp, "anomalies": anomaly_list})
+        anomaly_msg.data = json.dumps({
+            "stamp": stamp,
+            "model_mode": MODEL_MODE,
+            "anomalies": anomaly_list,
+        })
         self._pub_anomaly.publish(anomaly_msg)
 
         # ── 3. spray dose ─────────────────────────────────────────────────────
@@ -309,7 +321,11 @@ class MLInterface(Node):
         doses = self._spray_model.drone_doses(scores, self._n_drones, self._max_dose)
 
         dose_msg = String()
-        dose_msg.data = json.dumps({"stamp": stamp, "doses": doses})
+        dose_msg.data = json.dumps({
+            "stamp": stamp,
+            "model_mode": MODEL_MODE,
+            "doses": doses,
+        })
         self._pub_dose.publish(dose_msg)
 
         # log shrnutí (jednou za 10 s, ne každý tick)

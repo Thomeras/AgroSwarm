@@ -15,7 +15,7 @@ End-to-end guide for running the full autonomous swarm spray mission on the `til
 ## Step 1 — Launch via scout_launcher
 
 ```bash
-cd ~/scout_ws
+cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
 python3 scout_launcher.py
 ```
 

@@ -8,14 +8,19 @@ TOPICS:
   Subscribe:
     /swarm/drone_status                          (std_msgs/String JSON)
       {"drone_id":"drone_0","status":"CELL_COMPLETE","cell_id":"x4_y2"}
-    /fmu/out/vehicle_local_position_v1           (px4_msgs/VehicleLocalPosition)  — drone_0
-    /px4_1/fmu/out/vehicle_local_position_v1     (px4_msgs/VehicleLocalPosition)  — drone_1
-    /camera/image_raw                            (sensor_msgs/Image, cv_bridge)
+    position topics from TelemetryHub for drone_count drones
+    camera topics from TelemetryHub for drone_count drones
 
 OUTPUT LAYOUT:
   <ws_root>/cell_data/{cell_id}/visit_{NNN}/
     image.jpg   — latest camera frame at event time (omitted if no frame available)
     meta.json   — {"timestamp_utc", "drone_id", "cell_id", "visit", "ned": {x,y,z}}
+
+PARAMETERS:
+  drone_count                       int, default 2
+  camera_topic_template             optional format string; fields:
+                                    {index}, {drone_id}, {drone_ns}, {px4_ns}
+  vehicle_position_topic_template   optional format string; same fields
 
 USAGE:
   ros2 run scout_control cell_data_recorder
@@ -66,6 +71,45 @@ QOS_POS = QoSProfile(
 _FRAME_TTL_S: float = 10.0
 
 
+def _coerce_drone_count(value: object) -> int:
+    """Return a non-negative drone count from a ROS parameter value."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_topic_template(template: str, *, index: int) -> str:
+    hub = TelemetryHub(drone_id=index)
+    return template.format(
+        index=index,
+        drone_id=index,
+        drone_ns=hub.topics.drone_ns,
+        px4_ns=hub.topics.px4_ns,
+    )
+
+
+def _recorder_topics_for_drone(
+    index: int,
+    *,
+    camera_topic_template: str = "",
+    position_topic_template: str = "",
+) -> tuple[str, str, str]:
+    """Build recorder topic names from TelemetryHub with optional launch overrides."""
+    hub = TelemetryHub(drone_id=index)
+    camera_topic = (
+        _format_topic_template(camera_topic_template, index=index)
+        if camera_topic_template
+        else hub.topics.camera_image
+    )
+    position_topic = (
+        _format_topic_template(position_topic_template, index=index)
+        if position_topic_template
+        else hub.topics.vehicle_local_position
+    )
+    return hub.topics.drone_ns, camera_topic, position_topic
+
+
 class CellDataRecorder(Node):
     """
     Passive ML-data collector.
@@ -80,7 +124,17 @@ class CellDataRecorder(Node):
 
         self._bridge = CvBridge()
         self.declare_parameter("drone_count", 2)
-        self._drone_count = int(self.get_parameter("drone_count").value)
+        self.declare_parameter("camera_topic_template", "")
+        self.declare_parameter("vehicle_position_topic_template", "")
+        self._drone_count = _coerce_drone_count(
+            self.get_parameter("drone_count").value
+        )
+        camera_topic_template = str(
+            self.get_parameter("camera_topic_template").value or ""
+        )
+        position_topic_template = str(
+            self.get_parameter("vehicle_position_topic_template").value or ""
+        )
         swarm_topics = TelemetryHub(drone_id=0).swarm
 
         # Latest camera frame per drone: drone_id → (frame_array, received_time_s)
@@ -99,24 +153,32 @@ class CellDataRecorder(Node):
         # A single /camera/image_raw subscriber misses per-drone frames when the
         # bridge uses namespaced topics (Bug 4).
         for idx in range(self._drone_count):
-            topics = TelemetryHub(drone_id=idx).topics
+            drone_ns, camera_topic, _position_topic = _recorder_topics_for_drone(
+                idx,
+                camera_topic_template=camera_topic_template,
+                position_topic_template=position_topic_template,
+            )
             self.create_subscription(
-                Image, topics.camera_image,
-                lambda msg, did=topics.drone_ns: self._camera_cb(msg, did),
+                Image, camera_topic,
+                lambda msg, did=drone_ns: self._camera_cb(msg, did),
                 QOS_CAMERA,
             )
-            self.get_logger().info(f"Subscribing to camera topic: {topics.camera_image}")
+            self.get_logger().info(f"Subscribing to camera topic: {camera_topic}")
 
         # ── Position subscribers (one per known drone) ────────────────────────
         for idx in range(self._drone_count):
-            topics = TelemetryHub(drone_id=idx).topics
+            drone_ns, _camera_topic, position_topic = _recorder_topics_for_drone(
+                idx,
+                camera_topic_template=camera_topic_template,
+                position_topic_template=position_topic_template,
+            )
             self.create_subscription(
-                VehicleLocalPosition, topics.vehicle_local_position,
-                lambda msg, did=topics.drone_ns: self._position_cb(msg, did),
+                VehicleLocalPosition, position_topic,
+                lambda msg, did=drone_ns: self._position_cb(msg, did),
                 QOS_POS,
             )
             self.get_logger().info(
-                f"Subscribing to position topic: {topics.vehicle_local_position}"
+                f"Subscribing to position topic: {position_topic}"
             )
 
         # ── Status subscriber ─────────────────────────────────────────────────

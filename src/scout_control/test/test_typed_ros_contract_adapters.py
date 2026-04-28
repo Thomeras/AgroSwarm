@@ -1,12 +1,21 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from scout_control.avoidance.types import (
     AvoidanceStatus,
+    FieldSetupComplete,
+    MissionReadySignal,
+    PadAssignment,
+    ReturnHomeRequest,
+    SwarmDroneStatusEvent,
+    SwarmTaskStatus,
     TargetCommand,
     avoidance_status_from_msg,
     avoidance_status_to_msg,
+    payload_from_string_msg,
+    payload_to_string_msg,
     readiness_msg_to_payload,
     readiness_payload_to_msg,
     target_command_from_msg,
@@ -67,6 +76,55 @@ def test_target_command_from_typed_message_rejects_negative_altitude_m() -> None
 
     with pytest.raises(ValueError, match="altitude_m must be >= 0.0"):
         target_command_from_msg(msg)
+
+
+def test_target_command_typed_adapter_normalizes_envelope_aliases() -> None:
+    msg = SimpleNamespace(
+        command="",
+        target_id="",
+        target_ned=[],
+        json_payload=json.dumps(
+            {
+                "target_cmd": {
+                    "action": "goto",
+                    "cell_id": "cell_x7_y8",
+                    "target_xy": [7.0, -8.0],
+                    "target_altitude_m": 9.5,
+                    "speed_mps": 1.25,
+                    "radius_m": 3.0,
+                }
+            }
+        ),
+    )
+
+    command = target_command_from_msg(msg)
+
+    assert command.command == "goto"
+    assert command.target_id == "cell_x7_y8"
+    assert command.target_ned == (7.0, -8.0)
+    assert command.altitude_m == 9.5
+    assert command.cruise_speed_mps == 1.25
+    assert command.clear_radius_m == 3.0
+
+
+def test_target_command_json_string_fallback_uses_same_adapter_contract() -> None:
+    msg = SimpleNamespace(
+        data=json.dumps(
+            {
+                "payload": {
+                    "command": {"op": "hold", "id": "pause_1"},
+                    "x": 1.0,
+                    "y": 2.0,
+                }
+            }
+        )
+    )
+
+    command = target_command_from_msg(msg)
+
+    assert command.command == "hold"
+    assert command.target_id == "pause_1"
+    assert command.target_ned == (1.0, 2.0)
 
 
 def test_readiness_message_keeps_agent_a_payload_shape() -> None:
@@ -142,3 +200,79 @@ def test_avoidance_status_typed_message_preserves_bridge_payload() -> None:
     assert msg.free_directions == ["left", "center"]
     assert parsed["target_id"] == "cell_x3_y4"
     assert parsed["px4_input_ownership"] == {"conflict": False}
+
+
+@pytest.mark.parametrize(
+    ("contract_cls", "payload", "expected"),
+    [
+        (
+            SwarmDroneStatusEvent,
+            {
+                "drone_id": "drone_0",
+                "status": "CELL_COMPLETE",
+                "cell_id": "cell_x1_y2",
+                "blocked_severity": "NONE",
+            },
+            {"drone_id": "drone_0", "status": "CELL_COMPLETE"},
+        ),
+        (
+            SwarmTaskStatus,
+            {
+                "status": "running",
+                "event": "progress",
+                "mission_id": "mission_1",
+                "total_cells": 24,
+                "completed_cells": 12,
+            },
+            {"status": "running", "completed_cells": 12},
+        ),
+        (
+            PadAssignment,
+            {
+                "drone_id": "drone_1",
+                "pad_id": "pad_1",
+                "pad_ned": [0.0, -5.0, 0.0],
+            },
+            {"drone_id": "drone_1", "pad_id": "pad_1"},
+        ),
+        (
+            FieldSetupComplete,
+            {
+                "ready": True,
+                "field_id": "field_a",
+                "grid_file": "perimeters/field_grid.json",
+                "drone_count": 2,
+            },
+            {"ready": True, "drone_count": 2},
+        ),
+        (
+            ReturnHomeRequest,
+            {
+                "drone_id": "drone_0",
+                "cmd_id": "rth_1",
+                "reason": "mission_complete",
+            },
+            {"drone_id": "drone_0", "request_id": "rth_1"},
+        ),
+        (
+            MissionReadySignal,
+            {
+                "ready": True,
+                "mission_id": "mission_1",
+                "source": "field_setup_coordinator",
+                "drone_count": 2,
+            },
+            {"ready": True, "mission_id": "mission_1"},
+        ),
+    ],
+)
+def test_core_string_contracts_have_typed_json_compatible_helpers(
+    contract_cls, payload, expected
+) -> None:
+    msg = payload_to_string_msg(payload)
+    parsed_payload = payload_from_string_msg(msg)
+    parsed_contract = contract_cls.from_payload(parsed_payload)
+    round_trip = parsed_contract.to_payload()
+
+    for key, value in expected.items():
+        assert round_trip[key] == value

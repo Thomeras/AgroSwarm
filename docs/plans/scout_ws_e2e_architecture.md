@@ -1,7 +1,13 @@
 # SCOUT_WS – End-to-End Agrodrone Swarm Architecture
 
 **Status:** Phase 1 [DONE], Phase 2 [DONE], Phase 3 [DONE], Phase 4 [DONE], Phase 5 [DONE]
-**Last Update:** 2026-04-27
+**Last Update:** 2026-04-28
+
+**Current Architecture Audit:** Phase 1 through Phase 5 have been checked
+against `docs/plans/scout_ws_e2e_architecture.docx` and match the current
+repository state as completed software phases. Phase 6+ remain future roadmap
+work. Deferred hardware/portability notes are tracked separately and do not
+block the Phase 1-5 completion status.
 
 ## 1. Executive Summary
 The system is intentionally split into two planning horizons. Before an operational mission, the field is bounded, mapped and converted into a field model. During an operational mission, each drone follows a preplanned task assignment while onboard obstacle avoidance remains active as a local safety and recovery layer.
@@ -16,12 +22,17 @@ The system is intentionally split into two planning horizons. Before an operatio
 - **Backwards-compatible JSON:** All persisted JSON (boundary, grid, home positions) must load older payloads with default values for new fields.
 - **NED everywhere:** Z is down; altitude is negative.
 
-## 3. Backend Modes
+## 3. Production vs Operator / Debug Flow
 
-| Backend | Status | Notes |
-| :--- | :--- | :--- |
-| `navigation_backend=avoidance_runtime` | **DEFAULT / TARGET** | `swarm_agent` delegates; `obstacle_avoidance_runtime` owns PX4 setpoints. |
-| `navigation_backend=direct` | DEPRECATED (compat-only) | Legacy direct PX4 path inside `swarm_agent`. Behind backend gate, no new features. To be removed after Phase 3 verification. |
+Production E2E launches start backend/autonomy nodes and sensor bridges only.
+`obstacle_avoidance_runtime` owns PX4 input topics; mission and setup nodes
+delegate intent through the runtime contract.
+
+Operator tooling is explicit. Scenario YAMLs may open `field_setup_tool`, GCS,
+HUDs, checks, or RViz in extra terminals, or a launch may be run with
+`include_operator_tools:=true` for local convenience. Legacy/manual PX4
+controllers remain debug-only and must not be included in production launch
+files.
 
 ## 4. High-Level Data Flow
 
@@ -50,7 +61,7 @@ swarm_coordinator (task_allocator) ──► swarm_agent (per drone)
 | **swarm_agent** | **ACTIVE** | **Mission Delegator.** No direct PX4 ownership in runtime mode. | `/{drone}/next_cell`, `/{drone}/avoidance/target_cmd`, `/swarm/drone_status` |
 | **swarm_coordinator** | ACTIVE | Cell allocation wrapper around `task_allocator`. | `/swarm/task_status`, `/{drone}/next_cell` |
 | **task_allocator** | ACTIVE (internal) | Pure-Python allocator with blocked/deferred semantics (`SOFT/HARD`, `CELL_DEFERRED`, `TEMP_BLOCKED`). | n/a (in-process) |
-| **telemetry_hub** | **ACTIVE** | Central topic registry. Single source of truth for ROS2 topic contracts. | Contract source for drone/swarm topics; includes `precision_landing_offset` |
+| **telemetry_hub** | **ACTIVE** | Central topic registry. Single source of truth for ROS2 topic contracts. Human doc: `docs/topic_contract.md`. | Contract source for drone/swarm topics; includes `precision_landing_offset` |
 | **field_setup_coordinator** | ACTIVE | Setup orchestration; polygon boundary capture, grid generation, RTH gating. | `/swarm/pad_assignment`, `/field/boundary_point`, `/field/boundary_close`, `/field/corner_marked` (legacy), `/field/setup_complete`, `/swarm/rth_request` |
 | **field_setup_tool** | ACTIVE | Setup-only operator helper (curses UI). Pad / corner / boundary keys. No PX4 setpoints. | `/swarm/manual_control`, `/swarm/pad_assignment`, `/field/boundary_point`, `/field/boundary_close`, `/field/corner_marked`, `/field/mission_confirm` |
 | **home_manager** | ACTIVE | Pad registry with metadata (id, orientation, charging, occupancy, priority) and RTH coordination. | `/swarm/rth_request`, `/swarm/home_positions`, `/swarm/landed_confirmation`, `/swarm/pad_query`, `/swarm/pad_response` |
@@ -146,9 +157,12 @@ Pad allocation query/response: `/swarm/pad_query` → `/swarm/pad_response`. Low
 
 ## 11. QoS Conventions
 
+See `docs/topic_contract.md` for the central topic/QoS/payload migration
+contract. Short form:
+
 - `QOS_LATCHED` — stateful broadcasts (`/swarm/home_positions`, `/swarm/mission_ready`, `/field/setup_complete`, `/{drone}/avoidance/status`)
 - `QOS_VOL` — ephemeral commands and per-tick events
-- PX4 topics use the project-standard `_v1` suffix (e.g. `/fmu/out/vehicle_local_position_v1`)
+- PX4 topics use the project-standard `_v1` suffix where exposed by PX4 bridge output (e.g. `/fmu/out/vehicle_local_position_v1`)
 - Bridge / camera streams use volatile QoS sized for image throughput
 
 ## 12. GCS Bridge Protocol (v1.2)
@@ -162,10 +176,14 @@ Notable messages: `MSG_DRONE_STATUS` (carries `AVOIDANCE_STATUS`, `AVOIDANCE_EVE
 | Launch | Purpose |
 | :--- | :--- |
 | `full_e2e_mission.launch.py` | Gazebo full E2E swarm mission (tilted_field). |
-| `isaac_e2e_mission.launch.py` | Isaac Sim / Pegasus variant. Headless `manual_controller` with `ui:=False`. |
+| `isaac_e2e_mission.launch.py` | Isaac Sim / Pegasus variant. Production backend only by default; optional setup-only operator tool via `include_operator_tools:=true`. |
 | `obstacle_avoidance_test.launch.py` | Runtime + mission harness + viz. |
 
-All production E2E launches default to `navigation_backend=avoidance_runtime`. `field_setup_tool` is the preferred setup operator node; `legacy_manual_controller` is excluded from production launches.
+All production E2E launches keep `obstacle_avoidance_runtime` as the single
+flight owner. `field_setup_tool` is the preferred setup operator node, but it is
+explicit tooling and excluded from production launches by default.
+`legacy_manual_controller` and other manual PX4 controllers are excluded from
+production launches.
 
 ## 14. Build, Test, Run
 
@@ -190,6 +208,11 @@ python3 scout_launcher.py
 
 ## 15. Implementation Roadmap
 
+As of 2026-04-28, the implementation below is the current architecture state,
+not only a proposal. Phase 1-5 are complete relative to the `.docx` roadmap:
+stable onboard runtime, boundary-to-grid setup, mapping pipeline, refined grid
+and mission package generation, plus Swarm Center planning/reporting.
+
 ### Phase 1 – Stable Onboard Runtime [DONE]
 - [x] Finish runtime split into `local_mapper`, `local_planner`, `scan_manager`.
 - [x] Make `swarm_agent` a pure delegator (no direct PX4 control in runtime mode).
@@ -208,8 +231,8 @@ python3 scout_launcher.py
 - [x] Field model outputs: terrain map (2.5D heightmap), static obstacle extraction.
 - [x] Persist mapping artifacts under `perimeters/field_model/`.
 - [x] Precision landing / home pad vision integration (advisory-only).
-- [ ] Remove deprecated `navigation_backend=direct` after full Phase 3 verification.
-- [ ] Replace ad-hoc `task_allocator.yaml` scenario or register a proper entry point.
+- [x] Remove deprecated launch/default reliance on `navigation_backend=direct`.
+- [x] Resolve `task_allocator.yaml` mismatch: no `scenarios/task_allocator.yaml` exists in the active tree, and `task_allocator` is registered as a `console_script` in `src/scout_control/setup.py`; runnable scenario remains `scenarios/swarm_mission.yaml`.
 
 ### Phase 4 – Operational Hardening [DONE]
 - [x] Grid refiner (`mapping/grid_refiner.py`) — marks cells `no_go`/`caution`/`available` from field model.
@@ -219,6 +242,11 @@ python3 scout_launcher.py
 - [x] Field setup coordinator improvements — boundary RTH gating.
 - [ ] Workspace path portability — `WS_DIR` in `scout_launcher.py` still hard-coded (deferred).
 - [ ] Charging lifecycle integration with real hardware feedback (deferred to hardware phase).
+
+Phase 4 is considered complete for the `.docx` Phase 4 scope: field-model-based
+no-go zones, terrain/obstacle-aware grid refinement and drone-specific mission
+packages are implemented. The two open items above are deferred follow-up work
+outside that Phase 4 software-completion criterion.
 
 ### Phase 5 – Swarm Center GCS Completion [DONE]
 - [x] `field_model_loader.py` — loads Phase 3 outputs (heightmap, obstacles) for overlay rendering.
@@ -235,10 +263,10 @@ python3 scout_launcher.py
 
 ## 16. Known Risks & Compatibility Notes
 
-- `navigation_backend=direct` remains compiled-in; do not extend it. New mission features go through the runtime command/status contract.
+- New mission features go through the runtime command/status contract and central topic contract.
 - Bridge protocol is duplicated in two source trees — keep both copies in lockstep.
 - Some scenario YAMLs historically referenced `~/scout_ws/install/setup.bash`; Phase 2D normalized the active set, but any newly added scenario should use the absolute workspace path or `scout_control.utils.paths` equivalents.
-- `task_allocator.yaml` does not match the `setup.py` console_scripts and is not standalone-runnable without rework.
+- Historical `task_allocator.yaml` notes are stale for this tree: the file is absent and the executable is registered in `src/scout_control/setup.py`.
 - Worktree may carry uncommitted changes; do not revert third-party changes without explicit instruction.
 
 ## 17. Documentation Conventions

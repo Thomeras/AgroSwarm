@@ -83,6 +83,16 @@ class _Trail:
             self.samples = deque(maxlen=TRAIL_MAX)
 
 
+def _points_from_bbox(bbox) -> list[tuple[float, float]]:
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return []
+    try:
+        xmin, ymin, xmax, ymax = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        return []
+    return [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)]
+
+
 # ── Widget ──────────────────────────────────────────────────────────────────
 
 
@@ -240,6 +250,12 @@ class FieldView(QWidget):
             self._field_model.terrain
         )
         self.update()
+
+    def apply_no_go_overlay(self, data: dict) -> None:
+        zones = data.get("zones", [])
+        if isinstance(zones, list):
+            self._field_model.no_go_zones = [z for z in zones if isinstance(z, dict)]
+            self.update()
 
     def set_overlay_visibility(self, layer: str, visible: bool) -> None:
         if layer == "no_go":
@@ -471,6 +487,8 @@ class FieldView(QWidget):
         p.setBrush(QBrush(fill))
         for zone in self._field_model.no_go_zones:
             pts = zone.get("points", [])
+            if len(pts) < 3:
+                pts = _points_from_bbox(zone.get("bbox_inflated"))
             if len(pts) < 3:
                 continue
             poly = QPolygonF([self._ned_to_screen(x, y) for x, y in pts])

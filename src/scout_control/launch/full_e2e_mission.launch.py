@@ -24,8 +24,11 @@ Launches all background nodes for the full E2E tilted field spray mission.
     camera_bridge drone_0   — Gz Image     → /drone_0/camera/image_raw
     camera_bridge drone_1   — Gz Image     → /drone_1/camera/image_raw
 
-  NOTE: field_setup_tool is setup-only. It does not publish PX4 setpoints;
-  obstacle_avoidance_runtime remains the flight owner.
+  Production launch flow starts backend/autonomy nodes only by default.
+  Operator tools are explicit: pass include_operator_tools:=true or run them
+  in their own terminal from a scenario YAML. legacy/manual PX4 controllers are
+  never included here. If field_setup_tool is enabled, it is setup-only and does
+  not publish PX4 setpoints; obstacle_avoidance_runtime remains the flight owner.
 
 World: tilted_field (5° slope + terrain bump, 2 landing pads outside field boundary)
   pad_0: Gazebo ENU(-8, 10) = NED(10, -8)
@@ -42,6 +45,7 @@ Override defaults:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -64,12 +68,18 @@ def generate_launch_description() -> LaunchDescription:
     speed_arg   = DeclareLaunchArgument(
         "cruise_speed", default_value="2.0",
         description="Horizontal cruise speed [m/s]")
+    tools_arg   = DeclareLaunchArgument(
+        "include_operator_tools", default_value="false",
+        description=(
+            "Start setup-only operator tooling inside this launch. Default false "
+            "keeps production backend launch free of manual/tooling nodes."))
 
     world        = LaunchConfiguration("world")
     altitude     = LaunchConfiguration("altitude")
     cell_size_m  = LaunchConfiguration("cell_size_m")
     dose_ml      = LaunchConfiguration("dose_ml")
     cruise_speed = LaunchConfiguration("cruise_speed")
+    include_operator_tools = LaunchConfiguration("include_operator_tools")
 
     # ── Setup phase nodes ─────────────────────────────────────────────────────
 
@@ -94,9 +104,11 @@ def generate_launch_description() -> LaunchDescription:
         )],
     )
 
-    # 2b. Setup-only operator helper — no PX4 setpoint publishers.
+    # 2b. Optional setup-only operator helper — no PX4 setpoint publishers.
+    #     Production scenarios normally run it in a separate operator terminal.
     field_setup_tool = TimerAction(
         period=2.0,
+        condition=IfCondition(include_operator_tools),
         actions=[Node(
             package="scout_control",
             executable="field_setup_tool",
@@ -365,7 +377,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         # Args
-        world_arg, alt_arg, cell_arg, dose_arg, speed_arg,
+        world_arg, alt_arg, cell_arg, dose_arg, speed_arg, tools_arg,
         # Setup phase
         field_setup,
         home_mgr,

@@ -60,7 +60,14 @@ def _load_list(path: str) -> list[dict]:
     try:
         with open(path) as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("zones", "obstacles", "items"):
+                items = data.get(key)
+                if isinstance(items, list):
+                    return items
+        return []
     except (OSError, json.JSONDecodeError):
         return []
 

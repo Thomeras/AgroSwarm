@@ -73,10 +73,23 @@ class GridGenerator(Node):
         )
         self._pub = self.create_publisher(OccupancyGrid, "/field/grid", qos)
 
-        self._run()
+        self._has_run = False
 
     # ── Main logic ────────────────────────────────────────────────────────────
-    def _run(self) -> None:
+    def run(self) -> bool:
+        """Generate, publish, and persist the grid once.
+
+        Construction should only set up ROS state. Keeping generation behind an
+        explicit call lets tests instantiate the node without filesystem writes
+        or latched publications as a side effect.
+        """
+        if self._has_run:
+            self.get_logger().warning("GridGenerator.run() called more than once; skipping")
+            return False
+        self._has_run = True
+        return self._run()
+
+    def _run(self) -> bool:
         cell_size: float = self.get_parameter("cell_size").value
         sim_mode:  bool  = self.get_parameter("sim_mode").value
         boundary_mode: bool = self.get_parameter("boundary_mode").value
@@ -87,7 +100,7 @@ class GridGenerator(Node):
         if boundary_mode:
             polygon_verts = self._load_boundary_polygon()
             if polygon_verts is None:
-                return
+                return False
             x_min, y_min, x_max, y_max = bounding_box(polygon_verts)
             width_m, height_m = x_max - x_min, y_max - y_min
             capture_mode = "polygon"
@@ -108,7 +121,7 @@ class GridGenerator(Node):
         else:
             result = self._perimeter_bbox()
             if result is None:
-                return
+                return False
             x_min, y_min, width_m, height_m = result
             self.get_logger().info(
                 f"Bounding box: x=[{x_min:.1f}, {x_min+width_m:.1f}]  "
@@ -160,6 +173,7 @@ class GridGenerator(Node):
             f"{mode_tag}Grid: {cols}×{rows} = {total} cells | "
             f"cell_size={cell_size} m | saved → {GRID_FILE}"
         )
+        return True
 
     # ── Bounding box helpers ──────────────────────────────────────────────────
 
@@ -314,6 +328,7 @@ class GridGenerator(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = GridGenerator()
+    node.run()
     # Single-shot node: publish once then exit
     try:
         rclpy.spin_once(node, timeout_sec=2.0)

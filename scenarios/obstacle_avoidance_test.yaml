@@ -4,10 +4,7 @@ description: |
   APF reaktivni avoidance je odkloní. Vyžaduje world: obstacle_course.
 
   POZOR — pred prvnim spustenim nainstaluj world soubor:
-    cp ~/scout_ws_install/share/scout_control/worlds/obstacle_course.world
-       ~/PX4-Autopilot/Tools/simulation/gz/worlds/
-  Nebo:
-    colcon build && cp install/scout_control/share/scout_control/worlds/obstacle_course.world
+    colcon build && cp /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/scout_control/share/scout_control/worlds/obstacle_course.world
        ~/PX4-Autopilot/Tools/simulation/gz/worlds/
 
   PX4 spustit s: PX4_GZ_WORLD=obstacle_course, model: gz_x500_mono_cam

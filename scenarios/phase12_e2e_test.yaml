@@ -49,7 +49,7 @@ world: "tilted_field"
 ros2_command: >
   source /opt/ros/jazzy/setup.bash &&
   source /home/tj/_Data/_Projekty/TJlabs/scout_ws/install/setup.bash &&
-  ros2 launch scout_control full_e2e_mission.launch.py
+  ros2 launch scout_control full_e2e_mission.launch.py include_operator_tools:=false
 
 extra_terminal_commands:
   - title: "Field Setup Tool (operator UI — pad C / boundary B+F keys)"

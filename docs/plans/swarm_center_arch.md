@@ -180,7 +180,9 @@ reports/<mission_id>/
 
 ## Co chybí / není hotové
 
-- Bridge v1.3 overlay payloads (`MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT`) nejsou
-  na GCS straně ještě konzumovány — field model se načítá přímo ze souboru, ne přes bridge
+- Bridge v1.3 overlay payloads (`MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT`) jsou
+  konzumovány jako notifikace a overlay reload; field model authoritative data se
+  stále načítají ze souboru, ne jako planning authority přes bridge.
 - 3D depth mapping — `DepthMapper` je zabudován, ale Viewport3D ho plně nevykresluje
-- `task_allocator.yaml` scénář není spustitelný bez registrace v `setup.py`
+- Historický `task_allocator.yaml` scénář v aktivním stromu není. `task_allocator`
+  je registrovaný console script; runnable mise používá `scenarios/swarm_mission.yaml`.

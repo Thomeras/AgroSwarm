@@ -20,8 +20,8 @@ PARAMETERS:
                           Phase 2: ML model will replace this with per-cell dose
 
 SPRAY LOG:
-  <ws_root>/spray_log.json — append-only list of all spray events
-  Persisted to disk after every event.
+  <ws_root>/spray_log.json — list of all spray events
+  Persisted atomically after every event.
 
 USAGE:
   ros2 run scout_control spray_controller
@@ -30,6 +30,7 @@ USAGE:
 
 import json
 import os
+import tempfile
 from datetime import datetime, timezone
 
 import rclpy
@@ -116,12 +117,31 @@ class SprayController(Node):
         return []
 
     def _flush_log(self) -> None:
-        """Persist in-memory log to disk."""
+        """Persist in-memory log to disk using atomic replace."""
+        log_dir = os.path.dirname(SPRAY_LOG_FILE) or "."
+        tmp_path = None
         try:
-            with open(SPRAY_LOG_FILE, "w") as f:
+            os.makedirs(log_dir, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=log_dir,
+                prefix=".spray_log.",
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                tmp_path = f.name
                 json.dump(self._log, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, SPRAY_LOG_FILE)
         except OSError as e:
             self.get_logger().error(f"Failed to write {SPRAY_LOG_FILE}: {e}")
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # ── Publisher factory ─────────────────────────────────────────────────────
 

@@ -57,6 +57,8 @@ def _safe_json(payload: Mapping[str, Any]) -> str:
 
 def _payload_from_msg(msg: Any) -> dict[str, Any]:
     raw = getattr(msg, "json_payload", "")
+    if not raw:
+        raw = getattr(msg, "data", "")
     if raw:
         try:
             payload = json.loads(raw)
@@ -67,12 +69,84 @@ def _payload_from_msg(msg: Any) -> dict[str, Any]:
     return {}
 
 
+def payload_to_string_msg(payload: Mapping[str, Any], msg: Any | None = None) -> Any:
+    """Fill a std_msgs/String-like message with canonical JSON payload."""
+
+    if msg is None:
+        msg = type("StringMsg", (), {})()
+    msg.data = _safe_json(payload)
+    return msg
+
+
+def payload_from_string_msg(msg: Any) -> dict[str, Any]:
+    """Parse canonical JSON from a std_msgs/String-like compatibility message."""
+
+    return _payload_from_msg(msg)
+
+
 def _finite_or_default(value: Any, default: float = 0.0) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError):
         return default
     return out if math.isfinite(out) else default
+
+
+def normalize_target_command_payload(payload: Any) -> dict[str, Any]:
+    """Normalize target command aliases/envelopes used by JSON and typed adapters."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("target command payload must be an object")
+    normalized: dict[str, Any] = dict(payload)
+
+    for envelope_key in ("payload", "target_cmd", "command_payload"):
+        nested = normalized.get(envelope_key)
+        if isinstance(nested, Mapping):
+            normalized.update(nested)
+
+    nested_command = normalized.get("command")
+    if isinstance(nested_command, Mapping):
+        normalized.pop("command", None)
+        normalized.update(nested_command)
+
+    command_value = normalized.get("command")
+    if not isinstance(command_value, str) or not command_value.strip():
+        for alias in ("cmd", "action", "op", "type"):
+            alias_value = normalized.get(alias)
+            if isinstance(alias_value, str) and alias_value.strip():
+                normalized["command"] = alias_value
+                break
+
+    if not normalized.get("target_id"):
+        for alias in ("id", "cell_id", "cmd_id", "route_id"):
+            alias_value = normalized.get(alias)
+            if alias_value:
+                normalized["target_id"] = alias_value
+                break
+
+    if "target_ned" not in normalized:
+        target_xy = normalized.get("target_xy")
+        if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
+            normalized["target_ned"] = [target_xy[0], target_xy[1]]
+        elif (
+            "x" in normalized
+            and "y" in normalized
+            and normalized.get("x") is not None
+            and normalized.get("y") is not None
+        ):
+            normalized["target_ned"] = [normalized.get("x"), normalized.get("y")]
+
+    if "clear_radius_m" not in normalized:
+        for alias in ("acceptance_radius_m", "acceptance_m", "radius_m"):
+            if alias in normalized:
+                normalized["clear_radius_m"] = normalized.get(alias)
+                break
+
+    if "cruise_speed_mps" not in normalized and "speed_mps" in normalized:
+        normalized["cruise_speed_mps"] = normalized.get("speed_mps")
+    if "altitude_m" not in normalized and "target_altitude_m" in normalized:
+        normalized["altitude_m"] = normalized.get("target_altitude_m")
+    return normalized
 
 
 def target_command_to_msg(command: "TargetCommand", msg: Any | None = None) -> Any:
@@ -166,6 +240,7 @@ class TargetCommand:
     def from_payload(cls, payload: Mapping[str, Any]) -> "TargetCommand":
         """Create a normalized command from the current JSON payload shape."""
 
+        payload = normalize_target_command_payload(payload)
         command = str(payload.get("command", payload.get("cmd", "goto")))
         target_id = str(
             payload.get("target_id")
@@ -855,6 +930,222 @@ class SwarmDroneStatusEvent:
             "blocked_severity": self.blocked_severity,
             "blocked_reason": self.blocked_reason,
             "reassign_recommended": bool(self.reassign_recommended),
+        }
+        payload.update(self.extras)
+        return payload
+
+
+def _extras(payload: Mapping[str, Any], known: set[str]) -> dict[str, Any]:
+    return {str(k): v for k, v in payload.items() if k not in known}
+
+
+@dataclass(slots=True)
+class SwarmTaskStatus:
+    """Typed helper for `/swarm/task_status` JSON/String compatibility payloads."""
+
+    status: str = ""
+    event: str = ""
+    mission_id: str = ""
+    total_cells: int = 0
+    completed_cells: int = 0
+    pending_cells: int = 0
+    assigned_cells: int = 0
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "SwarmTaskStatus":
+        known = {
+            "status",
+            "event",
+            "mission_id",
+            "total_cells",
+            "completed_cells",
+            "pending_cells",
+            "assigned_cells",
+        }
+        return cls(
+            status=str(payload.get("status", "")),
+            event=str(payload.get("event", "")),
+            mission_id=str(payload.get("mission_id", "")),
+            total_cells=int(payload.get("total_cells", 0) or 0),
+            completed_cells=int(payload.get("completed_cells", 0) or 0),
+            pending_cells=int(payload.get("pending_cells", 0) or 0),
+            assigned_cells=int(payload.get("assigned_cells", 0) or 0),
+            extras=_extras(payload, known),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": self.status,
+            "event": self.event,
+            "mission_id": self.mission_id,
+            "total_cells": int(self.total_cells),
+            "completed_cells": int(self.completed_cells),
+            "pending_cells": int(self.pending_cells),
+            "assigned_cells": int(self.assigned_cells),
+        }
+        payload.update(self.extras)
+        return payload
+
+
+@dataclass(slots=True)
+class PadAssignment:
+    """Typed helper for `/swarm/pad_assignment` payloads."""
+
+    drone_id: str = ""
+    pad_id: str = ""
+    status: str = ""
+    pad_ned: tuple[float, float, float] | None = None
+    assignment_id: str = ""
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "PadAssignment":
+        known = {"drone_id", "pad_id", "status", "pad_ned", "ned", "assignment_id"}
+        return cls(
+            drone_id=str(payload.get("drone_id", "")),
+            pad_id=str(payload.get("pad_id", "")),
+            status=str(payload.get("status", "")),
+            pad_ned=_xyz_tuple(payload.get("pad_ned", payload.get("ned"))),
+            assignment_id=str(payload.get("assignment_id", "")),
+            extras=_extras(payload, known),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "drone_id": self.drone_id,
+            "pad_id": self.pad_id,
+            "status": self.status,
+            "pad_ned": None if self.pad_ned is None else list(self.pad_ned),
+            "assignment_id": self.assignment_id,
+        }
+        payload.update(self.extras)
+        return payload
+
+
+@dataclass(slots=True)
+class FieldSetupComplete:
+    """Typed helper for `/field/setup_complete` payloads."""
+
+    ready: bool = False
+    field_id: str = ""
+    boundary_file: str = ""
+    grid_file: str = ""
+    home_positions_file: str = ""
+    drone_count: int = 0
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "FieldSetupComplete":
+        known = {
+            "ready",
+            "field_id",
+            "boundary_file",
+            "grid_file",
+            "home_positions_file",
+            "drone_count",
+        }
+        return cls(
+            ready=bool(payload.get("ready", payload.get("complete", False))),
+            field_id=str(payload.get("field_id", "")),
+            boundary_file=str(payload.get("boundary_file", "")),
+            grid_file=str(payload.get("grid_file", "")),
+            home_positions_file=str(payload.get("home_positions_file", "")),
+            drone_count=int(payload.get("drone_count", 0) or 0),
+            extras=_extras(payload, known | {"complete"}),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ready": bool(self.ready),
+            "field_id": self.field_id,
+            "boundary_file": self.boundary_file,
+            "grid_file": self.grid_file,
+            "home_positions_file": self.home_positions_file,
+            "drone_count": int(self.drone_count),
+        }
+        payload.update(self.extras)
+        return payload
+
+
+@dataclass(slots=True)
+class ReturnHomeRequest:
+    """Typed helper for `/swarm/rth_request` payloads."""
+
+    drone_id: str = ""
+    request_id: str = ""
+    reason: str = ""
+    requester: str = ""
+    target_pad_id: str = ""
+    all_drones: bool = False
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ReturnHomeRequest":
+        known = {
+            "drone_id",
+            "request_id",
+            "cmd_id",
+            "reason",
+            "requester",
+            "target_pad_id",
+            "pad_id",
+            "all_drones",
+        }
+        return cls(
+            drone_id=str(payload.get("drone_id", "")),
+            request_id=str(payload.get("request_id", payload.get("cmd_id", ""))),
+            reason=str(payload.get("reason", "")),
+            requester=str(payload.get("requester", "")),
+            target_pad_id=str(payload.get("target_pad_id", payload.get("pad_id", ""))),
+            all_drones=bool(payload.get("all_drones", False)),
+            extras=_extras(payload, known),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "drone_id": self.drone_id,
+            "request_id": self.request_id,
+            "cmd_id": self.request_id,
+            "reason": self.reason,
+            "requester": self.requester,
+            "target_pad_id": self.target_pad_id,
+            "all_drones": bool(self.all_drones),
+        }
+        payload.update(self.extras)
+        return payload
+
+
+@dataclass(slots=True)
+class MissionReadySignal:
+    """Typed helper for `/swarm/mission_ready` payloads."""
+
+    ready: bool = False
+    mission_id: str = ""
+    field_id: str = ""
+    source: str = ""
+    drone_count: int = 0
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "MissionReadySignal":
+        known = {"ready", "mission_id", "field_id", "source", "drone_count"}
+        return cls(
+            ready=bool(payload.get("ready", True)),
+            mission_id=str(payload.get("mission_id", "")),
+            field_id=str(payload.get("field_id", "")),
+            source=str(payload.get("source", "")),
+            drone_count=int(payload.get("drone_count", 0) or 0),
+            extras=_extras(payload, known),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ready": bool(self.ready),
+            "mission_id": self.mission_id,
+            "field_id": self.field_id,
+            "source": self.source,
+            "drone_count": int(self.drone_count),
         }
         payload.update(self.extras)
         return payload

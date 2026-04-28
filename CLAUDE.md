@@ -1,6 +1,7 @@
 # CLAUDE.md — scout_ws
 
-Aktualni stav workspace k 2026-04-27. Phase 1–5 dokončeny.
+Aktualni stav workspace k 2026-04-28. Phase 1–5 dokončeny; historicky node
+audit je uzavren a smazan.
 
 Tento dokument je urceny pro praci nad timto repozitarem. Popisuje realnou
 strukturu projektu, aktualni workflow a dulezite rozdily mezi produkcni cestou,
@@ -27,6 +28,11 @@ executor/route provider a neposila PX4 flight setpointy.
 `swarm_agent` ma mit default `navigation_backend=avoidance_runtime`.
 Kompatibilni `navigation_backend=direct` muze byt stale dostupny jako
 prechodovy fallback.
+
+Node-audit cleanup k 2026-04-28 doplnil runtime hranice
+`FlightPhaseMachine`, `PX4PublisherAdapter` a `RosIOAdapter`. Topic kontrakty
+maji lidsky zdroj pravdy v `docs/topic_contract.md`; kodovy zdroj pravdy pro
+nazvy topicu zustava `TelemetryHub`.
 
 ## Stack
 
@@ -138,6 +144,12 @@ Nova avoidance architektura je stabilizovana jako cilovy flight-control model:
   - PX4 offboard setpoint publishing
 - `avoidance/telemetry_hub.py`
   - **Centralni Topic Registry** (Single source of truth pro vsechny ROS2 topicy)
+- `avoidance/flight_phase_machine.py`
+  - phase state, phase ticks a transition metadata pro runtime orchestrator
+- `avoidance/px4_publisher_adapter.py`
+  - jedina pomocna hranice pro runtime PX4 input publishing
+- `avoidance/ros_io_adapter.py`
+  - runtime status/event/bool ROS vystupy a JSON/typed status publikace
 - `avoidance/depth_projector.py`
   - Depth frame -> body/world point batches (unified path)
 - `avoidance/local_mapper.py`
@@ -149,7 +161,8 @@ Nova avoidance architektura je stabilizovana jako cilovy flight-control model:
 - `avoidance/peer_tracks.py`
   - Safety zony ostatnich dronu
 - `avoidance/types.py`
-  - Sdilene datove typy, readiness parsery a payload normalizace
+  - Sdilene datove typy, readiness parsery, payload normalizace a typed
+    JSON-compatible adaptery pro P0 core kontrakty
 
 Soucasny conceptual split:
 
@@ -491,9 +504,12 @@ python3 scout_launcher.py
   execution (`navigation_backend=avoidance_runtime`)
 - `task_allocator.yaml` neodpovida registraci v `setup.py`
 - bridge protokol je duplikovany ve dvou souborech; zmeny musi zustat
-  synchronizovane
+  synchronizovane. Aktualni v1.3 overlay payloady (`MSG_NO_GO_OVERLAY`,
+  `MSG_REFINED_GRID_EVENT`) jsou GCS konzumenty napojene.
 - nektere scenare a starsi poznamky stale pocitaji s `~/scout_ws`
 - `scout_launcher.py` ma workspace root natvrdo, neni plne prenositelny
+- `docs/plans/scout_ws_node_audit.md` byl uzavren a smazan; pro topic kontrakty
+  pouzivej `docs/topic_contract.md`
 - worktree muze byt spinavy; nevracet cizi zmeny bez explicitniho zadani
 
 ### Runtime RTH — kriticky poznatek (opraveno 2026-04-27)
@@ -588,3 +604,49 @@ In-progress poznamka:
 - Tento dokument uz bere runtime-owned model jako cilovy a preferovany.
 - Pokud nektera cast kodu/launchu stale pouziva direct path, brat to jako
   prechodovy compatibility stav, ne jako cilovou architekturu.
+
+## Update 2026-04-28 (Node Audit Closure)
+
+Historicky `docs/plans/scout_ws_node_audit.md` je uzavren a smazan. Otevrene
+body z auditu jsou presunute do implementace a aktualnich zdroju pravdy:
+
+- runtime god-object cleanup:
+  - `avoidance/flight_phase_machine.py`
+  - `avoidance/px4_publisher_adapter.py`
+  - `avoidance/ros_io_adapter.py`
+- typed core contract cleanup:
+  - `avoidance/types.py` obsahuje typed JSON-compatible helpers pro
+    `TargetCommand`, `AvoidanceStatus`, `SwarmDroneStatusEvent`,
+    `SwarmTaskStatus`, `PadAssignment`, `FieldSetupComplete`,
+    `ReturnHomeRequest`, `MissionReadySignal`
+  - wire kompatibilita pres JSON/String zustava zachovana
+- topic contract doc:
+  - `docs/topic_contract.md`
+- core hardening hotovo:
+  - `cell_data_recorder` podporuje `drone_count` a topic templates
+  - `grid_generator` pouziva explicitni `run()`
+  - `mission_launcher` uz nema shutdown pres `SystemExit` z timeru
+  - `spray_controller` zapisuje atomicky
+  - `ml_interface` je oznaceny jako tooling stub
+- bridge v1.3:
+  - `MSG_NO_GO_OVERLAY` a `MSG_REFINED_GRID_EVENT` jsou synchronni v obou
+    protocol souborech a GCS je konzumuje
+
+Overeni:
+
+```bash
+PYTHONPATH=src/scout_control pytest \
+  src/scout_control/test/test_flight_phase_machine.py \
+  src/scout_control/test/test_ros_io_adapter.py \
+  src/scout_control/test/test_typed_ros_contract_adapters.py \
+  src/scout_control/test/test_px4_publisher_adapter.py \
+  src/scout_control/test/test_swarm_core_hardening.py \
+  src/scout_control/test/test_grid_generator_lifecycle.py
+
+colcon build --packages-select scout_control
+git diff --check
+cmp -s src/scout_control/scout_control/utils/bridge_protocol.py \
+  swarm_center/core/bridge_protocol.py
+```
+
+Vysledek targeted sady: `25 passed`.

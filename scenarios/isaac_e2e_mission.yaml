@@ -2,8 +2,9 @@ name: "Phase 1+2+3 E2E — Isaac Sim (agro_field)"
 description: |
   Phase 1+2+3 E2E mise s Isaac Sim / Pegasus backendem.
   Bez Gazebo sensor bridges — Isaac Sim publikuje ROS2 topicy primo.
-  Produkční flight owner je obstacle_avoidance_runtime; field_setup_tool je
-  setup-only bridge bez PX4 setpoint publisherů.
+  Produkční backend launch nespouští operator/manual tooling implicitně.
+  Produkční flight owner je obstacle_avoidance_runtime; field_setup_tool běží
+  explicitně v extra terminálu jako setup-only bridge bez PX4 setpoint publisherů.
   Spust PX4 SITL + MicroXRCE + Isaac Sim RUCNE pred spustenim tohoto scenare.
 
   Prerekvizity (spustit manuálně):
@@ -26,6 +27,7 @@ ros2_command: >
     cell_size_m:=5.0
     cruise_speed:=2.0
     ready_timeout:=600.0
+    include_operator_tools:=false
 
 extra_terminal_commands:
   - title: "Field Setup Tool"

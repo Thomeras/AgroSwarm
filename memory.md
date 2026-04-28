@@ -3,7 +3,9 @@
 ## Core Architecture Facts
 - **Flight Ownership:** `obstacle_avoidance_runtime` is the single source of PX4 setpoints for autonomous flight.
 - **Mission Execution:** `swarm_agent` delegates to the runtime via `/{drone}/avoidance/target_cmd`.
-- **Topic Contracts:** Centralized in `scout_control.avoidance.telemetry_hub`.
+- **Topic Contracts:** Centralized in `scout_control.avoidance.telemetry_hub`; human-readable contract is `docs/topic_contract.md`.
+- **Runtime Boundaries:** `obstacle_avoidance_runtime` is now split behind `FlightPhaseMachine`, `PX4PublisherAdapter`, and `RosIOAdapter` helper boundaries.
+- **Typed Core Payloads:** JSON/String wire compatibility remains, but typed adapter helpers cover target/status and the P0 swarm/setup contracts in `scout_control.avoidance.types`.
 - **Coordinate System:** PX4 uses NED (North-East-Down). Z is down; altitude is negative.
 - **Workspace Root:** `/home/tj/_Data/_Projekty/TJlabs/scout_ws`.
 - **Phase Status:** Phase 1, 2, 3, 4, 5 — ALL DONE.
@@ -40,9 +42,10 @@
 - [x] Legacy nodes (`offboard_control`, `terrain_follower`) are archived and not installed.
 - [x] Runtime gates navigation on EKF/Sensor health.
 - [x] ReportGenerator is pure Python (no ROS2), reads files directly, saves grid snapshot for re-generation.
-- [x] Bridge protocol v1.3 (MSG_NO_GO_OVERLAY, MSG_REFINED_GRID_EVENT planned but not wired on GCS side yet).
+- [x] Bridge protocol v1.3 (`MSG_NO_GO_OVERLAY`, `MSG_REFINED_GRID_EVENT`) is synchronized and consumed by GCS.
+- [x] Historical `docs/plans/scout_ws_node_audit.md` is closed and deleted; use `docs/topic_contract.md`, `CLAUDE.md`, and `codex.md` as current context.
 
 ## Open Items
 - Remove deprecated `navigation_backend=direct` from `swarm_agent` after next E2E verification.
 - `task_allocator.yaml` not registered in `setup.py` — not standalone-runnable.
-- Bridge v1.3 overlay payloads not yet consumed by `swarm_center` (GCS side pending).
+- Full all-test collection may require system ROS/ament packages (`rclpy`, `ament_copyright`, `ament_flake8`, `ament_pep257`) in the shell environment.

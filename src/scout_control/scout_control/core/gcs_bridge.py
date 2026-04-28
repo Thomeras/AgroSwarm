@@ -37,6 +37,7 @@ Optional: add to full_e2e_mission.launch.py so it starts automatically.
 
 import base64
 import json
+import os
 import queue
 import socket
 import threading
@@ -56,11 +57,12 @@ from scout_control.utils.bridge_protocol import (
     MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
-    MSG_PING, MSG_PONG, MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE,
-    MSG_SETUP_STATUS, MSG_START_MISSION, MSG_TASK_STATUS,
+    MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
+    MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
+    MSG_START_MISSION, MSG_TASK_STATUS,
     MSG_MANUAL_CONTROL,
 )
-from scout_control.utils.paths import GRID_FILE
+from scout_control.utils.paths import FIELD_MODEL_DIR, GRID_FILE, NO_GO_FILE
 
 try:
     from scout_control_msgs.msg import AvoidanceStatus as ScoutAvoidanceStatusMsg
@@ -353,6 +355,7 @@ class GcsBridge(Node):
         self._enqueue_json(MSG_SETUP_COMPLETE, msg.data)
         # Also send a grid_reload — Swarm Center reads field_grid.json directly
         self._enqueue(MSG_GRID_RELOAD, {"path": GRID_FILE})
+        self._enqueue_refined_grid_if_available()
 
     # ── Camera callbacks (M4) ───────────────────────────────────────────────
 
@@ -510,6 +513,7 @@ class GcsBridge(Node):
             # TRANSIENT_LOCAL durability will re-deliver the latched message
             # to us, so this is mostly about kickstarting the grid path.
             self._enqueue(MSG_GRID_RELOAD, {"path": GRID_FILE})
+            self._enqueue_refined_grid_if_available()
 
             self._handle_client(client)
 
@@ -676,6 +680,48 @@ class GcsBridge(Node):
             return
 
         self.get_logger().warn(f"unknown msg type from client: '{msg_type}'")
+
+    def _enqueue_refined_grid_if_available(self) -> None:
+        """Advertise Phase 4A artifacts if they exist; ROS2 keeps mission authority."""
+        refined_path = os.path.join(FIELD_MODEL_DIR, "refined_grid.json")
+        if not os.path.isfile(refined_path):
+            return
+        try:
+            with open(refined_path) as f:
+                refined = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.get_logger().warn(
+                f"refined_grid_event: cannot read {refined_path}: {exc}")
+            return
+
+        cells = refined.get("cells", [])
+        if not isinstance(cells, list):
+            cells = []
+        no_go_count = sum(
+            1 for c in cells
+            if isinstance(c, dict) and c.get("cell_class") == "no_go")
+        caution_count = sum(
+            1 for c in cells
+            if isinstance(c, dict) and c.get("cell_class") == "caution")
+        self._enqueue(MSG_REFINED_GRID_EVENT, {
+            "path": refined_path,
+            "no_go_count": no_go_count,
+            "caution_count": caution_count,
+            "total_cells": len(cells),
+        })
+
+        try:
+            with open(NO_GO_FILE) as f:
+                no_go_payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        zones = (
+            no_go_payload.get("zones", [])
+            if isinstance(no_go_payload, dict)
+            else no_go_payload
+        )
+        if isinstance(zones, list):
+            self._enqueue(MSG_NO_GO_OVERLAY, {"zones": zones})
 
     # ── Shutdown ────────────────────────────────────────────────────────────
 

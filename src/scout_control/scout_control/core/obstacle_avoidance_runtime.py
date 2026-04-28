@@ -31,8 +31,6 @@ from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Point, PoseStamped
 from nav_msgs.msg import Path
 from px4_msgs.msg import (
-    OffboardControlMode,
-    TrajectorySetpoint,
     VehicleCommand,
     VehicleCommandAck,
     VehicleControlMode,
@@ -46,6 +44,7 @@ from std_msgs.msg import Bool, String
 
 from scout_control.avoidance.altitude_controller import AltitudeController
 from scout_control.avoidance.depth_projector import DepthProjector
+from scout_control.avoidance.flight_phase_machine import FlightPhaseMachine
 from scout_control.avoidance.health_monitor import HealthConfig, RuntimeHealthMonitor
 from scout_control.avoidance.local_mapper import (
     LocalClearanceSummary,
@@ -55,16 +54,18 @@ from scout_control.avoidance.local_mapper import (
 )
 from scout_control.avoidance.local_planner import (
     BlockedHistoryEntry,
+    DynamicMaskDisk,
     LocalGridSnapshot,
     LocalPlanner,
     LocalPlannerConfig,
     LocalPlannerState,
     PlanResult,
-    DynamicMaskDisk,
     PlannerPose,
     PlannerResultStatus,
     PlannerTarget,
 )
+from scout_control.avoidance.px4_publisher_adapter import PX4PublisherAdapter
+from scout_control.avoidance.ros_io_adapter import RosIOAdapter
 from scout_control.avoidance.scan_manager import (
     SCAN_POINT_MAX_RANGE_M,
     SCAN_POINT_MIN_RANGE_M,
@@ -73,8 +74,7 @@ from scout_control.avoidance.scan_manager import (
 from scout_control.avoidance.telemetry_hub import Px4InputOwnershipGuard, TelemetryHub
 from scout_control.avoidance.types import ScanStepResult, TargetCommand
 from scout_control.avoidance.types import (
-    AvoidanceStatus,
-    avoidance_status_to_msg,
+    normalize_target_command_payload,
     target_command_from_msg,
 )
 from scout_control.avoidance.avoidance_logging import AvoidanceRunLogger
@@ -351,9 +351,9 @@ class ObstacleAvoidanceRuntime(Node):
         self._camera_info_topic = topics.camera_info
         self._terrain_range_topic = topics.terrain_range
 
-        self._phase = RuntimePhase.IDLE
-        self._phase_ticks = 0
-        self._phase_enter_ts = time.time()
+        self._phase_machine: FlightPhaseMachine[RuntimePhase] = FlightPhaseMachine(
+            RuntimePhase.IDLE
+        )
         self._ticks = 0
         self._land_sent = False
         self._px4_armed = False
@@ -501,18 +501,19 @@ class ObstacleAvoidanceRuntime(Node):
         )
 
         self._px4_in_topics = topics.px4_input_topics
-        self._pub_ocm = self.create_publisher(
-            OffboardControlMode, self._px4_in_topics["offboard_control_mode"], QOS_PX4_PUB
-        )
-        self._pub_sp = self.create_publisher(
-            TrajectorySetpoint, self._px4_in_topics["trajectory_setpoint"], QOS_PX4_PUB
-        )
-        self._pub_cmd = self.create_publisher(
-            VehicleCommand, self._px4_in_topics["vehicle_command"], QOS_PX4_PUB
+        self._px4_publishers = PX4PublisherAdapter.create(
+            self,
+            topics=self._px4_in_topics,
+            qos_profile=QOS_PX4_PUB,
         )
         self._px4_ownership_guard = Px4InputOwnershipGuard(
             topics=list(self._px4_in_topics.values()),
             expected_publishers=1,
+        )
+        self._ros_io = RosIOAdapter(
+            string_type=String,
+            bool_type=Bool,
+            avoidance_status_type=ScoutAvoidanceStatusMsg,
         )
 
         self._pub_detected = self.create_publisher(
@@ -660,6 +661,18 @@ class ObstacleAvoidanceRuntime(Node):
             target_cmd_topic=topics.avoidance_target_cmd,
             event_topic=topics.avoidance_events,
         )
+
+    @property
+    def _phase(self) -> RuntimePhase:
+        return self._phase_machine.phase
+
+    @property
+    def _phase_ticks(self) -> int:
+        return self._phase_machine.ticks
+
+    @property
+    def _phase_enter_ts(self) -> float:
+        return self._phase_machine.entered_at_s
 
     def _log_run_event(self, event: str, **fields: Any) -> None:
         self._run_log.log(event, **fields)
@@ -854,49 +867,7 @@ class ObstacleAvoidanceRuntime(Node):
         self._ingest_depth_points(depth)
 
     def _normalize_target_command_payload(self, payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ValueError("target command payload must be an object")
-        normalized: dict[str, Any] = dict(payload)
-
-        for envelope_key in ("payload", "target_cmd", "command_payload"):
-            nested = normalized.get(envelope_key)
-            if isinstance(nested, dict):
-                normalized.update(nested)
-
-        nested_command = normalized.get("command")
-        if isinstance(nested_command, dict):
-            normalized.update(nested_command)
-
-        if "command" not in normalized:
-            for alias in ("cmd", "action", "op", "type"):
-                alias_value = normalized.get(alias)
-                if isinstance(alias_value, str) and alias_value.strip():
-                    normalized["command"] = alias_value
-                    break
-
-        if "target_ned" not in normalized:
-            target_xy = normalized.get("target_xy")
-            if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
-                normalized["target_ned"] = [target_xy[0], target_xy[1]]
-            elif (
-                "x" in normalized
-                and "y" in normalized
-                and normalized.get("x") is not None
-                and normalized.get("y") is not None
-            ):
-                normalized["target_ned"] = [normalized.get("x"), normalized.get("y")]
-
-        if "clear_radius_m" not in normalized:
-            for alias in ("acceptance_radius_m", "acceptance_m", "radius_m"):
-                if alias in normalized:
-                    normalized["clear_radius_m"] = normalized.get(alias)
-                    break
-
-        if "cruise_speed_mps" not in normalized and "speed_mps" in normalized:
-            normalized["cruise_speed_mps"] = normalized.get("speed_mps")
-        if "altitude_m" not in normalized and "target_altitude_m" in normalized:
-            normalized["altitude_m"] = normalized.get("target_altitude_m")
-        return normalized
+        return normalize_target_command_payload(payload)
 
     def _publish_command_feedback(
         self,
@@ -1316,7 +1287,7 @@ class ObstacleAvoidanceRuntime(Node):
 
     def _control_loop(self) -> None:
         self._ticks += 1
-        self._phase_ticks += 1
+        self._phase_machine.tick()
         self._refresh_runtime_readiness()
         self._publish_offboard_heartbeat()
         if self._pos_valid:
@@ -1702,10 +1673,12 @@ class ObstacleAvoidanceRuntime(Node):
             self._blocked_history = self._blocked_history[-24:]
 
     def _transition_to(self, new_phase: RuntimePhase, *, reason: str, **fields: Any) -> None:
-        old_phase = self._phase
-        self._phase = new_phase
-        self._phase_ticks = 0
-        self._phase_enter_ts = time.time()
+        transition = self._phase_machine.transition_to(
+            new_phase,
+            reason=reason,
+            **fields,
+        )
+        old_phase = transition.old_phase
 
         if new_phase == RuntimePhase.SCAN_360 and self._active_target_xy is not None:
             self._scan_attempts_for_target += 1
@@ -1727,7 +1700,7 @@ class ObstacleAvoidanceRuntime(Node):
             if self._blocked_severity == "none":
                 self._blocked_severity = "hard"
             if self._blocked_since_s <= 0.0:
-                self._blocked_since_s = self._phase_enter_ts
+                self._blocked_since_s = transition.entered_at_s
 
         if new_phase in {
             RuntimePhase.CRUISE_TO_TARGET,
@@ -1831,13 +1804,11 @@ class ObstacleAvoidanceRuntime(Node):
         )
 
     def _publish_runtime_event(self, payload: dict[str, Any]) -> None:
-        safe_payload = dict(payload)
-        safe_payload.setdefault("stamp_s", round(float(time.time()), 3))
-        self._last_runtime_event = safe_payload
-        msg = String(data=json.dumps(safe_payload, ensure_ascii=True))
-        self._pub_events.publish(msg)
-        if self._pub_events_legacy is not None:
-            self._pub_events_legacy.publish(msg)
+        self._last_runtime_event = self._ros_io.publish_runtime_event(
+            publisher=self._pub_events,
+            payload=payload,
+            legacy_publisher=self._pub_events_legacy,
+        )
 
     def _check_px4_input_ownership(self) -> None:
         ownership = self._px4_ownership_guard.update(self)
@@ -1900,11 +1871,9 @@ class ObstacleAvoidanceRuntime(Node):
     def _publish_offboard_heartbeat(self) -> None:
         if not self._runtime_readiness.setpoint_publish_allowed:
             return
-        msg = OffboardControlMode()
-        msg.position = True
-        msg.velocity = False
-        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self._pub_ocm.publish(msg)
+        self._px4_publishers.publish_offboard_heartbeat(
+            timestamp_us=self._px4_timestamp_us()
+        )
 
     def _publish_setpoint(self, x: float, y: float, z: float, yaw: float = float("nan")) -> None:
         self._refresh_runtime_readiness()
@@ -1921,15 +1890,14 @@ class ObstacleAvoidanceRuntime(Node):
                 )
             return
         self._last_setpoint_gate_reason = ""
-        msg = TrajectorySetpoint()
-        msg.position = [x, y, z]
-        msg.velocity = [float("nan")] * 3
-        msg.acceleration = [float("nan")] * 3
-        msg.jerk = [float("nan")] * 3
-        msg.yaw = self._drone_yaw if math.isnan(yaw) else yaw
-        msg.yawspeed = float("nan")
-        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self._pub_sp.publish(msg)
+        self._px4_publishers.publish_setpoint(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            current_yaw=self._drone_yaw,
+            timestamp_us=self._px4_timestamp_us(),
+        )
 
     def _send_command(
         self,
@@ -1938,18 +1906,13 @@ class ObstacleAvoidanceRuntime(Node):
         param2: float = 0.0,
         param3: float = 0.0,
     ) -> None:
-        msg = VehicleCommand()
-        msg.command = cmd
-        msg.param1 = param1
-        msg.param2 = param2
-        msg.param3 = param3
-        msg.target_system = 1
-        msg.target_component = 1
-        msg.source_system = 1
-        msg.source_component = 1
-        msg.from_external = True
-        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self._pub_cmd.publish(msg)
+        self._px4_publishers.send_command(
+            command=cmd,
+            param1=param1,
+            param2=param2,
+            param3=param3,
+            timestamp_us=self._px4_timestamp_us(),
+        )
         self._run_log.log(
             "vehicle_command",
             command=int(cmd),
@@ -1957,6 +1920,9 @@ class ObstacleAvoidanceRuntime(Node):
             param2=float(param2),
             param3=float(param3),
         )
+
+    def _px4_timestamp_us(self) -> int:
+        return int(self.get_clock().now().nanoseconds / 1000)
 
     def _ensure_takeoff_activation(self) -> None:
         if self._active_target_xy is None or self._ticks < ARM_TICKS:
@@ -2103,24 +2069,19 @@ class ObstacleAvoidanceRuntime(Node):
             "last_runtime_event": self._last_runtime_event,
             "elapsed_s": round(now - self._start_time, 1),
         }
-        status_json_msg = String(data=json.dumps(payload))
-        if ScoutAvoidanceStatusMsg is not None:
-            typed_msg = avoidance_status_to_msg(
-                AvoidanceStatus.from_payload(payload),
-                ScoutAvoidanceStatusMsg(),
-                drone_id=f"drone_{self._drone_id}",
-            )
-            self._pub_status.publish(typed_msg)
-            self._pub_status_json.publish(status_json_msg)
-        else:
-            self._pub_status.publish(status_json_msg)
-        if self._pub_status_legacy is not None:
-            self._pub_status_legacy.publish(status_json_msg)
+        self._ros_io.publish_avoidance_status(
+            status_publisher=self._pub_status,
+            status_json_publisher=self._pub_status_json,
+            payload=payload,
+            drone_id=f"drone_{self._drone_id}",
+            legacy_publisher=self._pub_status_legacy,
+        )
 
-        avoid_msg = Bool(data=self._avoidance_active)
-        self._pub_avoid.publish(avoid_msg)
-        if self._pub_avoid_legacy is not None:
-            self._pub_avoid_legacy.publish(avoid_msg)
+        self._ros_io.publish_bool(
+            publisher=self._pub_avoid,
+            value=self._avoidance_active,
+            legacy_publisher=self._pub_avoid_legacy,
+        )
 
         if (now - self._last_status_log_ts) >= 1.0:
             self._last_status_log_ts = now

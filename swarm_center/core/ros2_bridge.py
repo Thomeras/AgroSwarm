@@ -32,8 +32,9 @@ from core.bridge_protocol import (
     MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MANUAL_CONTROL, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
-    MSG_PING, MSG_PONG, MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE,
-    MSG_SETUP_STATUS, MSG_START_MISSION, MSG_TASK_STATUS,
+    MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
+    MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
+    MSG_START_MISSION, MSG_TASK_STATUS,
 )
 
 
@@ -58,6 +59,8 @@ class Ros2BridgeClient(QObject):
       setup_status(dict)
       setup_complete(dict)
       grid_reload(dict)
+      no_go_overlay(dict)
+      refined_grid_event(dict)
       hello(dict)
 
     Call send_set_mode / send_rth_all / send_peer_cells from the UI thread;
@@ -77,6 +80,8 @@ class Ros2BridgeClient(QObject):
     setup_status = pyqtSignal(dict)
     setup_complete = pyqtSignal(dict)
     grid_reload = pyqtSignal(dict)
+    no_go_overlay = pyqtSignal(dict)
+    refined_grid_event = pyqtSignal(dict)
     hello = pyqtSignal(dict)
 
     # M4 — camera & 3D
@@ -287,6 +292,8 @@ class Ros2BridgeClient(QObject):
             MSG_SETUP_STATUS:     self.setup_status,
             MSG_SETUP_COMPLETE:   self.setup_complete,
             MSG_GRID_RELOAD:      self.grid_reload,
+            MSG_NO_GO_OVERLAY:    self.no_go_overlay,
+            MSG_REFINED_GRID_EVENT: self.refined_grid_event,
             MSG_CAMERA_INFO:      self.camera_info,
         }
         sig = signal_map.get(msg_type)

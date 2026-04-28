@@ -115,6 +115,8 @@ class MainWindow(QMainWindow):
         br.setup_status.connect(self._swarm.apply_setup_status)
         br.setup_complete.connect(self._on_setup_complete)
         br.grid_reload.connect(self._on_grid_reload)
+        br.no_go_overlay.connect(self._on_no_go_overlay)
+        br.refined_grid_event.connect(self._on_refined_grid_event)
         br.hello.connect(self._on_bridge_hello)
         br.depth_frame.connect(self._on_depth_frame_for_map)
         br.camera_info.connect(self._on_camera_info_for_map)
@@ -358,6 +360,25 @@ class MainWindow(QMainWindow):
         self._field_view.reload_field_model()
         self._logger.info("grid", f"Reloaded from {path}")
         self.statusBar().showMessage(f"Grid reloaded: {path}", 5000)
+
+    def _on_no_go_overlay(self, data: dict) -> None:
+        zones = data.get("zones", [])
+        if not isinstance(zones, list):
+            return
+        self._field_view.apply_no_go_overlay(data)
+        self._logger.info("grid", f"No-go overlay received | zones={len(zones)}")
+
+    def _on_refined_grid_event(self, data: dict) -> None:
+        path = str(data.get("path", ""))
+        self._field_view.reload_field_model()
+        self._logger.info(
+            "grid",
+            "Refined grid available | "
+            f"no_go={int(data.get('no_go_count', 0))} | "
+            f"caution={int(data.get('caution_count', 0))} | "
+            f"cells={int(data.get('total_cells', 0))} | path={path or '?'}"
+        )
+        self.statusBar().showMessage("Refined grid overlay updated", 5000)
 
     def _try_reload_default_grid(self) -> None:
         found = find_default_grid_file()

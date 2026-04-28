@@ -78,14 +78,15 @@ Swarm Center → ROS2 (received by gcs_bridge):
   MSG_PONG
     data: {}
 
---- v1.3 payloads (planned, not yet implemented) ---
+--- v1.3 payloads ---
   MSG_NO_GO_OVERLAY
     data: {zones: [{bbox_inflated: [xmin, ymin, xmax, ymax], confidence: float}, ...]}
-    Sent after refined_grid.json is generated. Swarm Center renders no-go zones on map.
+    Sent after refined_grid.json/no_go_zones.json exist. Swarm Center renders no-go
+    zones on the map; mission planning remains on the ROS2 side.
 
   MSG_REFINED_GRID_EVENT
     data: {path, no_go_count, caution_count, total_cells}
-    Notification that refined_grid.json was written (Phase 4A output available).
+    Notification that refined_grid.json is available (Phase 4A output available).
 """
 
 # Message type constants — string values are wire format
@@ -98,6 +99,8 @@ MSG_MISSION_COMPLETE   = "mission_complete"
 MSG_SETUP_STATUS       = "setup_status"
 MSG_SETUP_COMPLETE     = "setup_complete"
 MSG_GRID_RELOAD        = "grid_reload"
+MSG_NO_GO_OVERLAY      = "no_go_overlay"
+MSG_REFINED_GRID_EVENT = "refined_grid_event"
 
 MSG_SET_MODE           = "set_mode"
 MSG_RTH_ALL            = "rth_all"
