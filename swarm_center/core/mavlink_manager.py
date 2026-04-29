@@ -372,6 +372,7 @@ class SwarmMavlinkManager(QObject):
         super().__init__()
         self._workers: list[MavlinkWorker] = []
         self._threads: list[QThread] = []
+        self._telemetry: dict[int, DroneTelemetry] = {}
 
         for i in range(drone_count):
             # PX4 SITL convention: instance N uses GCS port 14550+N
@@ -385,12 +386,24 @@ class SwarmMavlinkManager(QObject):
             thread.started.connect(worker.run)
 
             # Bubble up signals
+            worker.telemetry_updated.connect(self._remember_telemetry)
             worker.telemetry_updated.connect(self.telemetry_updated)
             worker.connection_changed.connect(self.connection_changed)
             worker.log.connect(self.log)
 
             self._workers.append(worker)
             self._threads.append(thread)
+
+    def get_telemetry(self, drone_id: int | str) -> Optional[DroneTelemetry]:
+        if isinstance(drone_id, str):
+            try:
+                drone_id = int(drone_id.split("_")[-1])
+            except (ValueError, IndexError):
+                return None
+        return self._telemetry.get(int(drone_id))
+
+    def _remember_telemetry(self, telem: DroneTelemetry) -> None:
+        self._telemetry[int(telem.drone_id)] = telem
 
     def start_all(self) -> None:
         for t in self._threads:

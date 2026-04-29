@@ -1,6 +1,7 @@
 """Reusable avoidance helper modules."""
 
 from .depth_projector import DepthProjector
+from .lidar_projector import body_to_world_points, laser_scan_to_body_points
 from .local_mapper import (
     LocalClearanceSummary,
     LocalMapper,
@@ -25,6 +26,8 @@ __all__ = [
     "AvoidanceStatus",
     "BlockedEvent",
     "DepthProjector",
+    "body_to_world_points",
+    "laser_scan_to_body_points",
     "LocalClearanceSummary",
     "LocalMapper",
     "LocalMapperConfig",

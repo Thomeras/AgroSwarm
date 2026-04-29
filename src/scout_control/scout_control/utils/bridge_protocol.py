@@ -113,6 +113,8 @@ MSG_START_MISSION      = "start_mission"   # {} → /field/mission_confirm
 MSG_GENERATE_GRID      = "generate_grid"   # {} → /field/generate_grid
 MSG_EMERGENCY_STOP     = "emergency_stop"  # {reason?} → RTH all drones
 MSG_GOTO_CELL          = "goto_cell"       # {drone_id, cell_id} → /swarm/cell_override
+MSG_RTH_DRONE          = "rth_drone"       # {drone_id} → RTH konkrétního dronu
+MSG_GOTO_DRONE         = "goto_drone"      # {drone_id, target_ned:[x,y], altitude_m} → target_cmd
 MSG_MANUAL_CONTROL     = "manual_control"  # {action, ...} → /swarm/manual_control
 
 # Milestone 4 — Camera & 3D

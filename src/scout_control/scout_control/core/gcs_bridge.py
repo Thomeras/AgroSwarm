@@ -46,19 +46,22 @@ from typing import Optional
 
 import rclpy
 from rclpy.node import Node
+from rclpy.publisher import Publisher
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from std_msgs.msg import String
 from scout_control.avoidance.telemetry_hub import TelemetryHub
-from scout_control.avoidance.types import avoidance_status_from_msg
+from scout_control.avoidance.types import (
+    avoidance_status_from_msg,
+)
 
 from scout_control.utils.bridge_protocol import (
     BRIDGE_VERSION, DEFAULT_HOST, DEFAULT_PORT,
     MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
-    MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
+    MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GOTO_DRONE, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
-    MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
+    MSG_RTH_ALL, MSG_RTH_DRONE, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
     MSG_START_MISSION, MSG_TASK_STATUS,
     MSG_MANUAL_CONTROL,
 )
@@ -138,6 +141,7 @@ RECV_BUF_SIZE = 65536
 ACCEPT_TIMEOUT_S = 1.0     # lets the socket thread check _running regularly
 
 JPEG_QUALITY = 75          # 0‑100 — trades quality vs TCP bandwidth
+MIN_GOTO_INTERVAL = 0.05   # max 20 Hz per drone
 
 
 # ── Node ────────────────────────────────────────────────────────────────────
@@ -179,6 +183,7 @@ class GcsBridge(Node):
         self._cam_seq: dict[str, int] = {}
         self._last_cam_t: dict[str, float] = {}
         self._last_depth_t: dict[str, float] = {}
+        self._last_goto_t: dict[str, float] = {}
         self._camera_info_sent: set[str] = set()
         self._cam_enabled: set[str] = set(f"drone_{i}" for i in range(self._n_drones))
 
@@ -207,6 +212,16 @@ class GcsBridge(Node):
             String, swarm_topics.cell_override, QOS_VOLATILE_RELIABLE)
         self._manual_control_pub = self.create_publisher(
             String, swarm_topics.manual_control, QOS_VOLATILE_BE)
+        self._target_cmd_pubs: dict[str, Publisher] = {}
+        for i in range(self._n_drones):
+            hub = TelemetryHub(drone_id=i)
+            target_cmd_pub = self.create_publisher(
+                String,
+                hub.topics.avoidance_target_cmd,
+                QOS_VOLATILE_BE,
+            )
+            self._target_cmd_pubs[f"drone_{i}"] = target_cmd_pub
+            self._target_cmd_pubs[f"drone{i}"] = target_cmd_pub
 
         # ── Subscribers (ROS2 → Swarm Center) ────────────────────────────────
         self.create_subscription(
@@ -613,6 +628,21 @@ class GcsBridge(Node):
                 f"/swarm/rth_request → {self._n_drones} drones ({reason})")
             return
 
+        if msg_type == MSG_RTH_DRONE:
+            drone_id = str(data.get("drone_id", "")).strip()
+            pub = self._target_cmd_pubs.get(drone_id)
+            if pub is None:
+                self.get_logger().warn(f"rth_drone: unknown drone_id '{drone_id}'")
+                return
+            out = String()
+            out.data = json.dumps({
+                "command": "return_home",
+                "target_id": f"manual_rth{int(time.time() * 1000) % 100000}",
+            })
+            pub.publish(out)
+            self.get_logger().info(f"RTH command sent to {drone_id}")
+            return
+
         if msg_type == MSG_START_MISSION:
             out = String()
             out.data = json.dumps({"source": "gcs", "confirmed": True})
@@ -637,6 +667,43 @@ class GcsBridge(Node):
             out.data = json.dumps({"drone_id": drone_id, "cell_id": cell_id})
             self._cell_override_pub.publish(out)
             self.get_logger().info(f"/swarm/cell_override ← {drone_id} → {cell_id}")
+            return
+
+        if msg_type == MSG_GOTO_DRONE:
+            drone_id = str(data.get("drone_id", "")).strip()
+            now = time.time()
+            last = self._last_goto_t.get(drone_id, 0.0)
+            if now - last < MIN_GOTO_INTERVAL:
+                return
+            self._last_goto_t[drone_id] = now
+            pub = self._target_cmd_pubs.get(drone_id)
+            target_ned = data.get("target_ned")
+            if pub is None:
+                self.get_logger().warn(f"goto_drone: unknown drone_id '{drone_id}'")
+                return
+            if (
+                not isinstance(target_ned, (list, tuple))
+                or len(target_ned) != 2
+            ):
+                self.get_logger().warn(f"goto_drone: invalid payload {data!r}")
+                return
+            try:
+                payload = {
+                    "command": "goto",
+                    "target_id": f"manual_goto{int(now * 1000) % 100000}",
+                    "target_ned": [float(target_ned[0]), float(target_ned[1])],
+                    "altitude_m": float(data.get("altitude_m", 5.0)),
+                }
+                out = String()
+                out.data = json.dumps(payload)
+                pub.publish(out)
+            except (TypeError, ValueError) as exc:
+                self.get_logger().warn(f"goto_drone: invalid payload: {exc}")
+                return
+            self.get_logger().info(
+                f"/{drone_id}/avoidance/target_cmd ← manual goto "
+                f"({payload['target_ned'][0]:.2f},{payload['target_ned'][1]:.2f})"
+            )
             return
 
         if msg_type == MSG_MANUAL_CONTROL:

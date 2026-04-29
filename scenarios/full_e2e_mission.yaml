@@ -1,13 +1,13 @@
-name: "Full E2E Mission — Tilted Field"
+name: "Full E2E Mission — Field World"
 description: |
   Produkční backend launch: obstacle_avoidance_runtime je jediný flight owner.
   Legacy/manual PX4 controllery nejsou součástí produkčního launch flow.
   Operator tooling běží explicitně v extra terminálu; field_setup_tool jen
   značkuje pady/rohy a nepotvrzuje PX4 setpointy.
 world: "tilted_field"
-ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py include_operator_tools:=false"
+ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py world:={world} drone_count:={drone_count} include_operator_tools:=false"
 extra_terminal_commands:
   - title: "Field Setup Tool"
-    command: "ros2 run scout_control field_setup_tool"
+    command: "ros2 run scout_control field_setup_tool --ros-args -p drone_count:={drone_count}"
 
   - "ros2 run scout_control camera_hud --ros-args -p camera_topic:=/drone_0/camera/image_raw -p pos_topic:=/fmu/out/vehicle_local_position_v1"

@@ -5,7 +5,7 @@ This node is intentionally not a flight owner. It never publishes PX4
 OffboardControlMode, TrajectorySetpoint or VehicleCommand messages.
 
 Responsibilities:
-  - read current PX4 local positions for drone_0 and drone_1
+  - read current PX4 local positions for drone_0..drone_N
   - publish landing pad assignments for field_setup_coordinator/home_manager
   - publish field corner marks
   - publish mission confirmation
@@ -52,6 +52,7 @@ QOS_LATCHED = QoSProfile(
 )
 
 CORNER_LABELS = {ord("1"): "NE", ord("2"): "NW", ord("3"): "SE", ord("4"): "SW"}
+PAD_KEY_CHARS = "hjkluiop"
 
 CP_NORMAL = 1
 CP_TITLE = 2
@@ -91,20 +92,27 @@ class DronePosition:
 
 
 class FieldSetupTool(Node):
+    """Setup-only field marking node.
+
+    Parameters:
+      ui: enable curses UI when launched through main().
+      reject_origin_pad: reject pad marks too close to local NED origin.
+      drone_count: number of drones/pads to track; defaults to 2.
+    """
+
     def __init__(self) -> None:
         super().__init__("field_setup_tool")
 
         self.declare_parameter("ui", True)
         self.declare_parameter("reject_origin_pad", True)
+        self.declare_parameter("drone_count", 2)
         self._ui_enabled = bool(self.get_parameter("ui").value)
         self._reject_origin_pad = bool(self.get_parameter("reject_origin_pad").value)
+        self._n_drones = max(1, int(self.get_parameter("drone_count").value))
         self._swarm_topics = TelemetryHub(drone_id=0).swarm
 
         self._lock = threading.Lock()
-        self._d = [
-            DronePosition(0),
-            DronePosition(1),
-        ]
+        self._d = [DronePosition(i) for i in range(self._n_drones)]
         self._active = 0
         self._corner_submenu = False
         self._quit = False
@@ -117,8 +125,7 @@ class FieldSetupTool(Node):
         self._boundary_points: list[tuple[float, float, float]] = []
         self._boundary_closed = False
         self._pads: dict[str, Optional[tuple[float, float]]] = {
-            "pad_0": None,
-            "pad_1": None,
+            f"pad_{i}": None for i in range(self._n_drones)
         }
 
         self._pad_assign_pub = self.create_publisher(
@@ -187,7 +194,7 @@ class FieldSetupTool(Node):
             return
         if action == "assign_pad":
             pad_id = str(data.get("pad_id", "")).strip()
-            if idx is not None and pad_id in ("pad_0", "pad_1"):
+            if idx is not None and pad_id in self._pads:
                 self._assign_pad(idx, pad_id)
             return
         if action == "mark_corner":
@@ -205,11 +212,16 @@ class FieldSetupTool(Node):
             self._confirm_mission(source=str(data.get("source", "field_setup_tool")))
 
     def _drone_idx(self, drone_id: str) -> Optional[int]:
-        if drone_id == "drone_0":
-            return 0
-        if drone_id == "drone_1":
-            return 1
-        self.get_logger().warn(f"manual_control: unknown drone_id '{drone_id}'")
+        try:
+            idx = int(str(drone_id).split("_")[-1])
+        except (ValueError, IndexError):
+            self.get_logger().warn(f"manual_control: cannot parse drone_id '{drone_id}'")
+            return None
+        if 0 <= idx < self._n_drones:
+            return idx
+        self.get_logger().warn(
+            f"manual_control: drone_id '{drone_id}' out of range (n={self._n_drones})"
+        )
         return None
 
     def _assign_pad(self, drone_idx: int, pad_id: str) -> None:
@@ -229,9 +241,9 @@ class FieldSetupTool(Node):
                     f"_assign_pad: drone_{drone_idx} near origin NED({d.x:.2f},{d.y:.2f})"
                 )
                 return
+            did = d.did
             x, y = d.x, d.y
 
-        did = f"drone_{drone_idx}"
         ned_z = -0.5
         payload = {
             "drone_id": did,
@@ -359,12 +371,15 @@ class FieldSetupTool(Node):
             self._quit = True
         elif key == ord("\t"):
             with self._lock:
-                self._active = 1 - self._active
+                self._active = (self._active + 1) % self._n_drones
             self._flash(f"Active drone: drone_{self._active}")
-        elif key in (ord("h"), ord("H")):
-            self._assign_pad(0, "pad_0")
-        elif key in (ord("j"), ord("J")):
-            self._assign_pad(1, "pad_1")
+        elif 0 <= key <= 255 and chr(key).lower() in PAD_KEY_CHARS:
+            pad_idx = PAD_KEY_CHARS.index(chr(key).lower())
+            pad_id = f"pad_{pad_idx}"
+            if pad_id in self._pads and pad_idx < self._n_drones:
+                self._assign_pad(pad_idx, pad_id)
+            else:
+                self._flash(f"{pad_id} unavailable (n={self._n_drones})")
         elif key in (ord("c"), ord("C")):
             with self._lock:
                 self._corner_submenu = True
@@ -400,6 +415,12 @@ class FieldSetupTool(Node):
             boundary_count = len(self._boundary_points)
             boundary_closed = self._boundary_closed
 
+        sep_y = 1 + len(drones)
+        pads_title_y = sep_y + 1
+        pads_start_y = pads_title_y + 1
+        pad_rows = len(pads)
+        corner_y = pads_start_y + pad_rows + 1
+        boundary_y = corner_y + 6
         title = f"  Field Setup Tool  |  setup-only/no PX4 setpoints  |  Active: drone_{active}"
         sa(stdscr, 0, 0, title[:w], curses.color_pair(CP_TITLE) | curses.A_BOLD)
 
@@ -416,16 +437,22 @@ class FieldSetupTool(Node):
                 line = f"  drone_{i}{mark} waiting for valid PX4 local position"
             sa(stdscr, 1 + i, 0, line[:w], curses.color_pair(cp))
 
-        sa(stdscr, 3, 0, "-" * (w - 1), curses.color_pair(CP_DIM) | curses.A_DIM)
-        sa(stdscr, 4, 2, "Landing pads:", curses.color_pair(CP_HOME) | curses.A_BOLD)
-        for row, pad_id in [(5, "pad_0"), (6, "pad_1")]:
-            p = pads.get(pad_id)
+        sa(stdscr, sep_y, 0, "-" * (w - 1), curses.color_pair(CP_DIM) | curses.A_DIM)
+        sa(stdscr, pads_title_y, 2, "Landing pads:", curses.color_pair(CP_HOME) | curses.A_BOLD)
+        for i, (pad_id, p) in enumerate(pads.items()):
+            key_label = PAD_KEY_CHARS[i].upper() if i < len(PAD_KEY_CHARS) else "-"
             value = f"NED({p[0]:.2f},{p[1]:.2f})" if p else "not set"
-            sa(stdscr, row, 4, f"{pad_id}: {value}", curses.color_pair(CP_HOME))
+            sa(
+                stdscr,
+                pads_start_y + i,
+                4,
+                f"{key_label} {pad_id}: {value}",
+                curses.color_pair(CP_HOME),
+            )
 
         sa(
             stdscr,
-            8,
+            corner_y,
             2,
             f"Field corners ({len(corners)}/4) - C then 1/2/3/4:",
             curses.color_pair(CP_CORNER) | curses.A_BOLD,
@@ -433,12 +460,18 @@ class FieldSetupTool(Node):
         for i, lbl in enumerate(["NE", "NW", "SE", "SW"]):
             c = corners.get(lbl)
             value = f"NED({c[0]:.2f}, {c[1]:.2f})" if c else "---"
-            sa(stdscr, 9 + i, 4, f"{lbl}: {value}", curses.color_pair(CP_CORNER if c else CP_DIM))
+            sa(
+                stdscr,
+                corner_y + 1 + i,
+                4,
+                f"{lbl}: {value}",
+                curses.color_pair(CP_CORNER if c else CP_DIM),
+            )
 
         closed_tag = " [closed]" if boundary_closed else ""
         sa(
             stdscr,
-            14,
+            boundary_y,
             2,
             f"Polygon boundary: {boundary_count} vertices{closed_tag} "
             "(B=add, F=close)",
@@ -468,7 +501,7 @@ class FieldSetupTool(Node):
             stdscr,
             h - 1,
             1,
-            "Tab=switch  H=pad0  J=pad1  B=boundary  F=close  C=corner  M=start  Q=quit",
+            "Tab=switch  H/J/K/L...=pads  B=boundary  F=close  C=corner  M=start  Q=quit",
             curses.color_pair(CP_ACCENT),
         )
         stdscr.refresh()

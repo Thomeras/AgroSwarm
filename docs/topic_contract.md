@@ -1,7 +1,7 @@
 # Scout ROS2 Topic Contract
 
 **Status:** active contract  
-**Last updated:** 2026-04-28
+**Last updated:** 2026-04-29
 
 This document is the human-readable contract for ROS2 topics used by the
 production Scout mission stack. The executable source of truth is
@@ -55,7 +55,14 @@ N uses `/px4_N` for PX4 input/output topics.
 | `/{drone_ns}/camera/image_raw` | sensor | `sensor_msgs/Image` | best-effort volatile | Native sim or bridge topic. Backend may override template. |
 | `/{drone_ns}/depth/image_raw` | sensor | `sensor_msgs/Image` | best-effort volatile | Native sim depth; runtime may gate navigation on freshness. |
 | `/{drone_ns}/camera/camera_info` | sensor | `sensor_msgs/CameraInfo` | best-effort volatile | Camera calibration/info. |
-| `/{drone_ns}/downward_lidar/scan` | sensor | `sensor_msgs/LaserScan` | best-effort volatile | Terrain/range input. |
+| `/{drone_ns}/downward_lidar/scan` | sensor | `sensor_msgs/LaserScan` | best-effort volatile | Terrain/range input. May also be used as optional obstacle point input only when `obstacle_avoidance_runtime.enable_lidar_obstacle_points=true`; disabled by default. |
+
+Optional LiDAR obstacle ingestion is configured on `obstacle_avoidance_runtime`
+with `enable_lidar_obstacle_points`, `lidar_obstacle_topic`,
+`lidar_obstacle_confidence`, `lidar_obstacle_stride`, and
+`lidar_obstacle_stale_after_s`. If `lidar_obstacle_topic` is empty, the runtime
+uses the canonical `/{drone_ns}/downward_lidar/scan` topic when obstacle
+ingestion is enabled.
 
 ## PX4 Topics
 

@@ -1,4 +1,0 @@
- precti si prosim @docs/plans/scout_ws_e2e_architecture.docx a scout_ws_e2e_architecture.md a jdi na phase 2, shrn jake zmeny budou potreba udelat pro dosazeni phase2, podivej se na  
-  ▎ existujici nodes a priprav phase2_prompt.md ktery rozdel na prislusnyt pocet paralerne bezicich agentu v ruznych sessions, ktery uznas za vhodny aby si navzajeme nelezli do scopu.   
-  ▎ .md file dej prosim do docs/prompts. Pocitej i s tim ze vsechno bezi dohromady cili vsehcny phase musi spolu spolupracovat a fungovat na stejnem principu a zaroven nenarusovat beh   
-  ▎ jednotlivych node podle architektonickeho planu. Dekuju moc.  

@@ -10,6 +10,7 @@ Tato slozka obsahuje rucni operatorni postupy a poznamky ke spousteni.
 - `isaac_phase123_e2e_test.txt` — overeni Phase 1 + Phase 2 + Phase 3 v Isaac Sim
 - `isaac_full_e2e_mission.txt` — rucni postup pro Isaac full E2E flow
 - `isaac_obstacle_avoidance_test.txt` — rucni postup pro obstacle avoidance test
+- `phase15_Ndrone_e2e_runbook.txt` — Gazebo workflow single-drone field setup → N-drone swarm mission
 
 Tyto soubory jsou runbooky, ne runtime launch soubory.
 Skutecne ROS2 launch definice zustavaji v `src/scout_control/launch/`.

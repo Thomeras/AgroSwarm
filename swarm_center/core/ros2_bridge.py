@@ -30,10 +30,10 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from core.bridge_protocol import (
     BRIDGE_VERSION, DEFAULT_HOST, DEFAULT_PORT,
     MSG_CAMERA_CONTROL, MSG_CAMERA_FRAME, MSG_CAMERA_INFO, MSG_DEPTH_FRAME,
-    MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GRID_RELOAD,
+    MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GOTO_DRONE, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MANUAL_CONTROL, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
-    MSG_RTH_ALL, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
+    MSG_RTH_ALL, MSG_RTH_DRONE, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
     MSG_START_MISSION, MSG_TASK_STATUS,
 )
 
@@ -134,6 +134,20 @@ class Ros2BridgeClient(QObject):
     def send_goto_cell(self, drone_id: str, cell_id: str) -> None:
         """Override next cell for one drone — publishes /swarm/cell_override."""
         self._send(MSG_GOTO_CELL, {"drone_id": drone_id, "cell_id": cell_id})
+
+    def send_goto_drone(
+        self, drone_id: str, ned_x: float, ned_y: float, altitude_m: float
+    ) -> None:
+        """Send one drone a direct local-NED goto target through avoidance runtime."""
+        self._send(MSG_GOTO_DRONE, {
+            "drone_id": drone_id,
+            "target_ned": [float(ned_x), float(ned_y)],
+            "altitude_m": float(altitude_m),
+        })
+
+    def send_rth_drone(self, drone_id: str) -> None:
+        """Request RTH for one concrete drone."""
+        self._send(MSG_RTH_DRONE, {"drone_id": drone_id})
 
     def send_manual_control(self, payload: dict) -> None:
         """Forward manual-controller action payload to scout_ws."""

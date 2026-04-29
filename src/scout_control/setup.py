@@ -24,6 +24,7 @@ setup(
         ('share/' + package_name + '/worlds', [
             'worlds/agricultural_field.world',
             'worlds/obstacle_course.world',
+            'worlds/swarm_field.world',
         ]),
         ('share/' + package_name + '/config', [
             'config/obstacle_avoidance.rviz',

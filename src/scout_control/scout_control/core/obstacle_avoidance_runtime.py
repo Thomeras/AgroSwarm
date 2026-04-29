@@ -46,6 +46,10 @@ from scout_control.avoidance.altitude_controller import AltitudeController
 from scout_control.avoidance.depth_projector import DepthProjector
 from scout_control.avoidance.flight_phase_machine import FlightPhaseMachine
 from scout_control.avoidance.health_monitor import HealthConfig, RuntimeHealthMonitor
+from scout_control.avoidance.lidar_projector import (
+    body_to_world_points,
+    laser_scan_to_body_points,
+)
 from scout_control.avoidance.local_mapper import (
     LocalClearanceSummary,
     LocalMapper,
@@ -224,6 +228,11 @@ class ObstacleAvoidanceRuntime(Node):
         self.declare_parameter("depth_topic", "")
         self.declare_parameter("camera_info_topic", "")
         self.declare_parameter("terrain_range_topic", "")
+        self.declare_parameter("enable_lidar_obstacle_points", False)
+        self.declare_parameter("lidar_obstacle_topic", "")
+        self.declare_parameter("lidar_obstacle_confidence", 0.6)
+        self.declare_parameter("lidar_obstacle_stride", 1)
+        self.declare_parameter("lidar_obstacle_stale_after_s", 0.5)
         self.declare_parameter("publish_legacy_obstacle_topics", False)
         self.declare_parameter("log_run_label", "")
         self.declare_parameter("pose_stale_after_s", 0.5)
@@ -290,6 +299,24 @@ class ObstacleAvoidanceRuntime(Node):
         )
         self._local_map_blocked_cost_gain = float(
             self.get_parameter("local_map_blocked_cost_gain").value
+        )
+        self._enable_lidar_obstacle_points = bool(
+            self.get_parameter("enable_lidar_obstacle_points").value
+        )
+        self._lidar_obstacle_topic = str(
+            self.get_parameter("lidar_obstacle_topic").value or ""
+        ).strip()
+        self._lidar_obstacle_confidence = max(
+            0.0,
+            float(self.get_parameter("lidar_obstacle_confidence").value),
+        )
+        self._lidar_obstacle_stride = max(
+            1,
+            int(self.get_parameter("lidar_obstacle_stride").value),
+        )
+        self._lidar_obstacle_stale_after_s = max(
+            0.0,
+            float(self.get_parameter("lidar_obstacle_stale_after_s").value),
         )
         peer_drone_ids_param = self.get_parameter("peer_drone_ids").value or []
         self._peer_drone_ids = sorted(
@@ -447,6 +474,8 @@ class ObstacleAvoidanceRuntime(Node):
         self._last_rgb_encoding = ""
         self._last_terrain_range_m: float | None = None
         self._last_terrain_range_ts = 0.0
+        self._last_lidar_obstacle_ts = 0.0
+        self._last_lidar_obstacle_points = 0
         self._last_scan_summary: dict[str, Any] | None = None
         self._last_runtime_event: dict[str, Any] | None = None
         self._last_setpoint_gate_reason = ""
@@ -606,6 +635,16 @@ class ObstacleAvoidanceRuntime(Node):
             self._terrain_range_cb,
             QOS_SENSOR,
         )
+        self._lidar_obstacle_sub = None
+        if self._enable_lidar_obstacle_points:
+            lidar_topic = self._lidar_obstacle_topic or topics.downward_lidar_scan
+            self._lidar_obstacle_topic = lidar_topic
+            self._lidar_obstacle_sub = self.create_subscription(
+                LaserScan,
+                lidar_topic,
+                self._lidar_obstacle_cb,
+                QOS_SENSOR,
+            )
         self.create_subscription(
             ScoutTargetCommandMsg or String,
             topics.avoidance_target_cmd,
@@ -658,6 +697,8 @@ class ObstacleAvoidanceRuntime(Node):
             depth_topic=self._depth_topic,
             camera_info_topic=self._camera_info_topic,
             terrain_range_topic=self._terrain_range_topic,
+            lidar_obstacle_enabled=bool(self._enable_lidar_obstacle_points),
+            lidar_obstacle_topic=self._lidar_obstacle_topic,
             target_cmd_topic=topics.avoidance_target_cmd,
             event_topic=topics.avoidance_events,
         )
@@ -838,6 +879,69 @@ class ObstacleAvoidanceRuntime(Node):
             self._altitude_controller.update_terrain_reference(
                 terrain_z_ned=float(self._drone_z) + terrain_range_m,
             )
+
+    def _lidar_obstacle_cb(self, msg: LaserScan) -> None:
+        if not self._enable_lidar_obstacle_points or not self._pos_valid:
+            return
+
+        now_s = time.time()
+        stamp_s = self._stamp_from_msg(msg, fallback_s=now_s)
+        if (
+            self._lidar_obstacle_stale_after_s > 0.0
+            and stamp_s > 0.0
+            and self._same_time_epoch(now_s, stamp_s)
+            and (now_s - stamp_s) > self._lidar_obstacle_stale_after_s
+        ):
+            return
+
+        try:
+            body_batch = laser_scan_to_body_points(
+                ranges=getattr(msg, "ranges", []),
+                angle_min_rad=float(getattr(msg, "angle_min", 0.0) or 0.0),
+                angle_increment_rad=float(getattr(msg, "angle_increment", 0.0) or 0.0),
+                range_min_m=float(getattr(msg, "range_min", 0.0) or 0.0),
+                range_max_m=float(getattr(msg, "range_max", 0.0) or 0.0),
+                stamp_s=stamp_s,
+                source="lidar",
+                confidence=self._lidar_obstacle_confidence,
+                stride=self._lidar_obstacle_stride,
+            )
+            world_batch = body_to_world_points(
+                body_batch,
+                origin_ned=(self._drone_x, self._drone_y, self._drone_z),
+                yaw_rad=self._drone_yaw,
+                source="lidar",
+            )
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warn(f"LiDAR obstacle scan rejected: {exc}")
+            return
+
+        if world_batch.point_count <= 0:
+            return
+        inserted = self._local_mapper.ingest_point_batch(world_batch)
+        self._last_lidar_obstacle_ts = now_s
+        self._last_lidar_obstacle_points = int(world_batch.point_count)
+        self._run_log.log(
+            "lidar_obstacle_points_ingested",
+            topic=self._lidar_obstacle_topic,
+            points=int(world_batch.point_count),
+            inserted=int(inserted),
+            confidence=round(float(world_batch.confidence), 3),
+        )
+
+    def _stamp_from_msg(self, msg: Any, *, fallback_s: float) -> float:
+        stamp = getattr(getattr(msg, "header", None), "stamp", None)
+        if stamp is None:
+            return float(fallback_s)
+        sec = float(getattr(stamp, "sec", 0.0) or 0.0)
+        nanosec = float(getattr(stamp, "nanosec", 0.0) or 0.0)
+        if sec <= 0.0 and nanosec <= 0.0:
+            return float(fallback_s)
+        return sec + nanosec * 1e-9
+
+    def _same_time_epoch(self, a_s: float, b_s: float) -> bool:
+        wall_epoch_floor = 1_000_000_000.0
+        return (float(a_s) >= wall_epoch_floor) == (float(b_s) >= wall_epoch_floor)
 
     def _rth_target_cb(self, msg: Point) -> None:
         self._home_x = float(msg.x)
@@ -1153,7 +1257,7 @@ class ObstacleAvoidanceRuntime(Node):
             depth,
             pixel_stride=self._local_map_depth_stride,
             stamp_s=self._latest_depth_ts,
-            source="depth_projector",
+            source="depth",
             is_dense_scan=False,
         )
         body_batch.confidence = 0.7
@@ -1161,7 +1265,7 @@ class ObstacleAvoidanceRuntime(Node):
             body_batch,
             origin_ned=(self._drone_x, self._drone_y, self._drone_z),
             yaw_rad=self._drone_yaw,
-            source="depth_projector",
+            source="depth",
             collision_band_m=self._local_map_collision_band,
         )
         self._local_mapper.ingest_point_batch(world_batch)
@@ -1611,9 +1715,9 @@ class ObstacleAvoidanceRuntime(Node):
             snap.occupied_mask | snap.dynamic_no_go_mask,
             dtype=np.bool_,
         )
-        unknown_mask = np.asarray(snap.age_s > self._local_map_stale_after_s, dtype=np.bool_)
-        if unknown_mask.ndim == 0:
-            unknown_mask = np.full(hard_occupancy.shape, bool(unknown_mask), dtype=np.bool_)
+        unknown_mask = np.array(snap.unknown_mask, dtype=np.bool_, copy=True)
+        if snap.age_s > self._local_map_stale_after_s:
+            unknown_mask |= True
         return LocalGridSnapshot(
             occupancy=hard_occupancy,
             resolution_m=snap.resolution_m,
@@ -2029,7 +2133,15 @@ class ObstacleAvoidanceRuntime(Node):
                 "camera": self._camera_topic,
                 "depth": self._depth_topic,
                 "camera_info": self._camera_info_topic,
+                "lidar_obstacle": self._lidar_obstacle_topic
+                if self._enable_lidar_obstacle_points
+                else "",
             },
+            "lidar_obstacle_enabled": bool(self._enable_lidar_obstacle_points),
+            "lidar_obstacle_age_s": None
+            if self._last_lidar_obstacle_ts <= 0.0
+            else round(float(now - self._last_lidar_obstacle_ts), 3),
+            "lidar_obstacle_points": int(self._last_lidar_obstacle_points),
             "camera_info_age_s": None
             if self._last_camera_info_ts <= 0.0
             else round(float(now - self._last_camera_info_ts), 3),

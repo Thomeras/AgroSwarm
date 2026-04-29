@@ -3,8 +3,18 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
-from scout_control.avoidance.local_mapper import LocalMapper, LocalMapperConfig
+from scout_control.avoidance.local_mapper import (
+    LocalMapper,
+    LocalMapperConfig,
+    logodds_to_prob,
+    prob_to_logodds,
+)
+from scout_control.avoidance.lidar_projector import (
+    body_to_world_points,
+    laser_scan_to_body_points,
+)
 from scout_control.avoidance.local_planner import (
     LocalGridSnapshot,
     LocalPlanner,
@@ -14,6 +24,169 @@ from scout_control.avoidance.local_planner import (
 )
 from scout_control.avoidance.scan_manager import ScanManager
 from scout_control.avoidance.types import PointBatch
+
+
+def _cell_probability(mapper: LocalMapper, x: float, y: float, now_s: float) -> float:
+    snapshot, _ = mapper.update(now_s=now_s)
+    gx, gy = mapper.world_to_grid(x, y)
+    assert gx is not None
+    assert gy is not None
+    return float(snapshot.occupancy_confidence[gy, gx])
+
+
+def test_local_mapper_repeated_hits_increase_occupancy_probability() -> None:
+    mapper = LocalMapper(
+        LocalMapperConfig(
+            resolution_m=0.5,
+            span_x_m=10.0,
+            span_y_m=10.0,
+            depth_half_life_s=1_000.0,
+        )
+    )
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+    point = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+
+    mapper.ingest_point_batch(
+        PointBatch(source="depth", frame="map", stamp_s=1.0, points_xyz=point)
+    )
+    first = _cell_probability(mapper, 2.0, 0.0, now_s=1.0)
+    mapper.ingest_point_batch(
+        PointBatch(source="depth", frame="map", stamp_s=1.1, points_xyz=point)
+    )
+    second = _cell_probability(mapper, 2.0, 0.0, now_s=1.1)
+
+    origin_gx, origin_gy = mapper.world_to_grid(0.0, 0.0)
+    assert origin_gx is not None
+    assert origin_gy is not None
+    assert second > first
+    assert second > mapper.latest_snapshot.occupancy_confidence[origin_gy, origin_gx]
+
+
+def test_local_mapper_repeated_free_misses_decrease_occupancy_probability() -> None:
+    mapper = LocalMapper(
+        LocalMapperConfig(
+            resolution_m=0.5,
+            span_x_m=12.0,
+            span_y_m=12.0,
+            depth_half_life_s=1_000.0,
+        )
+    )
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    obstacle = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+    far_hit = np.array([[4.0, 0.0, 0.0]], dtype=np.float32)
+    mapper.ingest_point_batch(
+        PointBatch(source="depth", frame="map", stamp_s=1.0, points_xyz=obstacle)
+    )
+    occupied_prob = _cell_probability(mapper, 2.0, 0.0, now_s=1.0)
+
+    mapper.ingest_point_batch(
+        PointBatch(source="depth", frame="map", stamp_s=1.1, points_xyz=far_hit)
+    )
+    first_miss = _cell_probability(mapper, 2.0, 0.0, now_s=1.1)
+    mapper.ingest_point_batch(
+        PointBatch(source="depth", frame="map", stamp_s=1.2, points_xyz=far_hit)
+    )
+    second_miss = _cell_probability(mapper, 2.0, 0.0, now_s=1.2)
+
+    assert first_miss < occupied_prob
+    assert second_miss < first_miss
+
+
+def test_local_mapper_log_odds_values_clamp_at_configured_limits() -> None:
+    config = LocalMapperConfig(
+        resolution_m=0.5,
+        span_x_m=10.0,
+        span_y_m=10.0,
+        depth_half_life_s=1_000.0,
+        min_log_odds=-1.0,
+        max_log_odds=1.0,
+    )
+    mapper = LocalMapper(config)
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+    hit = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+    far_hit = np.array([[4.0, 0.0, 0.0]], dtype=np.float32)
+
+    for idx in range(10):
+        mapper.ingest_point_batch(
+            PointBatch(
+                source="depth",
+                frame="map",
+                stamp_s=1.0 + idx * 0.1,
+                points_xyz=hit,
+            )
+        )
+    high = _cell_probability(mapper, 2.0, 0.0, now_s=2.0)
+    assert high <= logodds_to_prob(config.max_log_odds) + 1e-6
+
+    for idx in range(10):
+        mapper.ingest_point_batch(
+            PointBatch(
+                source="depth",
+                frame="map",
+                stamp_s=3.0 + idx * 0.1,
+                points_xyz=far_hit,
+            )
+        )
+    low = _cell_probability(mapper, 2.0, 0.0, now_s=4.0)
+    assert low >= logodds_to_prob(config.min_log_odds) - 1e-6
+
+
+def test_local_mapper_unknown_cells_remain_unknown_without_evidence() -> None:
+    config = LocalMapperConfig(resolution_m=0.5, span_x_m=10.0, span_y_m=10.0)
+    mapper = LocalMapper(config)
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    snapshot, _ = mapper.update(now_s=1.0)
+    gx, gy = mapper.world_to_grid(2.0, 0.0)
+    assert gx is not None
+    assert gy is not None
+    assert bool(snapshot.unknown_mask[gy, gx])
+    assert float(snapshot.occupancy_confidence[gy, gx]) == pytest.approx(
+        logodds_to_prob(prob_to_logodds(config.prior_occupancy_probability)),
+        abs=1e-6,
+    )
+
+
+def test_local_mapper_scan_hits_survive_longer_than_depth_hits() -> None:
+    mapper = LocalMapper(
+        LocalMapperConfig(
+            resolution_m=0.5,
+            span_x_m=12.0,
+            span_y_m=12.0,
+            depth_half_life_s=1.0,
+            scan_half_life_s=120.0,
+            obstacle_threshold=0.65,
+        )
+    )
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+    point = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+
+    mapper.ingest_point_batch(
+        PointBatch(
+            source="depth",
+            frame="map",
+            stamp_s=1.0,
+            points_xyz=point,
+            is_dense_scan=False,
+        )
+    )
+    depth_prob = _cell_probability(mapper, 2.0, 0.0, now_s=8.0)
+
+    mapper.clear_sensor_layers()
+    mapper.ingest_point_batch(
+        PointBatch(
+            source="scan",
+            frame="map",
+            stamp_s=20.0,
+            points_xyz=point,
+            is_dense_scan=True,
+        )
+    )
+    scan_prob = _cell_probability(mapper, 2.0, 0.0, now_s=27.0)
+
+    assert scan_prob > depth_prob
+    assert scan_prob >= 0.65
 
 
 def test_local_mapper_dense_scan_enrichment_marks_occupied_cells() -> None:
@@ -50,6 +223,112 @@ def test_local_mapper_dense_scan_enrichment_marks_occupied_cells() -> None:
     assert inserted > 0
     assert bool(np.any(snapshot.occupied_mask))
     assert mapper.summary()["dense_scan_points"] > 0
+
+
+def test_depth_and_lidar_batches_update_mapper_through_shared_path() -> None:
+    mapper = LocalMapper(
+        LocalMapperConfig(
+            resolution_m=0.5,
+            span_x_m=12.0,
+            span_y_m=12.0,
+            depth_half_life_s=1_000.0,
+        )
+    )
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    mapper.ingest_point_batch(
+        PointBatch(
+            source="depth",
+            frame="world_ned",
+            stamp_s=1.0,
+            points_xyz=np.array([[2.0, 0.0, 0.0]], dtype=np.float32),
+            confidence=0.7,
+        )
+    )
+    depth_prob = _cell_probability(mapper, 2.0, 0.0, now_s=1.0)
+
+    lidar_body = laser_scan_to_body_points(
+        ranges=[3.0],
+        angle_min_rad=0.0,
+        angle_increment_rad=0.0,
+        range_min_m=0.2,
+        range_max_m=10.0,
+        stamp_s=1.1,
+        source="lidar",
+        confidence=0.6,
+    )
+    lidar_world = body_to_world_points(
+        lidar_body,
+        origin_ned=(0.0, 0.0, 0.0),
+        yaw_rad=0.0,
+        source="lidar",
+    )
+    mapper.ingest_point_batch(lidar_world)
+    lidar_prob = _cell_probability(mapper, 3.0, 0.0, now_s=1.1)
+
+    recent_sources = [item["source"] for item in mapper.summary()["recent_batches"]]
+    assert depth_prob > 0.2
+    assert lidar_prob > 0.2
+    assert recent_sources[-2:] == ["depth", "lidar"]
+
+
+def test_point_batch_confidence_scales_occupancy_evidence() -> None:
+    config = LocalMapperConfig(
+        resolution_m=0.5,
+        span_x_m=10.0,
+        span_y_m=10.0,
+        depth_half_life_s=1_000.0,
+    )
+    weak = LocalMapper(config)
+    strong = LocalMapper(config)
+    weak.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+    strong.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+    point = np.array([[2.0, 0.0, 0.0]], dtype=np.float32)
+
+    weak.ingest_point_batch(
+        PointBatch(
+            source="lidar",
+            frame="world_ned",
+            stamp_s=1.0,
+            points_xyz=point,
+            confidence=0.25,
+        )
+    )
+    strong.ingest_point_batch(
+        PointBatch(
+            source="lidar",
+            frame="world_ned",
+            stamp_s=1.0,
+            points_xyz=point,
+            confidence=1.0,
+        )
+    )
+
+    assert _cell_probability(strong, 2.0, 0.0, now_s=1.0) > _cell_probability(
+        weak,
+        2.0,
+        0.0,
+        now_s=1.0,
+    )
+
+
+def test_malformed_lidar_scan_batch_is_empty_and_safe_to_ignore() -> None:
+    batch = laser_scan_to_body_points(
+        ranges=[float("nan"), float("inf"), 0.05, 50.0],
+        angle_min_rad=-0.5,
+        angle_increment_rad=0.1,
+        range_min_m=0.2,
+        range_max_m=10.0,
+        stamp_s=5.0,
+        source="lidar",
+    )
+
+    mapper = LocalMapper(LocalMapperConfig(resolution_m=0.5, span_x_m=10.0, span_y_m=10.0))
+    mapper.update_pose(0.0, 0.0, 0.0, 0.0, 0.0)
+
+    assert batch.point_count == 0
+    assert mapper.ingest_point_batch(body_to_world_points(batch, origin_ned=(0.0, 0.0, 0.0), yaw_rad=0.0)) == 0
+    assert mapper.summary()["recent_batches"][-1]["source"] == "lidar"
 
 
 def test_scan_manager_dense_capture_enriches_mapper(tmp_path) -> None:

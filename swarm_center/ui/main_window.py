@@ -132,6 +132,9 @@ class MainWindow(QMainWindow):
             drone_count=drone_count,
             send_manual_control=self._bridge_runner.client.send_manual_control,
             send_generate_grid=self._bridge_runner.client.send_generate_grid,
+            get_drone_position=self._get_drone_ned,
+            send_goto_drone=self._bridge_runner.client.send_goto_drone,
+            send_rth_drone=self._bridge_runner.client.send_rth_drone,
         )
 
         # M4 — Camera feed (must be created before connecting bridge signals)
@@ -313,6 +316,20 @@ class MainWindow(QMainWindow):
 
     def _on_mav_log(self, drone_id: int, msg: str) -> None:
         self._logger.info(f"drone_{drone_id}", msg)
+
+    def _get_drone_ned(self, drone_id: str) -> tuple[float, float, float] | None:
+        telem = self._mav.get_telemetry(drone_id)
+        if telem is not None and telem.connected:
+            return (telem.x_ned, telem.y_ned, telem.z_ned)
+
+        try:
+            drone_num = int(drone_id.split("_")[-1])
+        except (ValueError, IndexError):
+            return None
+        rec = self._swarm.drone(drone_num)
+        if rec is None or not rec.telemetry.connected:
+            return None
+        return (rec.telemetry.x_ned, rec.telemetry.y_ned, rec.telemetry.z_ned)
 
     # ── Bridge signal handlers ──────────────────────────────────────────────
 

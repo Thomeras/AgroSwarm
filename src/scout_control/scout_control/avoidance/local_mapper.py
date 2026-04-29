@@ -12,6 +12,23 @@ from scout_control.avoidance.peer_tracks import PeerTrackStore
 from scout_control.avoidance.types import LocalMapperState, PointBatch
 
 
+def prob_to_logodds(probability: float) -> float:
+    """Convert a bounded occupancy probability to log-odds."""
+
+    p = min(1.0 - 1e-6, max(1e-6, float(probability)))
+    return float(math.log(p / (1.0 - p)))
+
+
+def logodds_to_prob(log_odds: np.ndarray | float) -> np.ndarray | float:
+    """Convert log-odds to occupancy probability."""
+
+    odds = np.exp(np.asarray(log_odds, dtype=np.float32))
+    probability = odds / (1.0 + odds)
+    if np.isscalar(log_odds):
+        return float(probability)
+    return probability.astype(np.float32, copy=False)
+
+
 @dataclass(slots=True)
 class LocalMapperConfig:
     resolution_m: float = 0.5
@@ -23,7 +40,12 @@ class LocalMapperConfig:
     stale_after_s: float = 1.5
     collision_band_min_m: float = -2.0
     collision_band_max_m: float = 2.5
-    obstacle_threshold: float = 0.35
+    occupied_hit_probability: float = 0.70
+    free_miss_probability: float = 0.12
+    prior_occupancy_probability: float = 0.20
+    min_log_odds: float = -3.5
+    max_log_odds: float = 3.5
+    obstacle_threshold: float = 0.65
     obstacle_inflation_radius_m: float = 1.2
     obstacle_soft_radius_m: float = 2.0
     peer_hard_radius_m: float = 3.0
@@ -72,6 +94,7 @@ class LocalMapperSnapshot:
     drone_yaw_rad: float
     occupancy_confidence: np.ndarray
     occupied_mask: np.ndarray
+    unknown_mask: np.ndarray
     inflation_map: np.ndarray
     dynamic_no_go_mask: np.ndarray
     blocked_cost_layer: np.ndarray
@@ -105,6 +128,25 @@ class LocalMapper:
         self._fast_layer = np.zeros(shape, dtype=np.float32)
         self._scan_layer = np.zeros(shape, dtype=np.float32)
         self._blocked_layer = np.zeros(shape, dtype=np.float32)
+        self._observed_layer = np.zeros(shape, dtype=np.bool_)
+
+        self._prior_log_odds = prob_to_logodds(self._config.prior_occupancy_probability)
+        self._hit_log_odds_delta = (
+            prob_to_logodds(self._config.occupied_hit_probability) - self._prior_log_odds
+        )
+        self._miss_log_odds_delta = (
+            prob_to_logodds(self._config.free_miss_probability) - self._prior_log_odds
+        )
+        self._min_log_odds = min(
+            float(self._config.min_log_odds),
+            float(self._config.max_log_odds),
+        )
+        self._max_log_odds = max(
+            float(self._config.min_log_odds),
+            float(self._config.max_log_odds),
+        )
+        self._min_evidence_log_odds = self._min_log_odds - self._prior_log_odds
+        self._max_evidence_log_odds = self._max_log_odds - self._prior_log_odds
 
         self._last_sensor_stamp = 0.0
         self._last_nonempty_insert_stamp = 0.0
@@ -223,9 +265,17 @@ class LocalMapper:
 
         flat = np.unique(gy * self._width + gx)
         layer = self._scan_layer if batch.is_dense_scan else self._fast_layer
-        increment = float(batch.confidence) * (0.90 if batch.is_dense_scan else 0.55)
-        np.add.at(layer.reshape(-1), flat, increment)
-        np.clip(layer, 0.0, 3.0, out=layer)
+        source_gain = 1.25 if batch.is_dense_scan else 1.0
+        evidence_scale = max(0.0, float(batch.confidence)) * source_gain
+
+        free_flat = self._raytrace_free_cells(gx, gy)
+        if free_flat.size > 0:
+            np.add.at(layer.reshape(-1), free_flat, self._miss_log_odds_delta * evidence_scale)
+            self._observed_layer.reshape(-1)[free_flat] = True
+
+        np.add.at(layer.reshape(-1), flat, self._hit_log_odds_delta * evidence_scale)
+        self._observed_layer.reshape(-1)[flat] = True
+        np.clip(layer, self._min_evidence_log_odds, self._max_evidence_log_odds, out=layer)
 
         inserted_voxels = 0
         if batch.is_dense_scan:
@@ -311,6 +361,7 @@ class LocalMapper:
         """
         self._fast_layer.fill(0.0)
         self._scan_layer.fill(0.0)
+        self._observed_layer.fill(False)
         self._last_nonempty_insert_stamp = 0.0
         self._dense_scan_voxels.clear()
 
@@ -319,9 +370,15 @@ class LocalMapper:
         self._recenter_grid()
         self._decay_layers(ref)
 
-        occupancy = np.clip(self._fast_layer + self._scan_layer, 0.0, 1.5)
-        occupied = occupancy >= self._config.obstacle_threshold
-        observed_cell_count = int(np.count_nonzero(occupancy > 1e-4))
+        log_odds = np.clip(
+            self._prior_log_odds + self._fast_layer + self._scan_layer,
+            self._min_log_odds,
+            self._max_log_odds,
+        )
+        occupancy = np.asarray(logodds_to_prob(log_odds), dtype=np.float32)
+        unknown = ~self._observed_layer
+        occupied = (~unknown) & (occupancy >= self._config.obstacle_threshold)
+        observed_cell_count = int(np.count_nonzero(self._observed_layer))
 
         inflation = np.zeros_like(occupancy, dtype=np.float32)
         occ_y, occ_x = np.nonzero(occupied)
@@ -374,6 +431,7 @@ class LocalMapper:
             drone_yaw_rad=float(self._pose_yaw),
             occupancy_confidence=self._freeze(occupancy),
             occupied_mask=self._freeze(occupied.astype(np.bool_)),
+            unknown_mask=self._freeze(unknown.astype(np.bool_)),
             inflation_map=self._freeze(inflation),
             dynamic_no_go_mask=self._freeze(dynamic_no_go),
             blocked_cost_layer=self._freeze(self._blocked_layer),
@@ -545,6 +603,7 @@ class LocalMapper:
         self._shift_layer(self._fast_layer, shift_x, shift_y)
         self._shift_layer(self._scan_layer, shift_x, shift_y)
         self._shift_layer(self._blocked_layer, shift_x, shift_y)
+        self._shift_layer(self._observed_layer, shift_x, shift_y)
         self._origin_x += shift_x * self._resolution
         self._origin_y += shift_y * self._resolution
 
@@ -582,6 +641,50 @@ class LocalMapper:
         self._scan_layer *= self._decay_factor(dt, self._config.scan_half_life_s)
         self._blocked_layer *= self._decay_factor(dt, self._config.blocked_half_life_s)
         self._last_decay_stamp = now_s
+
+    def _raytrace_free_cells(self, hit_gx: np.ndarray, hit_gy: np.ndarray) -> np.ndarray:
+        start_gx, start_gy = self.world_to_grid(self._pose_x, self._pose_y)
+        if start_gx is None or start_gy is None:
+            return np.empty((0,), dtype=np.int64)
+
+        free_cells: list[int] = []
+        for gx, gy in zip(hit_gx.tolist(), hit_gy.tolist()):
+            for cx, cy in self._bresenham_cells(start_gx, start_gy, int(gx), int(gy)):
+                if cx == int(gx) and cy == int(gy):
+                    break
+                free_cells.append(cy * self._width + cx)
+        if not free_cells:
+            return np.empty((0,), dtype=np.int64)
+        return np.unique(np.asarray(free_cells, dtype=np.int64))
+
+    def _bresenham_cells(
+        self,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> list[tuple[int, int]]:
+        cells: list[tuple[int, int]] = []
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        x = int(x0)
+        y = int(y0)
+        while True:
+            if 0 <= x < self._width and 0 <= y < self._height:
+                cells.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x += sx
+            if e2 <= dx:
+                err += dx
+                y += sy
+        return cells
 
     def _build_gradient_kernel(self, hard_radius_m: float, soft_radius_m: float, *, peak: float) -> np.ndarray:
         total_radius = max(hard_radius_m + max(0.0, soft_radius_m), hard_radius_m, self._resolution)
@@ -633,6 +736,7 @@ class LocalMapper:
         shape = (self._height, self._width)
         zeros_f = self._freeze(np.zeros(shape, dtype=np.float32))
         zeros_b = self._freeze(np.zeros(shape, dtype=np.bool_))
+        ones_b = self._freeze(np.ones(shape, dtype=np.bool_))
         return LocalMapperSnapshot(
             state=LocalMapperState.EMPTY,
             stamp_s=0.0,
@@ -648,6 +752,7 @@ class LocalMapper:
             drone_yaw_rad=0.0,
             occupancy_confidence=zeros_f,
             occupied_mask=zeros_b,
+            unknown_mask=ones_b,
             inflation_map=zeros_f,
             dynamic_no_go_mask=zeros_b,
             blocked_cost_layer=zeros_f,

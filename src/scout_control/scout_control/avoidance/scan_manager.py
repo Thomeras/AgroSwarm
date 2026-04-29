@@ -265,7 +265,7 @@ class ScanManager:
         )
 
         point_batch = PointBatch(
-            source="scan_manager_dense_scan",
+            source="scan_depth",
             frame="map",
             stamp_s=float(self._last_depth_ts if self._last_depth_ts > 0.0 else time.time()),
             points_xyz=points_arr,
