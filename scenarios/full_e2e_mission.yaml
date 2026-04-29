@@ -1,13 +1,18 @@
-name: "Full E2E Mission — Field World"
+name: "Phase 1-5 E2E Mission — Manual Boundary Mapping"
 description: |
-  Produkční backend launch: obstacle_avoidance_runtime je jediný flight owner.
-  Legacy/manual PX4 controllery nejsou součástí produkčního launch flow.
-  Operator tooling běží explicitně v extra terminálu; field_setup_tool jen
-  značkuje pady/rohy a nepotvrzuje PX4 setpointy.
-world: "tilted_field"
-ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py world:={world} drone_count:={drone_count} include_operator_tools:=false"
-extra_terminal_commands:
-  - title: "Field Setup Tool"
-    command: "ros2 run scout_control field_setup_tool --ros-args -p drone_count:={drone_count}"
+  Produkční Phase 1-5 E2E flow pro Gazebo swarm.
 
-  - "ros2 run scout_control camera_hud --ros-args -p camera_topic:=/drone_0/camera/image_raw -p pos_topic:=/fmu/out/vehicle_local_position_v1"
+  Setup je záměrně ruční:
+    1. náhodně spawnuté drony ber jako staging, ne jako landing pady,
+    2. jedním vybraným dronem ve Swarm Center postupně označ pad_0..pad_N,
+    3. stejným dronem obleť hranici pole,
+    4. mačkej B pro každý boundary vertex,
+    5. F zavře polygon, vygeneruje grid a pošle RTH všem dronům na zmapované pady,
+    6. po návratu/landing všech dronů potvrď mapping misi ve Swarm Center.
+
+  Legacy/manual PX4 controllery nejsou součástí produkčního launch flow.
+  obstacle_avoidance_runtime zůstává jediný flight owner. Headless setup bridge
+  jen překládá povely ze Swarm Center na ROS2 setup topicy a neposílá PX4 setpointy.
+world: "swarm_field"
+ros2_command: "ros2 launch scout_control full_e2e_mission.launch.py world:={world} model:={model} drone_count:={drone_count} include_operator_tools:=true"
+extra_terminal_commands: []

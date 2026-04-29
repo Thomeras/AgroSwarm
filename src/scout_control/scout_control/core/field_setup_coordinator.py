@@ -121,7 +121,7 @@ class FieldSetupCoordinator(Node):
         self._corners: dict[str, dict] = {}
         self._boundary_points: list[dict] = []   # [{x,y,z}, ...] in arrival order
         self._boundary_closed = False
-        self._drone0_landed = False
+        self._landed_drones: set[str] = set()
         self._swarm_topics = TelemetryHub(drone_id=0).swarm
 
         # Publishers
@@ -367,12 +367,19 @@ class FieldSetupCoordinator(Node):
         if self._state != SetupState.WAITING_FOR_LANDING:
             return
         drone_id = data.get("drone_id")
-        if drone_id == "drone_0" and not self._drone0_landed:
-            self._drone0_landed = True
+        if drone_id in self._required_drone_ids():
+            self._landed_drones.add(str(drone_id))
+            missing = sorted(set(self._required_drone_ids()) - self._landed_drones)
+            if missing:
+                self._publish_status(
+                    "WAITING_FOR_LANDING - waiting for "
+                    + ", ".join(missing)
+                )
+                return
             self._state = SetupState.READY_FOR_MISSION
-            self.get_logger().info("drone_0 landed - ready for mission")
+            self.get_logger().info("All mapped drones landed - ready for mission")
             self._publish_status(
-                "READY_FOR_MISSION - Drone_0 na padu. Start from Swarm Center."
+                "READY_FOR_MISSION - all drones are on mapped pads. Start from Swarm Center."
             )
 
     # Transitions
@@ -417,14 +424,16 @@ class FieldSetupCoordinator(Node):
         self._complete_pub.publish(msg_c)
 
         self._state = SetupState.WAITING_FOR_LANDING
-        rth_msg = String()
-        rth_msg.data = json.dumps({"drone_id": "drone_0", "reason": "setup_complete"})
-        self._rth_pub.publish(rth_msg)
-        self.get_logger().info("RTH request sent to drone_0")
+        self._landed_drones.clear()
+        for drone_id in self._required_drone_ids():
+            rth_msg = String()
+            rth_msg.data = json.dumps({"drone_id": drone_id, "reason": "setup_complete"})
+            self._rth_pub.publish(rth_msg)
+        self.get_logger().info("RTH requests sent to all mapped drones")
 
         self._publish_status(
             f"WAITING_FOR_LANDING - grid {field_w:.0f}x{field_h:.0f} m, "
-            f"{cell_count} cells. Wait for drone_0 to land."
+            f"{cell_count} cells. Waiting for all drones to reach mapped pads."
         )
 
     # Grid generation (legacy bbox from 4 corners)
@@ -645,10 +654,10 @@ class FieldSetupCoordinator(Node):
     def _mission_confirm_cb(self, msg: String) -> None:
         if self._state == SetupState.WAITING_FOR_LANDING:
             self.get_logger().warn(
-                "M ignored - drone_0 still airborne"
+                "M ignored - drones still returning to mapped pads"
             )
             self._publish_status(
-                "WAITING_FOR_LANDING - wait for drone_0 landing"
+                "WAITING_FOR_LANDING - wait for all drones to land"
             )
             return
         if self._state != SetupState.READY_FOR_MISSION:
@@ -672,6 +681,9 @@ class FieldSetupCoordinator(Node):
         self._status_pub.publish(msg)
         self.get_logger().info(f"[STATUS] {text}")
 
+    def _required_drone_ids(self) -> list[str]:
+        return [f"drone_{i}" for i in range(self._drone_count)]
+
     def _status_timer(self) -> None:
         state_hints = {
             SetupState.IDLE:
@@ -683,9 +695,9 @@ class FieldSetupCoordinator(Node):
             SetupState.GENERATE_GRID:
                 "Generating grid...",
             SetupState.WAITING_FOR_LANDING:
-                "Drone_0 is landing - wait before mission start",
+                "Drones are returning to mapped pads - wait before mission start",
             SetupState.READY_FOR_MISSION:
-                "Drone_0 na padu - start mission from Swarm Center",
+                "All drones on mapped pads - start mission from Swarm Center",
         }
         self._publish_status(state_hints.get(self._state, self._state.name))
 

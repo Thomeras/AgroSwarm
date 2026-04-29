@@ -33,6 +33,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
+from px4_msgs.msg import VehicleLandDetected
 from std_msgs.msg import String
 from scout_control.avoidance.telemetry_hub import TelemetryHub
 from scout_control.avoidance.types import (
@@ -140,6 +141,8 @@ class SwarmAgent(Node):
         self._runtime_last_completed_target_id: str = ""
         self._runtime_rth_requested: bool = False
         self._runtime_return_home_sent: bool = False
+        self._runtime_landing_seen: bool = False
+        self._landed_reported: bool = False
 
         # ── Publishers ────────────────────────────────────────────────────────
         self._target_cmd_pub = self.create_publisher(
@@ -174,6 +177,13 @@ class SwarmAgent(Node):
         self.create_subscription(
             String, swarm_topics.rth_request,
             self._rth_request_cb, QOS_VOL)
+        land_topic = f"{topics.px4_ns}/fmu/out/vehicle_land_detected"
+        self.create_subscription(
+            VehicleLandDetected,
+            land_topic,
+            self._land_detected_cb,
+            QOS_SENSOR,
+        )
 
         self.create_subscription(
             ScoutAvoidanceStatusMsg or String,
@@ -262,6 +272,8 @@ class SwarmAgent(Node):
             self._mission_done = True
             self._runtime_rth_requested = True
             self._runtime_return_home_sent = True
+            self._runtime_landing_seen = False
+            self._landed_reported = False
             self._cell_queue.clear()
             self._runtime_active_cell_id = None
             cmd = self._build_runtime_return_home_cmd_locked()
@@ -300,6 +312,8 @@ class SwarmAgent(Node):
             mapped = self._build_swarm_status_from_avoidance(payload)
             if mapped is None:
                 return
+            if str(payload.get("phase", "")).upper() == "LANDING":
+                self._runtime_landing_seen = True
             status, extra = mapped
             signature = (
                 status,
@@ -460,10 +474,23 @@ class SwarmAgent(Node):
             self._runtime_last_completed_target_id = ""
             self._runtime_rth_requested = False
             self._runtime_return_home_sent = False
+            self._runtime_landing_seen = False
+            self._landed_reported = False
             self._last_runtime_status_signature = None
         self.get_logger().info(
             f"{self._did}: /swarm/mission_ready received — runtime backend mission mode active"
         )
+
+    def _land_detected_cb(self, msg: VehicleLandDetected) -> None:
+        if not bool(getattr(msg, "landed", False)):
+            return
+        if not self._runtime_landing_seen or self._landed_reported:
+            return
+        self._landed_reported = True
+        out = String()
+        out.data = json.dumps({"drone_id": self._did, "source": "vehicle_land_detected"})
+        self._landed_pub.publish(out)
+        self.get_logger().info(f"{self._did}: landed confirmation published")
 
     # ── Publish helpers ───────────────────────────────────────────────────────
 

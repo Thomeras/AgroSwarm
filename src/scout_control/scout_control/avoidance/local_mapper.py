@@ -50,6 +50,7 @@ class LocalMapperConfig:
     obstacle_soft_radius_m: float = 2.0
     peer_hard_radius_m: float = 3.0
     peer_soft_radius_m: float = 6.0
+    peer_vertical_clearance_m: float = 2.5
     peer_prediction_s: float = 2.0
     peer_timeout_s: float = 2.5
     warn_distance_m: float = 4.0
@@ -387,7 +388,11 @@ class LocalMapper:
 
         dynamic_no_go = np.zeros_like(occupied, dtype=np.bool_)
         peer_cost = np.zeros_like(occupancy, dtype=np.float32)
-        for zone in self._peer_store.build_safety_disks(now_s=ref):
+        for zone in self._peer_store.build_safety_disks(
+            now_s=ref,
+            own_z_ned=self._pose_z,
+            vertical_clearance_m=self._config.peer_vertical_clearance_m,
+        ):
             gx, gy = self.world_to_grid(zone.center_ned[0], zone.center_ned[1])
             if gx is None or gy is None:
                 continue
@@ -462,7 +467,11 @@ class LocalMapper:
         """Return current peer safety disks in planner-mask payload format."""
 
         ref = time.time() if now_s is None else float(now_s)
-        return self._peer_store.build_planner_mask_payload(now_s=ref)
+        return self._peer_store.build_planner_mask_payload(
+            now_s=ref,
+            own_z_ned=self._pose_z,
+            vertical_clearance_m=self._config.peer_vertical_clearance_m,
+        )
 
     def world_to_grid(self, x: float, y: float) -> tuple[int | None, int | None]:
         if not self._origin_ready:

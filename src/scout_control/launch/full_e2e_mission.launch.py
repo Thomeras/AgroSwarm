@@ -20,11 +20,9 @@ Launches all background nodes for the full E2E Gazebo field spray mission.
     lidar_bridge drone_N    — Gz LaserScan → /drone_N/downward_lidar/scan
     camera_bridge drone_N   — Gz Image     → /drone_N/camera/image_raw
 
-  Production launch flow starts backend/autonomy nodes only by default.
-  Operator tools are explicit: pass include_operator_tools:=true or run them
-  in their own terminal from a scenario YAML. legacy/manual PX4 controllers are
-  never included here. If field_setup_tool is enabled, it is setup-only and does
-  not publish PX4 setpoints; obstacle_avoidance_runtime remains the flight owner.
+  Production launch flow starts backend/autonomy nodes plus the headless Swarm
+  Center manual intent bridge. Legacy/manual PX4 setpoint controllers are never
+  included here; obstacle_avoidance_runtime remains the flight owner.
 
 World: tilted_field (5° slope + terrain bump, landing pads outside field boundary)
   pad_0: Gazebo ENU(-8, 10) = NED(10, -8)
@@ -32,26 +30,25 @@ World: tilted_field (5° slope + terrain bump, landing pads outside field bounda
   pad_2: Gazebo ENU(-8, 70) = NED(70, -8)
   pad_3: Gazebo ENU(-8, 100) = NED(100, -8)
 
-World: swarm_field (flat 40x40 field, landing pads around origin)
-  pad_0: Gazebo ENU(-6, -6) = NED(-6, -6)
-  pad_1: Gazebo ENU( 6, -6) = NED(-6,  6)
-  pad_2: Gazebo ENU(-6,  6) = NED( 6, -6)
-  pad_3: Gazebo ENU( 6,  6) = NED( 6,  6)
+World: swarm_field (flat 40x40 field, landing pads outside west edge)
+  pad_0: Gazebo ENU(-26, -12) = NED(-12, -26)
+  pad_1: Gazebo ENU(-26,  -4) = NED( -4, -26)
+  pad_2: Gazebo ENU(-26,   4) = NED(  4, -26)
+  pad_3: Gazebo ENU(-26,  12) = NED( 12, -26)
 
 Drone model: gz_x500_mono_cam_down_lidar (downward camera + downward lidar)
 
-Usage (via scout_launcher → swarm mode → tilted_field → Full E2E Mission):
+Usage (via scout_launcher → swarm mode → swarm_field → Full E2E Mission):
   ros2 launch scout_control full_e2e_mission.launch.py
 
 Override defaults:
-  ros2 launch scout_control full_e2e_mission.launch.py world:=swarm_field drone_count:=4 altitude:=5.0 cell_size_m:=5.0
+  ros2 launch scout_control full_e2e_mission.launch.py world:=swarm_field model:=gz_x500_mono_cam_down_lidar drone_count:=4 altitude:=5.0 cell_size_m:=5.0
 """
 
 import sys
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -64,10 +61,10 @@ _PAD_NED_BY_WORLD = {
         (100.0, -8.0),  # pad_3  (extrapolated)
     ],
     "swarm_field": [
-        (-6.0, -6.0),  # pad_0: Gz ENU(-6, -6)
-        (-6.0,  6.0),  # pad_1: Gz ENU( 6, -6)
-        ( 6.0, -6.0),  # pad_2: Gz ENU(-6,  6)
-        ( 6.0,  6.0),  # pad_3: Gz ENU( 6,  6)
+        (-12.0, -26.0),  # pad_0: Gz ENU(-26, -12)
+        ( -4.0, -26.0),  # pad_1: Gz ENU(-26,  -4)
+        (  4.0, -26.0),  # pad_2: Gz ENU(-26,   4)
+        ( 12.0, -26.0),  # pad_3: Gz ENU(-26,  12)
     ],
 }
 
@@ -82,7 +79,17 @@ def _parse_launch_arg(argv, name: str, default: str) -> str:
 
 def _parse_world(argv) -> str:
     """Extract world from launch args before ROS2 processes them."""
-    return _parse_launch_arg(argv, "world", "tilted_field")
+    return _parse_launch_arg(argv, "world", "swarm_field")
+
+
+def _parse_model(argv) -> str:
+    """Extract PX4 make target from launch args before ROS2 processes them."""
+    return _parse_launch_arg(argv, "model", "gz_x500_mono_cam_down_lidar")
+
+
+def _gz_model_base(make_target: str) -> str:
+    """Convert PX4 make target to Gazebo model base name."""
+    return make_target.removeprefix("gz_")
 
 
 def _parse_drone_count(argv, max_count: int = 4) -> int:
@@ -98,13 +105,18 @@ def _parse_drone_count(argv, max_count: int = 4) -> int:
 
 def generate_launch_description() -> LaunchDescription:
     _world_name = _parse_world(sys.argv)
-    _pad_ned = _PAD_NED_BY_WORLD.get(_world_name, _PAD_NED_BY_WORLD["tilted_field"])
+    _model = _parse_model(sys.argv)
+    _model_base = _gz_model_base(_model)
+    _pad_ned = _PAD_NED_BY_WORLD.get(_world_name, _PAD_NED_BY_WORLD["swarm_field"])
     _drone_count = _parse_drone_count(sys.argv, max_count=len(_pad_ned))
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     world_arg   = DeclareLaunchArgument(
-        "world",        default_value="tilted_field",
+        "world",        default_value="swarm_field",
         description="Gazebo world name — must match PX4_GZ_WORLD")
+    model_arg   = DeclareLaunchArgument(
+        "model",        default_value="gz_x500_mono_cam_down_lidar",
+        description="PX4 Gazebo make target used to derive Gazebo model instance names")
     alt_arg     = DeclareLaunchArgument(
         "altitude",     default_value="5.0",
         description="Cruise altitude above ground [m]")
@@ -130,7 +142,6 @@ def generate_launch_description() -> LaunchDescription:
     cell_size_m  = LaunchConfiguration("cell_size_m")
     dose_ml      = LaunchConfiguration("dose_ml")
     cruise_speed = LaunchConfiguration("cruise_speed")
-    include_operator_tools = LaunchConfiguration("include_operator_tools")
 
     # ── Setup phase nodes ─────────────────────────────────────────────────────
 
@@ -158,19 +169,21 @@ def generate_launch_description() -> LaunchDescription:
         )],
     )
 
-    # 2b. Optional setup-only operator helper — no PX4 setpoint publishers.
-    #     Production scenarios normally run it in a separate operator terminal.
-    field_setup_tool = TimerAction(
+    # 2b. Swarm Center manual intent bridge — no PX4 setpoint publishers.
+    #     This is backend plumbing, not a separate UI. Swarm Center setup/takeoff
+    #     buttons depend on it, so it must always run for the E2E mission.
+    manual_controller = TimerAction(
         period=2.0,
-        condition=IfCondition(include_operator_tools),
         actions=[Node(
             package="scout_control",
-            executable="field_setup_tool",
-            name="field_setup_tool",
+            executable="manual_controller",
+            name="manual_controller",
             parameters=[{
-                "ui": False,
                 "reject_origin_pad": False,
                 "drone_count": _drone_count,
+                "default_altitude_m": altitude,
+                "manual_cruise_speed_mps": cruise_speed,
+                "manual_clear_radius_m": 0.15,
             }],
             output="screen",
         )],
@@ -179,8 +192,8 @@ def generate_launch_description() -> LaunchDescription:
     # ── Mission phase nodes ───────────────────────────────────────────────────
 
     # 3a. Obstacle avoidance runtimes — one flight owner per drone.
-    #     This Gazebo model does not publish depth, so depth gating is explicitly
-    #     disabled for this simulation-only tilted-field mission.
+    #     Forward depth is bridged when the model provides it; depth gating stays
+    #     disabled so operator setup can still run if the bridge starts late.
     runtimes = [
         TimerAction(
             period=1.0,
@@ -196,7 +209,10 @@ def generate_launch_description() -> LaunchDescription:
                     "home_dist":            1.5,
                     "avoid_offset_m":       3.0,
                     "require_depth_for_navigation": False,
+                    "relax_heading_gate":   True,
                     "altitude_policy_mode": "TerrainFollow",
+                    "depth_topic":          f"/drone_{i}/depth/image_raw",
+                    "camera_info_topic":    f"/drone_{i}/camera/camera_info",
                 }],
                 output="screen",
             )],
@@ -311,7 +327,7 @@ def generate_launch_description() -> LaunchDescription:
     # World is parsed as a Python string so bridge topic names can be generated
     # before ROS2 evaluates LaunchConfiguration substitutions.
     # Model instance names (PX4 SITL convention):
-    #   drone_i → x500_mono_cam_down_lidar_i
+    #   gz_x500_mono_cam_down_lidar + drone_i → x500_mono_cam_down_lidar_i
     #
     # Lidar bridges use a 5-second TimerAction delay so Gazebo has time to spawn
     # both drone models before parameter_bridge tries to subscribe to their topics.
@@ -321,6 +337,7 @@ def generate_launch_description() -> LaunchDescription:
     #
     # Gz lidar topic:  /world/<world>/model/<instance>/link/lidar_sensor_link/sensor/lidar/scan
     # Gz camera topic: /world/<world>/model/<instance>/link/camera_link/sensor/camera/image
+    # Gz forward depth: /world/<world>/model/<instance>/link/forward_camera_link/sensor/StereoOV7251/depth_image
 
     _W = _world_name
 
@@ -333,10 +350,21 @@ def generate_launch_description() -> LaunchDescription:
     def _cam_gz(inst: str) -> str:
         return f"/world/{_W}/model/{inst}/link/camera_link/sensor/camera/image"
 
+    def _depth_gz(inst: str) -> str:
+        return f"/world/{_W}/model/{inst}/link/forward_camera_link/sensor/StereoOV7251/depth_image"
+
+    def _depth_info_gz(inst: str) -> str:
+        return (
+            f"/world/{_W}/model/{inst}/link/forward_camera_link/sensor/StereoOV7251/camera_info"
+            "@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"
+        )
+
     lidar_bridges = []
     camera_bridges = []
+    depth_bridges = []
+    depth_info_bridges = []
     for i in range(_drone_count):
-        inst = f"x500_mono_cam_down_lidar_{i}"
+        inst = f"{_model_base}_{i}"
         lidar_bridges.append(TimerAction(
             period=5.0,
             actions=[Node(
@@ -366,14 +394,42 @@ def generate_launch_description() -> LaunchDescription:
                 output="screen",
             )],
         ))
+        depth_bridges.append(TimerAction(
+            period=5.0,
+            actions=[Node(
+                package="ros_gz_image",
+                executable="image_bridge",
+                name=f"depth_bridge_drone_{i}",
+                arguments=[_depth_gz(inst)],
+                remappings=[(
+                    _depth_gz(inst),
+                    f"/drone_{i}/depth/image_raw",
+                )],
+                output="screen",
+            )],
+        ))
+        depth_info_bridges.append(TimerAction(
+            period=5.0,
+            actions=[Node(
+                package="ros_gz_bridge",
+                executable="parameter_bridge",
+                name=f"depth_info_bridge_drone_{i}",
+                arguments=[_depth_info_gz(inst)],
+                remappings=[(
+                    f"/world/{_W}/model/{inst}/link/forward_camera_link/sensor/StereoOV7251/camera_info",
+                    f"/drone_{i}/camera/camera_info",
+                )],
+                output="screen",
+            )],
+        ))
 
     return LaunchDescription([
         # Args
-        world_arg, alt_arg, cell_arg, dose_arg, speed_arg, drone_count_arg, tools_arg,
+        world_arg, model_arg, alt_arg, cell_arg, dose_arg, speed_arg, drone_count_arg, tools_arg,
         # Setup phase
         field_setup,
         home_mgr,
-        field_setup_tool,
+        manual_controller,
         # Mission phase — runtimes first, then delegating swarm agents
         *runtimes,
         *agents,
@@ -386,4 +442,6 @@ def generate_launch_description() -> LaunchDescription:
         # Sensor bridges
         *lidar_bridges,
         *camera_bridges,
+        *depth_bridges,
+        *depth_info_bridges,
     ])

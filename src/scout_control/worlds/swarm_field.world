@@ -2,22 +2,22 @@
 <!--
   swarm_field.world - Gazebo Harmonic (gz-sim 8) / ROS2 Jazzy
 
-  Swarm-ready agricultural test field with 4 landing pads and physical
-  tree obstacles for obstacle avoidance and Swarm Center tests.
+  Swarm-ready agricultural test field with 4 landing pads outside the
+  crop area and physical tree obstacles for obstacle avoidance tests.
 
   Coordinate notes:
     Gazebo uses ENU: x=east, y=north, z=up
     PX4 local NED maps approximately as: NED north = Gazebo y, NED east = Gazebo x
 
-  Landing pads / suggested PX4_GZ_MODEL_POSE values:
-    drone_0: Gz ENU(-6, -6, 0) = NED(-6, -6)  PX4_GZ_MODEL_POSE="-6,-6,0,0,0,0"
-    drone_1: Gz ENU( 6, -6, 0) = NED(-6,  6)  PX4_GZ_MODEL_POSE="6,-6,0,0,0,0"
-    drone_2: Gz ENU(-6,  6, 0) = NED( 6, -6)  PX4_GZ_MODEL_POSE="-6,6,0,0,0,0"
-    drone_3: Gz ENU( 6,  6, 0) = NED( 6,  6)  PX4_GZ_MODEL_POSE="6,6,0,0,0,0"
+  Landing pads (outside the 40x40 field):
+    pad_0: Gz ENU(-26, -12, 0) = NED(-12, -26)
+    pad_1: Gz ENU(-26,  -4, 0) = NED( -4, -26)
+    pad_2: Gz ENU(-26,   4, 0) = NED(  4, -26)
+    pad_3: Gz ENU(-26,  12, 0) = NED( 12, -26)
 
   Obstacle references:
     tree_obstacle_center: Gz ENU(0, 0)
-    tree_obstacle_spawn_lane: Gz ENU(0, -6), between landing_pad_0 and landing_pad_1
+    tree_obstacle_spawn_lane: Gz ENU(0, -6), inside the random staging area
 
   Usage:
     PX4_GZ_WORLD=swarm_field make px4_sitl gz_x500_mono_cam
@@ -199,7 +199,7 @@
 
     <model name="landing_pad_0">
       <static>true</static>
-      <pose>-6 -6 0.025 0 0 0</pose>
+      <pose>-26 -12 0.025 0 0 0</pose>
       <link name="link">
         <collision name="col"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry></collision>
         <visual name="ring"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry><material><ambient>0.95 0.35 0.02 1</ambient><diffuse>1.0 0.48 0.03 1</diffuse></material></visual>
@@ -210,7 +210,7 @@
 
     <model name="landing_pad_1">
       <static>true</static>
-      <pose>6 -6 0.025 0 0 0</pose>
+      <pose>-26 -4 0.025 0 0 0</pose>
       <link name="link">
         <collision name="col"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry></collision>
         <visual name="ring"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry><material><ambient>0.0 0.28 0.85 1</ambient><diffuse>0.0 0.42 1.0 1</diffuse></material></visual>
@@ -222,7 +222,7 @@
 
     <model name="landing_pad_2">
       <static>true</static>
-      <pose>-6 6 0.025 0 0 0</pose>
+      <pose>-26 4 0.025 0 0 0</pose>
       <link name="link">
         <collision name="col"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry></collision>
         <visual name="ring"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry><material><ambient>0.0 0.55 0.18 1</ambient><diffuse>0.0 0.72 0.25 1</diffuse></material></visual>
@@ -234,7 +234,7 @@
 
     <model name="landing_pad_3">
       <static>true</static>
-      <pose>6 6 0.025 0 0 0</pose>
+      <pose>-26 12 0.025 0 0 0</pose>
       <link name="link">
         <collision name="col"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry></collision>
         <visual name="ring"><geometry><cylinder><radius>1.1</radius><length>0.03</length></cylinder></geometry><material><ambient>0.72 0.06 0.72 1</ambient><diffuse>0.9 0.1 0.9 1</diffuse></material></visual>

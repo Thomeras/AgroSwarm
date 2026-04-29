@@ -134,6 +134,12 @@ QOS_AVOIDANCE_STATUS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=1,
 )
+QOS_AVOIDANCE_EVENTS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 SEND_QUEUE_MAX = 500       # drop oldest if bridge client is slow
@@ -217,8 +223,8 @@ class GcsBridge(Node):
             hub = TelemetryHub(drone_id=i)
             target_cmd_pub = self.create_publisher(
                 String,
-                hub.topics.avoidance_target_cmd,
-                QOS_VOLATILE_BE,
+                hub.topics.avoidance_target_cmd_json,
+                QOS_VOLATILE_RELIABLE,
             )
             self._target_cmd_pubs[f"drone_{i}"] = target_cmd_pub
             self._target_cmd_pubs[f"drone{i}"] = target_cmd_pub
@@ -267,7 +273,7 @@ class GcsBridge(Node):
                 String,
                 avoidance_events_topic,
                 lambda msg, d=did: self._avoidance_event_cb(d, msg),
-                QOS_VOLATILE_RELIABLE,
+                QOS_AVOIDANCE_EVENTS,
             )
 
         # ── Camera subscriptions (M4) ─────────────────────────────────────────
@@ -693,6 +699,8 @@ class GcsBridge(Node):
                     "target_id": f"manual_goto{int(now * 1000) % 100000}",
                     "target_ned": [float(target_ned[0]), float(target_ned[1])],
                     "altitude_m": float(data.get("altitude_m", 5.0)),
+                    "clear_radius_m": float(data.get("clear_radius_m", 0.15)),
+                    "cruise_speed_mps": float(data.get("cruise_speed_mps", 2.0)),
                 }
                 out = String()
                 out.data = json.dumps(payload)

@@ -68,6 +68,7 @@ setup(
             # manual
             'field_setup_tool          = scout_control.manual.field_setup_tool:main',
             'manual_controller         = scout_control.manual.manual_controller:main',
+            'legacy_manual_controller  = scout_control.manual.legacy_manual_controller:main',
         ],
     },
 )

@@ -39,6 +39,7 @@ class SafetyDiskZone:
     zone_id: str
     drone_id: int
     center_ned: tuple[float, float]
+    center_z_ned: float
     radius_m: float
     soft_radius_m: float
     speed_mps: float
@@ -50,6 +51,7 @@ class SafetyDiskZone:
             "zone_id": self.zone_id,
             "drone_id": int(self.drone_id),
             "center_ned": [float(self.center_ned[0]), float(self.center_ned[1])],
+            "center_z_ned": float(self.center_z_ned),
             "radius_m": float(self.radius_m),
             "soft_radius_m": float(self.soft_radius_m),
             "speed_mps": float(self.speed_mps),
@@ -65,6 +67,7 @@ class SafetyDiskZone:
             "source": "peer_track",
             "drone_id": int(self.drone_id),
             "center_ned": [float(self.center_ned[0]), float(self.center_ned[1])],
+            "center_z_ned": float(self.center_z_ned),
             "hard_radius_m": hard_radius,
             "soft_radius_m": soft_radius,
             "weight": 1.0,
@@ -276,6 +279,8 @@ class PeerTrackStore:
         now_s: float | None = None,
         exclude_drone_id: int | None = None,
         lookahead_s: float | None = None,
+        own_z_ned: float | None = None,
+        vertical_clearance_m: float | None = None,
     ) -> list[SafetyDiskZone]:
         ref = time.time() if now_s is None else float(now_s)
         lead_s = self._lookahead_s if lookahead_s is None else float(lookahead_s)
@@ -285,6 +290,10 @@ class PeerTrackStore:
             status = track.status.lower()
             if status in {"inactive", "landed", "offline"}:
                 continue
+            if own_z_ned is not None and vertical_clearance_m is not None:
+                vertical_sep = abs(float(track.z) - float(own_z_ned))
+                if vertical_sep > max(0.0, float(vertical_clearance_m)):
+                    continue
 
             age_s = track.age_s(ref)
             pred_x = track.x + track.vx * lead_s
@@ -300,6 +309,7 @@ class PeerTrackStore:
                     zone_id=f"peer_{track.drone_id}",
                     drone_id=track.drone_id,
                     center_ned=(pred_x, pred_y),
+                    center_z_ned=track.z,
                     radius_m=radius_m,
                     soft_radius_m=radius_m + self._soft_shell_m,
                     speed_mps=track.speed_mps,
@@ -316,6 +326,8 @@ class PeerTrackStore:
         now_s: float | None = None,
         exclude_drone_id: int | None = None,
         lookahead_s: float | None = None,
+        own_z_ned: float | None = None,
+        vertical_clearance_m: float | None = None,
     ) -> list[dict[str, Any]]:
         """Return sanitized peer no-go disks ready for planner-mask rasterization."""
 
@@ -324,6 +336,8 @@ class PeerTrackStore:
             now_s=now_s,
             exclude_drone_id=exclude_drone_id,
             lookahead_s=lookahead_s,
+            own_z_ned=own_z_ned,
+            vertical_clearance_m=vertical_clearance_m,
         ):
             if not zone.is_finite:
                 continue

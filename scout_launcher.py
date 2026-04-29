@@ -19,6 +19,7 @@ import curses
 import json
 import locale
 import os
+import random
 import signal
 import shutil
 import subprocess
@@ -50,8 +51,8 @@ WORLDS_DIR    = os.path.expanduser("~/PX4-Autopilot/Tools/simulation/gz/worlds")
 PACKAGE_WORLDS_DIR = f"{WS_DIR}/src/scout_control/worlds"
 SCENARIOS_DIR = f"{WS_DIR}/scenarios"
 CONFIG_FILE   = os.path.expanduser("~/.scout_launcher_config.json")
-DEFAULT_WORLD  = "agricultural_field"
-DEFAULT_MODEL  = "gz_x500_mono_cam"
+DEFAULT_WORLD  = "swarm_field"
+DEFAULT_MODEL  = "gz_x500_mono_cam_down_lidar"
 
 DEFAULT_SWARM_DRONE_COUNT = 4
 SWARM_PAD_POSES_GZ_BY_WORLD: dict[str, list[tuple[float, float, float]]] = {
@@ -62,17 +63,17 @@ SWARM_PAD_POSES_GZ_BY_WORLD: dict[str, list[tuple[float, float, float]]] = {
         (-8.0, 100.0, 0.0),
     ],
     "swarm_field": [
-        (-6.0, -6.0, 0.0),
-        (6.0, -6.0, 0.0),
-        (-6.0, 6.0, 0.0),
-        (6.0, 6.0, 0.0),
+        (-26.0, -12.0, 0.0),
+        (-26.0, -4.0, 0.0),
+        (-26.0, 4.0, 0.0),
+        (-26.0, 12.0, 0.0),
     ],
 }
 
 # Available drone models (make target name → human label)
 DRONE_MODELS: list[tuple[str, str]] = [
     ("gz_x500_scout",               "x500 + 2-axis gimbal (OakD-Lite) + downward lidar"),
-    ("gz_x500_mono_cam_down_lidar", "x500 + downward camera + downward lidar  ← E2E mise, terrain following"),
+    ("gz_x500_mono_cam_down_lidar", "x500 + downward camera/lidar + forward depth  ← E2E mise"),
     ("gz_x500_mono_cam_down",       "x500 + downward camera  ← mapování pole, crosshair"),
     ("gz_x500_mono_cam",            "x500 + forward camera"),
     ("gz_x500_mono_cam_lidar",      "x500 + forward camera + downward lidar"),
@@ -113,6 +114,7 @@ def _kill_all() -> None:
                 p.terminate()
         except Exception:
             pass
+    _kill_stale()
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -137,6 +139,7 @@ class Scenario:
     name:                   str
     description:            str
     ros2_command:           str
+    world:                  str | None
     extra_terminal_commands: list  # optional extra terminals (e.g. curses UI nodes)
 
 
@@ -158,15 +161,20 @@ def _scan_worlds() -> list[str]:
 
 
 def _ensure_world_available(world: str) -> None:
-    """Sync package world into PX4's Gazebo world directory when needed."""
+    """Sync package world into PX4's Gazebo world directory when needed.
+
+    PX4's gz init script launches worlds as `${PX4_GZ_WORLD}.sdf` even when
+    the source world file uses the older `.world` suffix. Keep the UI flexible,
+    but always provide the `.sdf` path PX4 will actually open.
+    """
     px4_dir = Path(WORLDS_DIR)
     pkg_dir = Path(PACKAGE_WORLDS_DIR)
-    src = next((p for p in (pkg_dir / f"{world}.world", pkg_dir / f"{world}.sdf") if p.exists()), None)
+    src = next((p for p in (pkg_dir / f"{world}.sdf", pkg_dir / f"{world}.world") if p.exists()), None)
     if src is None:
         return
 
     px4_dir.mkdir(parents=True, exist_ok=True)
-    dst = px4_dir / src.name
+    dst = px4_dir / f"{world}.sdf"
     if dst.exists() and dst.read_bytes() == src.read_bytes():
         return
 
@@ -187,6 +195,7 @@ def _scan_scenarios() -> list[Scenario]:
                     name=str(data["name"]),
                     description=str(data.get("description", "")),
                     ros2_command=str(data["ros2_command"]),
+                    world=str(data["world"]) if data.get("world") else None,
                     extra_terminal_commands=list(data.get("extra_terminal_commands", [])),
                 ))
         except Exception:
@@ -691,10 +700,40 @@ def _swarm_pad_poses_for_world(world: str) -> list[tuple[float, float, float]]:
     return SWARM_PAD_POSES_GZ_BY_WORLD.get(world, SWARM_PAD_POSES_GZ_BY_WORLD["swarm_field"])
 
 
+def _swarm_spawn_poses_for_world(world: str, drone_count: int) -> list[tuple[float, float, float]]:
+    """Return staging spawn poses. swarm_field intentionally randomizes starts.
+
+    The real pads are operator-discovered during setup; these spawn poses are
+    only initial staging positions and are kept outside the 40x40 field.
+    """
+    if world != "swarm_field":
+        return _swarm_pad_poses_for_world(world)[:drone_count]
+
+    pads = _swarm_pad_poses_for_world(world)
+    rng = random.Random(time.time_ns())
+    poses: list[tuple[float, float, float]] = []
+    attempts = 0
+    while len(poses) < drone_count and attempts < 500:
+        attempts += 1
+        x = rng.uniform(-34.0, 34.0)
+        y = rng.uniform(-34.0, 34.0)
+        inside_field = -21.0 < x < 21.0 and -21.0 < y < 21.0
+        near_pad = any(((x - px) ** 2 + (y - py) ** 2) ** 0.5 < 4.0 for px, py, _ in pads)
+        near_peer = any(((x - px) ** 2 + (y - py) ** 2) ** 0.5 < 5.0 for px, py, _ in poses)
+        if inside_field or near_pad or near_peer:
+            continue
+        poses.append((round(x, 2), round(y, 2), 0.0))
+    if len(poses) < drone_count:
+        fallback = [(-34.0, -18.0, 0.0), (34.0, -18.0, 0.0), (-34.0, 18.0, 0.0), (34.0, 18.0, 0.0)]
+        poses.extend(fallback[len(poses):drone_count])
+    return poses[:drone_count]
+
+
 def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     """Launch N-drone swarm: instance 0 starts Gazebo, instances 1..N-1 attach."""
     pad_poses = _swarm_pad_poses_for_world(world)
     drone_count = max(1, min(len(pad_poses), int(drone_count)))
+    spawn_poses = _swarm_spawn_poses_for_world(world, drone_count)
 
     print(f"\n{BOLD}{BLU}{'━' * 46}{RST}")
     print(f"{BOLD}{BLU}  Swarm Launch Sequence ({drone_count} drones){RST}")
@@ -707,7 +746,7 @@ def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     px4_build = f"{PX4_DIR}/build/px4_sitl_default"
 
     # Drone 0 spawns Gazebo + first drone.
-    x0, y0, z0 = pad_poses[0]
+    x0, y0, z0 = spawn_poses[0]
     print(_step(1, T, f"Starting drone 0 + Gazebo  (world: {CYN}{world}{RST}, model: {CYN}{model}{RST})..."))
     _open_terminal(
         f"PX4 SITL drone_0 — {world}",
@@ -728,7 +767,7 @@ def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     # Drones 1..N-1 connect to already-running Gazebo.
     # Must cd into build/px4_sitl_default so that etc/init.d-posix/rcS exists.
     for drone_id in range(1, drone_count):
-        x, y, z = pad_poses[drone_id]
+        x, y, z = spawn_poses[drone_id]
         print(_step(
             next_step,
             T,
@@ -775,11 +814,12 @@ def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     print(_dim("terminal opened"))
 
     print(f"\n{GRN}{BOLD}Swarm launched!{RST}")
-    for drone_id, (x, y, _z) in enumerate(pad_poses[:drone_count]):
+    print(f"{YLW}  Initial spawns are random staging points; mapped pads become RTH homes during setup.{RST}")
+    for drone_id, (x, y, _z) in enumerate(spawn_poses[:drone_count]):
         px4_ns = "/fmu/out/..." if drone_id == 0 else f"/px4_{drone_id}/fmu/out/..."
         print(
             f"{GRY}  drone_{drone_id}: {px4_ns:<24} "
-            f"Gz ENU({x:g},{y:g}) = NED({y:g},{x:g}), MAVLink UDP {14540 + drone_id}{RST}"
+            f"spawn Gz ENU({x:g},{y:g}) = NED({y:g},{x:g}), MAVLink UDP {14540 + drone_id}{RST}"
         )
     print(f"{YLW}  MicroXRCE-DDS: one shared agent on UDP 8888 is expected for PX4 multi-instance SITL.{RST}")
     print(f"{YLW}  QGroundControl should show all vehicles; use its vehicle selector to switch.{RST}\n")
@@ -813,6 +853,7 @@ def _build_and_run(
     model: str = DEFAULT_MODEL,
     drone_count: int = 1,
 ) -> None:
+    world = scenario.world or world
     print(f"\n{BOLD}{BLU}{'━' * 46}{RST}")
     print(f"{BOLD}{BLU}  {scenario.name}{RST}")
     print(f"{BOLD}{BLU}{'━' * 46}{RST}\n")
@@ -835,13 +876,14 @@ def _build_and_run(
 
     # Template substitution:
     #   {world}, {model} (make target), {gz_model} (Gazebo instance name),
-    #   {drone_count}
+    #   {drone_count}, {ws_dir}
     gz_model = _gz_model_name(model)
     cmd = scenario.ros2_command.format(
         world=world,
         model=model,
         gz_model=gz_model,
         drone_count=drone_count,
+        ws_dir=WS_DIR,
     )
 
     # SOURCE + RUN in new terminal
@@ -880,6 +922,7 @@ def _build_and_run(
             model=model,
             gz_model=gz_model,
             drone_count=drone_count,
+            ws_dir=WS_DIR,
         )
         extra_full = (
             f"source {ROS2_SETUP} && "
@@ -893,6 +936,7 @@ def _build_and_run(
                 model=model,
                 gz_model=gz_model,
                 drone_count=drone_count,
+                ws_dir=WS_DIR,
             )
             if title_template
             else extra_cmd.split("ros2 run ")[-1].split(" ")[1]
@@ -1000,6 +1044,14 @@ def main() -> None:
 
     drone_count = 1
     if launch_mode == "swarm":
+        if world != "swarm_field":
+            print(
+                f"{YLW}[WORLD]{RST} Swarm missions use swarm_field; "
+                f"overriding selected world {CYN}{world}{RST} -> {CYN}swarm_field{RST}\n"
+            )
+            world = "swarm_field"
+            cfg["world"] = world
+            _save_cfg(cfg)
         selected_count = curses.wrapper(_screen_drone_count, last_swarm_drone_count)
         if selected_count is None:
             print("Aborted.")

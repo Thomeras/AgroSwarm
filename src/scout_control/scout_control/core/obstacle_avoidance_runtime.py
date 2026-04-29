@@ -726,12 +726,13 @@ class ObstacleAvoidanceRuntime(Node):
             owner_conflict=self._px4_ownership_guard.conflict,
         )
         self._pos_valid = bool(health.valid)
+        if bool(getattr(msg, "xy_valid", False)):
+            self._drone_x = msg.x
+            self._drone_y = msg.y
+            self._drone_z = msg.z
+            self._drone_yaw = msg.heading
         if not health.valid:
             return
-        self._drone_x = msg.x
-        self._drone_y = msg.y
-        self._drone_z = msg.z
-        self._drone_yaw = msg.heading
         self._local_mapper.update_pose(
             self._drone_x,
             self._drone_y,
@@ -1056,6 +1057,43 @@ class ObstacleAvoidanceRuntime(Node):
         cmd = command.command.strip().lower() or "goto"
         name = command.name or cmd
         target_id = command.target_id
+
+        if cmd == "takeoff":
+            if not self._pos_valid:
+                self.get_logger().warn("takeoff command received before local position is valid")
+                self._publish_command_feedback(
+                    accepted=False,
+                    command=cmd,
+                    target_id=target_id,
+                    reason="position_not_valid",
+                )
+                return
+            self._vsp_x = self._drone_x
+            self._vsp_y = self._drone_y
+            self._activate_target(
+                command=cmd,
+                target_id=target_id,
+                name=name,
+                target_xy=(self._drone_x, self._drone_y),
+                altitude_m=float(command.altitude_m),
+                cruise_speed=float(command.cruise_speed_mps),
+                clear_dist=float(
+                    command.clear_radius_m if has_clear_radius else self._default_clear_d
+                ),
+            )
+            self._transition_to(
+                RuntimePhase.TAKEOFF,
+                reason="external_takeoff_command",
+                target_id=target_id,
+                target_name=name,
+            )
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
+            )
+            return
 
         if cmd == "goto":
             target = command.target_ned
@@ -1452,6 +1490,10 @@ class ObstacleAvoidanceRuntime(Node):
         self._publish_setpoint(self._vsp_x, self._vsp_y, self._vsp_z)
         if self._pos_valid and abs(self._drone_z - self._vsp_z) < ALT_TOL:
             self._local_mapper.clear_sensor_layers()
+            if self._active_command == "takeoff":
+                self._clear_active_target()
+                self._transition_to(RuntimePhase.STOP_HOVER, reason="takeoff_hover_reached")
+                return
             self._transition_to(RuntimePhase.CRUISE_TO_TARGET, reason="takeoff_altitude_reached")
 
     def _do_cruise_to_target(self) -> None:

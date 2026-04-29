@@ -57,6 +57,7 @@ class ManualControlWidget(QWidget):
         self._pixmaps: dict[str, QPixmap] = {}
         self._altitude_m = 5.0
         self._boundary_points = 0
+        self._motion_active = False
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -87,7 +88,12 @@ class ManualControlWidget(QWidget):
             btn = QPushButton(f"Set pad_{i}")
             btn.clicked.connect(
                 lambda _=False, pi=i: self._send_action(
-                    {"action": "assign_pad", "pad_id": f"pad_{pi}"}
+                    {
+                        "action": "assign_pad",
+                        "pad_id": f"pad_{pi}",
+                        "drone_id": f"drone_{pi}",
+                        "mapper_drone_id": self._selected_drone_name(),
+                    }
                 )
             )
             self._pad_btns.append(btn)
@@ -138,6 +144,14 @@ class ManualControlWidget(QWidget):
 
         drone_box = QGroupBox("Per-Drone Controls")
         drone_layout = QVBoxLayout(drone_box)
+        self._takeoff_btn = QPushButton("Take Off Selected Drone")
+        self._takeoff_btn.clicked.connect(
+            lambda: self._send_action(
+                {"action": "takeoff", "altitude_m": self._altitude_m}
+            )
+        )
+        drone_layout.addWidget(self._takeoff_btn)
+
         self._land_btn = QPushButton("Land Selected Drone")
         self._land_btn.clicked.connect(lambda: self._send_action({"action": "land"}))
         drone_layout.addWidget(self._land_btn)
@@ -302,6 +316,12 @@ class ManualControlWidget(QWidget):
 
     def _flush_motion(self) -> None:
         if not self._bridge_connected:
+            self._motion_active = False
+            return
+        if not self._pressed_keys:
+            if self._motion_active:
+                self._send_action({"action": "hold"})
+                self._motion_active = False
             return
         pos = self._get_drone_position(self._selected_drone_name())
         if pos is None:
@@ -325,6 +345,7 @@ class ManualControlWidget(QWidget):
 
         target_x = current_x + vx * LOOKAHEAD_S
         target_y = current_y + vy * LOOKAHEAD_S
+        self._motion_active = True
         self._send_goto_drone_cb(
             self._selected_drone_name(),
             target_x,
@@ -377,6 +398,7 @@ class ManualControlWidget(QWidget):
         self._mark_boundary_btn.setEnabled(self._bridge_connected)
         self._close_boundary_btn.setEnabled(self._bridge_connected)
         self._clear_boundary_btn.setEnabled(self._bridge_connected)
+        self._takeoff_btn.setEnabled(self._bridge_connected)
         self._land_btn.setEnabled(self._bridge_connected)
         self._rth_btn.setEnabled(self._bridge_connected)
         self._grid_btn.setEnabled(self._bridge_connected)
