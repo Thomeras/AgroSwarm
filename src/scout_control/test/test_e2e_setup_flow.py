@@ -122,11 +122,81 @@ def test_e2e_pad_corner_grid_and_rth_flow(
         assert complete['status'] == 'ready'
         assert complete['cells'] == 16
 
-        assert rth_pub.messages
-        assert json.loads(rth_pub.messages[-1]) == {
-            'drone_id': 'drone_0',
-            'reason': 'setup_complete',
-        }
+        assert [json.loads(raw) for raw in rth_pub.messages] == [
+            {'drone_id': 'drone_0', 'reason': 'setup_complete'},
+            {'drone_id': 'drone_1', 'reason': 'setup_complete'},
+        ]
         assert not ready_pub.messages
+    finally:
+        node.destroy_node()
+
+
+def test_existing_setup_resumes_ready_for_mission(
+    tmp_path,
+    monkeypatch,
+    rclpy_context,
+) -> None:
+    """Existing pads + grid should skip the 20-minute setup path on restart."""
+    monkeypatch.setattr(fsc, 'PERIMETERS_DIR', str(tmp_path))
+    monkeypatch.setattr(fsc, 'GRID_FILE', str(tmp_path / 'field_grid.json'))
+    monkeypatch.setattr(
+        fsc,
+        'HOME_POS_FILE',
+        str(tmp_path / 'home_positions.json'),
+    )
+    monkeypatch.setattr(
+        fsc,
+        'BOUNDARY_FILE',
+        str(tmp_path / 'field_boundary.json'),
+    )
+
+    (tmp_path / 'home_positions.json').write_text(json.dumps({
+        'home_positions': [
+            {
+                'pad_id': 'pad_0',
+                'drone_id': 'drone_0',
+                'ned': {'x': 10.0, 'y': -8.0, 'z': -0.5},
+                'status': 'available',
+            },
+            {
+                'pad_id': 'pad_1',
+                'drone_id': 'drone_1',
+                'ned': {'x': 40.0, 'y': -8.0, 'z': -0.5},
+                'status': 'available',
+            },
+        ],
+    }), encoding='utf-8')
+    (tmp_path / 'field_grid.json').write_text(json.dumps({
+        'cell_size_m': 5.0,
+        'cols': 1,
+        'rows': 1,
+        'capture_mode': 'polygon',
+        'cells': [{'id': 'x0_y0', 'x': 12.5, 'y': -5.5, 'status': 'unvisited'}],
+    }), encoding='utf-8')
+    (tmp_path / 'field_boundary.json').write_text(json.dumps({
+        'vertices_ned': [
+            {'x': 10.0, 'y': -8.0, 'z': -5.0},
+            {'x': 15.0, 'y': -8.0, 'z': -5.0},
+            {'x': 15.0, 'y': -3.0, 'z': -5.0},
+        ],
+        'closed': True,
+        'capture_mode': 'polygon',
+    }), encoding='utf-8')
+
+    node = fsc.FieldSetupCoordinator()
+    ready_pub = CapturingPublisher()
+    node._ready_pub = ready_pub
+
+    try:
+        assert node._state == fsc.SetupState.READY_FOR_MISSION
+        assert sorted(node._pads) == ['pad_0', 'pad_1']
+        assert node._landed_drones == {'drone_0', 'drone_1'}
+
+        node._mission_confirm_cb(_msg({'source': 'test'}))
+
+        assert ready_pub.messages
+        assert json.loads(ready_pub.messages[-1]) == {
+            'drones': ['drone_0', 'drone_1'],
+        }
     finally:
         node.destroy_node()

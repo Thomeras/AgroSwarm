@@ -73,10 +73,15 @@ class PX4PublisherAdapter:
             message_types=types,
         )
 
-    def publish_offboard_heartbeat(self, *, timestamp_us: int) -> None:
+    def publish_offboard_heartbeat(
+        self,
+        *,
+        timestamp_us: int,
+        velocity: bool = False,
+    ) -> None:
         msg = self._types.offboard_control_mode()
-        msg.position = True
-        msg.velocity = False
+        msg.position = not velocity
+        msg.velocity = bool(velocity)
         msg.timestamp = int(timestamp_us)
         self._offboard_control_mode_pub.publish(msg)
 
@@ -100,6 +105,27 @@ class PX4PublisherAdapter:
         msg.timestamp = int(timestamp_us)
         self._trajectory_setpoint_pub.publish(msg)
 
+    def publish_velocity_setpoint(
+        self,
+        *,
+        vx: float,
+        vy: float,
+        vz: float,
+        yaw: float,
+        current_yaw: float,
+        yawspeed: float,
+        timestamp_us: int,
+    ) -> None:
+        msg = self._types.trajectory_setpoint()
+        msg.position = [float("nan")] * 3
+        msg.velocity = [float(vx), float(vy), float(vz)]
+        msg.acceleration = [float("nan")] * 3
+        msg.jerk = [float("nan")] * 3
+        msg.yaw = current_yaw if math.isnan(yaw) else yaw
+        msg.yawspeed = float(yawspeed)
+        msg.timestamp = int(timestamp_us)
+        self._trajectory_setpoint_pub.publish(msg)
+
     def send_command(
         self,
         *,
@@ -108,13 +134,14 @@ class PX4PublisherAdapter:
         param1: float = 0.0,
         param2: float = 0.0,
         param3: float = 0.0,
+        target_system: int = 1,
     ) -> None:
         msg = self._types.vehicle_command()
         msg.command = command
         msg.param1 = param1
         msg.param2 = param2
         msg.param3 = param3
-        msg.target_system = 1
+        msg.target_system = int(target_system)
         msg.target_component = 1
         msg.source_system = 1
         msg.source_component = 1

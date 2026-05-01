@@ -235,6 +235,9 @@ class TargetCommand:
     priority: str = "mission"
     source: str = ""
     stamp_ms: int = 0
+    desired_yaw_rad: float = float("nan")
+    velocity_ned: tuple[float, float, float] | None = None
+    yaw_rate_rad_s: float = float("nan")
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "TargetCommand":
@@ -276,6 +279,9 @@ class TargetCommand:
             priority=str(payload.get("priority", "mission")),
             source=str(payload.get("source", "")),
             stamp_ms=int(payload.get("stamp_ms", int(time.time() * 1000))),
+            desired_yaw_rad=float(payload.get("desired_yaw_rad", float("nan"))),
+            velocity_ned=_xyz_tuple(payload.get("velocity_ned")),
+            yaw_rate_rad_s=float(payload.get("yaw_rate_rad_s", float("nan"))),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -299,6 +305,17 @@ class TargetCommand:
         }
         if self.target_ned is not None:
             payload["target_ned"] = [float(self.target_ned[0]), float(self.target_ned[1])]
+        import math as _math
+        if not _math.isnan(self.desired_yaw_rad):
+            payload["desired_yaw_rad"] = float(self.desired_yaw_rad)
+        if self.velocity_ned is not None:
+            payload["velocity_ned"] = [
+                float(self.velocity_ned[0]),
+                float(self.velocity_ned[1]),
+                float(self.velocity_ned[2]),
+            ]
+        if not _math.isnan(self.yaw_rate_rad_s):
+            payload["yaw_rate_rad_s"] = float(self.yaw_rate_rad_s)
         return payload
 
 

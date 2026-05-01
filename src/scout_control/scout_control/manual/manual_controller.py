@@ -76,12 +76,16 @@ class ManualController(Node):
         self.declare_parameter("default_altitude_m", 5.0)
         self.declare_parameter("manual_cruise_speed_mps", 2.0)
         self.declare_parameter("manual_clear_radius_m", 0.15)
+        self.declare_parameter("local_origins_ned_json", "")
 
         self._drone_count = max(1, int(self.get_parameter("drone_count").value))
         self._reject_origin_pad = bool(self.get_parameter("reject_origin_pad").value)
         self._default_altitude = float(self.get_parameter("default_altitude_m").value)
         self._manual_speed = float(self.get_parameter("manual_cruise_speed_mps").value)
         self._manual_clear_radius = float(self.get_parameter("manual_clear_radius_m").value)
+        self._local_origins = self._parse_local_origins(
+            str(self.get_parameter("local_origins_ned_json").value or "")
+        )
 
         self._swarm_topics = TelemetryHub(drone_id=0).swarm
         self._drones = [DronePosition(i) for i in range(self._drone_count)]
@@ -131,8 +135,34 @@ class ManualController(Node):
 
         self.get_logger().info(
             "ManualController ready | headless Swarm Center bridge | "
-            "no PX4 /fmu/in publishers | drone_count=%d" % self._drone_count
+            "no PX4 /fmu/in publishers | drone_count=%d | origins=%d"
+            % (self._drone_count, len(self._local_origins))
         )
+
+    def _parse_local_origins(self, raw: str) -> dict[str, tuple[float, float]]:
+        if not raw.strip():
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self.get_logger().warn("local_origins_ned_json is invalid; assuming zero origins")
+            return {}
+        origins: dict[str, tuple[float, float]] = {}
+        items = data.get("origins", data) if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            return origins
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            drone_id = str(item.get("drone_id", "")).strip()
+            ned = item.get("ned", {})
+            if drone_id and isinstance(ned, dict):
+                origins[drone_id] = (float(ned.get("x", 0.0)), float(ned.get("y", 0.0)))
+        return origins
+
+    def _local_to_world_xy(self, drone: DronePosition, x: float, y: float) -> tuple[float, float]:
+        ox, oy = self._local_origins.get(drone.drone_ns, (0.0, 0.0))
+        return (float(x) + ox, float(y) + oy)
 
     def _make_pos_cb(self, idx: int):
         def _cb(msg: VehicleLocalPosition) -> None:
@@ -240,24 +270,30 @@ class ManualController(Node):
             )
             return
 
+        world_x, world_y = self._local_to_world_xy(mapper, mapper.x, mapper.y)
         payload = {
             "drone_id": target_drone_id,
             "pad_id": pad_id,
-            "x": round(mapper.x, 3),
-            "y": round(mapper.y, 3),
+            "x": round(world_x, 3),
+            "y": round(world_y, 3),
             "z": -0.5,
             "mapped_by": mapper.drone_ns,
+            "mapper_local_ned": {
+                "x": round(mapper.x, 3),
+                "y": round(mapper.y, 3),
+                "z": round(mapper.z, 3),
+            },
         }
         self._publish_json(self._pad_assign_pub, payload)
 
         rth = Point()
-        rth.x = mapper.x
-        rth.y = mapper.y
+        rth.x = world_x
+        rth.y = world_y
         rth.z = -0.5
         self._rth_pubs[target_drone_id].publish(rth)
         self.get_logger().info(
             f"Pad assigned | {target_drone_id} -> {pad_id} "
-            f"NED({mapper.x:.2f},{mapper.y:.2f}) mapped_by={mapper.drone_ns}"
+            f"world NED({world_x:.2f},{world_y:.2f}) mapped_by={mapper.drone_ns}"
         )
 
     def _mark_corner(self, label: str) -> None:
@@ -268,13 +304,14 @@ class ManualController(Node):
         if not drone0.pos_valid:
             self.get_logger().warn("mark_corner: drone_0 position not ready")
             return
+        world_x, world_y = self._local_to_world_xy(drone0, drone0.x, drone0.y)
         self._publish_json(
             self._corner_pub,
             {
                 "corner": label,
                 "ned": {
-                    "x": round(drone0.x, 3),
-                    "y": round(drone0.y, 3),
+                    "x": round(world_x, 3),
+                    "y": round(world_y, 3),
                     "z": round(drone0.z, 3),
                 },
             },
@@ -285,12 +322,13 @@ class ManualController(Node):
         if not drone0.pos_valid:
             self.get_logger().warn("mark_boundary: drone_0 position not ready")
             return
+        world_x, world_y = self._local_to_world_xy(drone0, drone0.x, drone0.y)
         self._publish_json(
             self._boundary_point_pub,
             {
                 "ned": {
-                    "x": round(drone0.x, 3),
-                    "y": round(drone0.y, 3),
+                    "x": round(world_x, 3),
+                    "y": round(world_y, 3),
                     "z": round(drone0.z, 3),
                 },
                 "type": "vertex",
@@ -337,8 +375,11 @@ class ManualController(Node):
         vx = float(data.get("vx", 0.0))
         vy = float(data.get("vy", 0.0))
         lookahead_s = float(data.get("lookahead_s", 0.3))
-        target_x = drone.x + vx * lookahead_s
-        target_y = drone.y + vy * lookahead_s
+        target_x, target_y = self._local_to_world_xy(
+            drone,
+            drone.x + vx * lookahead_s,
+            drone.y + vy * lookahead_s,
+        )
         payload = {
             "command": "goto",
             "target_id": self._target_id("manual_goto"),

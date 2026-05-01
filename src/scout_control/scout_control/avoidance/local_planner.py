@@ -174,12 +174,15 @@ class LocalPlanner:
         layers = self._build_layers(grid, blocked_history, peer_drone_mask)
         start_cell = grid.world_to_grid(start.x, start.y)
         if self._is_hard_blocked(start_cell, layers):
-            return PlanResult(
-                status=PlannerResultStatus.BLOCKED,
-                planner_state=LocalPlannerState.DEGRADED,
-                reason="start_cell_blocked",
-                failure_reason="start_pose_in_forbidden_cell",
-            )
+            if self._is_peer_blocked(start_cell, layers) and not self._is_static_blocked(start_cell, layers):
+                layers = self._peer_escape_layers(layers)
+            else:
+                return PlanResult(
+                    status=PlannerResultStatus.BLOCKED,
+                    planner_state=LocalPlannerState.DEGRADED,
+                    reason="start_cell_blocked",
+                    failure_reason="start_pose_in_forbidden_cell",
+                )
 
         if self._is_locally_trapped(grid, start_cell, layers):
             return PlanResult(
@@ -260,6 +263,7 @@ class LocalPlanner:
         blocked_cost += self._rasterize_blocked_history(grid, blocked_history)
 
         peer_cost = np.zeros(shape, dtype=np.float32)
+        peer_hard = np.zeros(shape, dtype=bool)
         if peer_drone_mask:
             peer_hard, peer_soft = self._rasterize_peer_mask(grid, peer_drone_mask)
             hard_blocked |= peer_hard
@@ -273,11 +277,30 @@ class LocalPlanner:
 
         return {
             "hard_blocked": hard_blocked,
+            "static_hard": np.array(grid.occupancy, dtype=bool, copy=True),
+            "peer_hard": peer_hard,
             "inflation": inflation,
             "blocked_cost": blocked_cost,
             "peer_cost": peer_cost,
             "unknown_cost": unknown_cost,
         }
+
+    def _peer_escape_layers(self, layers: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Allow a drone already inside a peer hard zone to plan its way out.
+
+        Peer disks are hard barriers for normal planning, but when the start
+        cell is already inside one, treating them as walls deadlocks clustered
+        vehicles forever. Static obstacle occupancy remains hard; peer hard
+        cells become high-cost soft cells for this single plan.
+        """
+        escaped = dict(layers)
+        peer_hard = np.asarray(layers["peer_hard"], dtype=bool)
+        static_hard = np.asarray(layers["static_hard"], dtype=bool)
+        escaped["hard_blocked"] = np.array(static_hard, dtype=bool, copy=True)
+        peer_cost = np.array(layers["peer_cost"], dtype=np.float32, copy=True)
+        peer_cost[peer_hard] += self._config.peer_soft_cost
+        escaped["peer_cost"] = peer_cost
+        return escaped
 
     def _rasterize_blocked_history(
         self,
@@ -719,6 +742,12 @@ class LocalPlanner:
 
     def _is_hard_blocked(self, cell: tuple[int, int], layers: dict[str, np.ndarray]) -> bool:
         return bool(layers["hard_blocked"][cell])
+
+    def _is_static_blocked(self, cell: tuple[int, int], layers: dict[str, np.ndarray]) -> bool:
+        return bool(layers.get("static_hard", layers["hard_blocked"])[cell])
+
+    def _is_peer_blocked(self, cell: tuple[int, int], layers: dict[str, np.ndarray]) -> bool:
+        return bool(layers.get("peer_hard", np.zeros_like(layers["hard_blocked"], dtype=bool))[cell])
 
     def _in_bounds(self, grid: LocalGridSnapshot, cell: tuple[int, int]) -> bool:
         return 0 <= cell[0] < grid.occupancy.shape[0] and 0 <= cell[1] < grid.occupancy.shape[1]

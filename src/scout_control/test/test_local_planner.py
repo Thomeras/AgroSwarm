@@ -129,6 +129,22 @@ def test_local_planner_returns_blocked_when_start_cell_is_occupied() -> None:
     assert result.reason == "start_cell_blocked"
 
 
+def test_local_planner_escapes_when_start_is_inside_peer_mask() -> None:
+    planner = LocalPlanner()
+    grid = _make_grid()
+
+    result = planner.plan(
+        grid=grid,
+        start=PlannerPose(0.0, 0.0),
+        mission_target=PlannerTarget(8.0, 0.0),
+        peer_drone_mask=[DynamicMaskDisk(x=0.8, y=0.0, radius_m=2.0, hard=True)],
+    )
+
+    assert result.status in {PlannerResultStatus.DIRECT, PlannerResultStatus.DETOUR}
+    assert result.subgoal_xy is not None
+    assert result.path_xy
+
+
 def test_local_planner_peer_mask_forces_non_direct_result() -> None:
     planner = LocalPlanner()
     grid = _make_grid()

@@ -6,6 +6,27 @@ import pytest
 from scout_control.avoidance.depth_projector import CameraIntrinsics, DepthProjector
 from scout_control.avoidance.peer_tracks import PeerTrackStore
 from scout_control.avoidance.types import PointBatch, TargetCommand
+from scout_control.core.obstacle_avoidance_runtime import ObstacleAvoidanceRuntime
+
+
+class _DummyLogger:
+    def info(self, *_args, **_kwargs) -> None:
+        pass
+
+
+class _DummyRunLog:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def log(self, event: str, **fields) -> None:
+        self.events.append((event, fields))
+
+
+class _DummyPoint:
+    def __init__(self, x: float, y: float, z: float = -0.5) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
 
 
 def test_target_command_normalizes_runtime_payload() -> None:
@@ -23,6 +44,39 @@ def test_target_command_normalizes_runtime_payload() -> None:
     assert command.cmd_id == "pad_1"
     assert command.target_ned == (12.0, -3.5)
     assert command.to_payload()["target_ned"] == [12.0, -3.5]
+
+
+def test_runtime_rth_target_update_retakes_active_return_home_goal() -> None:
+    runtime = ObstacleAvoidanceRuntime.__new__(ObstacleAvoidanceRuntime)
+    runtime._home_x = 0.0
+    runtime._home_y = 0.0
+    runtime._home_captured = True
+    runtime._active_command = "return_home"
+    runtime._active_target_xy = (0.0, 0.0)
+    runtime._run_log = _DummyRunLog()
+    runtime.get_logger = lambda: _DummyLogger()
+
+    runtime._rth_target_cb(_DummyPoint(23.803, -50.095))
+
+    assert runtime._home_x == pytest.approx(23.803)
+    assert runtime._home_y == pytest.approx(-50.095)
+    assert runtime._active_target_xy == pytest.approx((23.803, -50.095))
+    assert runtime._run_log.events[0][0] == "return_home_target_updated"
+
+
+def test_target_command_accepts_manual_velocity_payload() -> None:
+    command = TargetCommand.from_payload(
+        {
+            "command": "manual_velocity",
+            "velocity_ned": [1.0, -2.0, 0.5],
+            "yaw_rate_rad_s": -0.4,
+        }
+    )
+
+    assert command.velocity_ned == (1.0, -2.0, 0.5)
+    assert command.yaw_rate_rad_s == -0.4
+    assert command.to_payload()["velocity_ned"] == [1.0, -2.0, 0.5]
+    assert command.to_payload()["yaw_rate_rad_s"] == -0.4
 
 
 def test_target_command_rejects_negative_altitude_m() -> None:

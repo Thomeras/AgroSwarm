@@ -28,8 +28,11 @@ import math
 import threading
 import time
 from collections import defaultdict
+from copy import deepcopy
 from enum import Enum, auto
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
+
+from scout_control.utils import proximity_allocator, route_conflict
 
 
 # ── Drone state ───────────────────────────────────────────────────────────────
@@ -128,6 +131,10 @@ class TaskAllocator:
         deferred_retry_delay_s: float = 12.0,
         hard_block_cooldown_s: float = 30.0,
         max_deferrals_per_cell: int = 3,
+        strategy: Literal["snake", "proximity"] = "proximity",
+        cruise_speed_mps: float = 2.0,
+        route_conflict_window_s: float = 6.0,
+        on_planned_routes: Callable[[dict], None] | None = None,
     ) -> None:
         """
         Parameters
@@ -150,6 +157,13 @@ class TaskAllocator:
         self._deferred_retry_delay_s = max(1.0, float(deferred_retry_delay_s))
         self._hard_block_cooldown_s = max(3.0, float(hard_block_cooldown_s))
         self._max_deferrals_per_cell = max(1, int(max_deferrals_per_cell))
+        self._strategy = strategy if strategy in {"snake", "proximity"} else "proximity"
+        self._cruise_speed_mps = float(cruise_speed_mps)
+        self._route_conflict_window_s = float(route_conflict_window_s)
+        self._on_planned_routes = on_planned_routes
+        self._planned_routes_cache: dict = {}
+        self._last_conflicts: list = []
+        self._planned_generated_t: float = 0.0
 
         self._on_next_cell_cb        = on_next_cell
         self._on_task_status_cb      = on_task_status
@@ -271,6 +285,7 @@ class TaskAllocator:
         if not self._mission_started:
             return
 
+        planned_snapshot = None
         with self._lock:
             self._maintenance_tick(now_s=time.monotonic())
             visited  = sum(1 for c in self._cells.values() if c["status"] == "visited")
@@ -298,8 +313,22 @@ class TaskAllocator:
                 "cell_size_m":      self._cell_size_m,
                 "deferred_cells":   len(self._deferred_cells),
             }
+            if self._on_planned_routes and self._planned_routes_cache:
+                planned_snapshot = {
+                    "routes": {
+                        drone_id: [c.get("cell_id", c.get("id")) for c in cells]
+                        for drone_id, cells in self._planned_routes_cache.items()
+                    },
+                    "conflicts": list(self._last_conflicts),
+                    "generated_t": self._planned_generated_t,
+                }
 
         self._on_task_status_cb(payload)
+        if planned_snapshot:
+            try:
+                self._on_planned_routes(planned_snapshot)
+            except Exception:
+                pass
 
     def tick_progress_log(self) -> None:
         """Call at 30 s. Logs mission progress to logger."""
@@ -419,6 +448,12 @@ class TaskAllocator:
     # ── Mission start ─────────────────────────────────────────────────────────
 
     def _start_mission(self, active_drones: list[DroneRecord]) -> None:
+        if self._strategy == "snake":
+            self._start_mission_snake(active_drones)
+        else:
+            self._start_mission_proximity(active_drones)
+
+    def _start_mission_snake(self, active_drones: list[DroneRecord]) -> None:
         """Assign snake-ordered sectors and publish first next_cell for each drone."""
         n       = len(active_drones)
         cols_pp = math.ceil(self._cols_total / n)
@@ -454,6 +489,39 @@ class TaskAllocator:
             f"Mission starting with {n} drone(s), {len(self._cells)} cells total"
         )
 
+        self._run_conflict_pass()
+        for rec in active_drones:
+            self._advance(rec)
+
+    def _start_mission_proximity(self, active_drones: list[DroneRecord]) -> None:
+        """Assign proximity-ordered routes and publish first next_cell for each drone."""
+        positions: dict[str, tuple[float, float]] = {}
+        for rec in active_drones:
+            pos = self._drone_positions.get(rec.drone_id, {})
+            positions[rec.drone_id] = (
+                float(pos.get("x", 0.0)),
+                float(pos.get("y", 0.0)),
+            )
+
+        assigned = proximity_allocator.assign_initial(list(self._cells.values()), positions)
+        for rec in active_drones:
+            rec.assigned_cells = proximity_allocator.order_route(
+                positions.get(rec.drone_id, (0.0, 0.0)),
+                assigned.get(rec.drone_id, []),
+            )
+            rec.status = DroneStatus.WORKING
+            self._log.info(
+                f"  {rec.drone_id}: proximity route → {rec.queue_remaining} cells"
+            )
+
+        self._mission_started = True
+        self._mission_start_t = time.monotonic()
+        self._log.info(
+            f"Mission starting with {len(active_drones)} drone(s), "
+            f"{len(self._cells)} cells total | strategy=proximity"
+        )
+
+        self._run_conflict_pass()
         for rec in active_drones:
             self._advance(rec)
 
@@ -568,6 +636,7 @@ class TaskAllocator:
         if self._assign_deferred_to(finished):
             self._log.info(f"{finished.drone_id}: resumed via deferred queue")
             self._advance(finished)
+            self._run_conflict_pass()
             return
 
         best_donor: Optional[DroneRecord] = None
@@ -586,6 +655,7 @@ class TaskAllocator:
             self._log.info(
                 f"{finished.drone_id}: no donor with >3 cells — idle"
             )
+            self._run_conflict_pass()
             return
 
         n_steal   = math.ceil(best_donor.queue_remaining / 2)
@@ -612,6 +682,7 @@ class TaskAllocator:
         )
 
         self._advance(finished)
+        self._run_conflict_pass()
 
     def _set_drone_working(self, rec: DroneRecord) -> None:
         rec.blocked_until_s = 0.0
@@ -787,6 +858,97 @@ class TaskAllocator:
             if self._assign_deferred_to(rec):
                 if rec.current_cell is None:
                     self._advance(rec)
+            elif (
+                self._mission_started
+                and not self._mission_done
+                and rec.status == DroneStatus.WORKING
+                and rec.current_cell is None
+                and rec.assigned_cells
+            ):
+                # Retry advance for drones stuck on NFZ conflict — other drone
+                # may have moved away since the last _advance attempt.
+                self._advance(rec)
+
+    def _route_snapshot_unlocked(self) -> dict[str, list[dict]]:
+        routes: dict[str, list[dict]] = {}
+        for drone_id, rec in self._drones.items():
+            route: list[dict] = []
+            if (
+                rec.current_cell is not None
+                and self._cells.get(rec.current_cell["id"], {}).get("status") != "visited"
+            ):
+                route.append(dict(rec.current_cell))
+            for cell in rec.assigned_cells:
+                if self._cells.get(cell["id"], {}).get("status") != "visited":
+                    route.append(dict(cell))
+            routes[drone_id] = route
+        return routes
+
+    def _run_conflict_pass(self) -> list[dict]:
+        """Detect and resolve route conflicts.
+
+        Caller must hold self._lock.
+        """
+        routes = self._route_snapshot_unlocked()
+        start_pos = {
+            drone_id: (float(pos.get("x", 0.0)), float(pos.get("y", 0.0)))
+            for drone_id, pos in self._drone_positions.items()
+        }
+        for drone_id in self._drones:
+            start_pos.setdefault(drone_id, (0.0, 0.0))
+
+        legs = route_conflict.build_legs(
+            routes,
+            start_pos,
+            self._cruise_speed_mps,
+            dwell_s=1.0,
+        )
+        conflicts = route_conflict.find_conflicts(
+            legs,
+            nfz_radius=2.0,
+            time_window_s=self._route_conflict_window_s,
+        )
+        resolved, _actions = route_conflict.resolve(
+            conflicts,
+            routes,
+            priority_fn=lambda d: d,
+        )
+        self._apply_resolved_routes_unlocked(resolved)
+        self._planned_routes_cache = deepcopy(resolved)
+        self._last_conflicts = list(conflicts)
+        self._planned_generated_t = time.time()
+        return self._last_conflicts
+
+    def _apply_resolved_routes_unlocked(self, routes: dict[str, list[dict]]) -> None:
+        for drone_id, route in routes.items():
+            rec = self._drones.get(drone_id)
+            if rec is None:
+                continue
+            route_copy = [dict(cell) for cell in route]
+            if rec.current_cell is not None:
+                current_id = rec.current_cell.get("id")
+                if route_copy and route_copy[0].get("id") == current_id:
+                    rec.assigned_cells = route_copy[1:]
+                else:
+                    rec.assigned_cells = route_copy
+            else:
+                rec.assigned_cells = route_copy
+            if (
+                rec.prefetched_cell is not None
+                and not any(
+                    cell.get("id") == rec.prefetched_cell.get("id")
+                    for cell in rec.assigned_cells
+                )
+            ):
+                rec.prefetched_cell = None
+
+    def planned_routes(self) -> dict:
+        with self._lock:
+            return deepcopy({
+                "routes": self._planned_routes_cache,
+                "conflicts": self._last_conflicts,
+                "generated_t": self._planned_generated_t,
+            })
 
     # ── Mission complete ──────────────────────────────────────────────────────
 

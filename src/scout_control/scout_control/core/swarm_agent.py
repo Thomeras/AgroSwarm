@@ -143,6 +143,7 @@ class SwarmAgent(Node):
         self._runtime_return_home_sent: bool = False
         self._runtime_landing_seen: bool = False
         self._landed_reported: bool = False
+        self._suppress_setup_landing_status: bool = False
 
         # ── Publishers ────────────────────────────────────────────────────────
         self._target_cmd_pub = self.create_publisher(
@@ -312,9 +313,20 @@ class SwarmAgent(Node):
             mapped = self._build_swarm_status_from_avoidance(payload)
             if mapped is None:
                 return
-            if str(payload.get("phase", "")).upper() == "LANDING":
+            phase = str(payload.get("phase", "")).upper()
+            if phase == "LANDING":
                 self._runtime_landing_seen = True
+            elif phase:
+                self._suppress_setup_landing_status = False
             status, extra = mapped
+            if (
+                status == "LANDING"
+                and self._suppress_setup_landing_status
+                and not self._runtime_rth_requested
+            ):
+                status = "READY"
+                extra["phase"] = "MISSION_READY"
+                extra["suppressed_phase"] = "LANDING"
             signature = (
                 status,
                 extra.get("phase"),
@@ -475,10 +487,16 @@ class SwarmAgent(Node):
             self._runtime_rth_requested = False
             self._runtime_return_home_sent = False
             self._runtime_landing_seen = False
-            self._landed_reported = False
+            self._landed_reported = True
+            self._suppress_setup_landing_status = True
             self._last_runtime_status_signature = None
         self.get_logger().info(
             f"{self._did}: /swarm/mission_ready received — runtime backend mission mode active"
+        )
+        self._pub_status(
+            "READY",
+            backend=NAV_BACKEND_AVOIDANCE_RUNTIME,
+            phase="MISSION_READY",
         )
 
     def _land_detected_cb(self, msg: VehicleLandDetected) -> None:

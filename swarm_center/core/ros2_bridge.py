@@ -33,6 +33,7 @@ from core.bridge_protocol import (
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GOTO_DRONE, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MANUAL_CONTROL, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
+    MSG_PLANNED_ROUTES, MSG_ROUTE_CONFLICT,
     MSG_RTH_ALL, MSG_RTH_DRONE, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
     MSG_START_MISSION, MSG_TASK_STATUS,
 )
@@ -82,6 +83,8 @@ class Ros2BridgeClient(QObject):
     grid_reload = pyqtSignal(dict)
     no_go_overlay = pyqtSignal(dict)
     refined_grid_event = pyqtSignal(dict)
+    planned_routes_received = pyqtSignal(dict)
+    route_conflict_received = pyqtSignal(dict)
     hello = pyqtSignal(dict)
 
     # M4 — camera & 3D
@@ -148,6 +151,10 @@ class Ros2BridgeClient(QObject):
     def send_rth_drone(self, drone_id: str) -> None:
         """Request RTH for one concrete drone."""
         self._send(MSG_RTH_DRONE, {"drone_id": drone_id})
+
+    def send_yaw_drone(self, drone_id: str, yaw_rad: float) -> None:
+        """Command one drone to rotate to a specific yaw (rad, NED) while holding position."""
+        self._send(MSG_GOTO_DRONE, {"drone_id": drone_id, "yaw_to_rad": float(yaw_rad)})
 
     def send_manual_control(self, payload: dict) -> None:
         """Forward manual-controller action payload to scout_ws."""
@@ -308,6 +315,8 @@ class Ros2BridgeClient(QObject):
             MSG_GRID_RELOAD:      self.grid_reload,
             MSG_NO_GO_OVERLAY:    self.no_go_overlay,
             MSG_REFINED_GRID_EVENT: self.refined_grid_event,
+            MSG_PLANNED_ROUTES:   self.planned_routes_received,
+            MSG_ROUTE_CONFLICT:   self.route_conflict_received,
             MSG_CAMERA_INFO:      self.camera_info,
         }
         sig = signal_map.get(msg_type)

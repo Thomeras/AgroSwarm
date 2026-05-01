@@ -7,7 +7,6 @@ from PyQt6.QtCore import QEvent, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -23,9 +22,9 @@ from ui.field_view import FieldView
 
 MOVE_TICK_MS = 80
 CAM_STALE_S = 2.0
-MOVE_SPEED_MPS = 2.0
-ALT_SPEED_MPS = 0.5
-LOOKAHEAD_S = 0.3
+MOVE_SPEED_MPS = 3.0
+ALT_SPEED_MPS = 0.7
+YAW_RATE_RAD_S = 0.6
 
 
 class ManualControlWidget(QWidget):
@@ -40,6 +39,8 @@ class ManualControlWidget(QWidget):
         get_drone_position: Callable[[str], tuple[float, float, float] | None],
         send_goto_drone: Callable[[str, float, float, float], None],
         send_rth_drone: Callable[[str], None],
+        send_yaw_drone: Callable[[str, float], None] | None = None,
+        get_drone_yaw: Callable[[str], float | None] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -50,153 +51,120 @@ class ManualControlWidget(QWidget):
         self._get_drone_position = get_drone_position
         self._send_goto_drone_cb = send_goto_drone
         self._send_rth_drone_cb = send_rth_drone
+        self._send_yaw_drone_cb = send_yaw_drone
+        self._get_drone_yaw_cb = get_drone_yaw
         self._bridge_connected = False
         self._pressed_keys: set[int] = set()
         self._selected_drone_id = 0
         self._last_frame_t = 0.0
         self._pixmaps: dict[str, QPixmap] = {}
         self._altitude_m = 5.0
-        self._boundary_points = 0
         self._motion_active = False
+        self._desired_yaw: float | None = None
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+        root.setSpacing(12)
 
+        # ── Left column ──────────────────────────────────────────────────────
         left = QVBoxLayout()
         left.setSpacing(10)
 
-        setup_box = QGroupBox("Pad Assignment")
-        setup_layout = QVBoxLayout(setup_box)
-        self._status_label = QLabel("Bridge: waiting")
+        # Drone selector + bridge status
+        drone_box = QGroupBox("Vybraný dron")
+        drone_layout = QVBoxLayout(drone_box)
+        drone_layout.setSpacing(8)
+
+        self._status_label = QLabel("Bridge: čekám…")
         self._status_label.setWordWrap(True)
-        setup_layout.addWidget(self._status_label)
+        self._status_label.setStyleSheet("color: #64748B; font-size: 12px;")
+        drone_layout.addWidget(self._status_label)
 
         drone_row = QHBoxLayout()
-        drone_row.addWidget(QLabel("Drone:"))
+        drone_row.addWidget(QLabel("Dron:"))
         self._drone_combo = QComboBox()
         for i in range(drone_count):
             self._drone_combo.addItem(f"drone_{i}", i)
         self._drone_combo.currentIndexChanged.connect(self._on_drone_changed)
         drone_row.addWidget(self._drone_combo, stretch=1)
-        setup_layout.addLayout(drone_row)
-
-        self._pad_btns: list[QPushButton] = []
-        for i in range(drone_count):
-            btn = QPushButton(f"Set pad_{i}")
-            btn.clicked.connect(
-                lambda _=False, pi=i: self._send_action(
-                    {
-                        "action": "assign_pad",
-                        "pad_id": f"pad_{pi}",
-                        "drone_id": f"drone_{pi}",
-                        "mapper_drone_id": self._selected_drone_name(),
-                    }
-                )
-            )
-            self._pad_btns.append(btn)
-            setup_layout.addWidget(btn)
-
-        corners = QGridLayout()
-        self._corner_btns: list[QPushButton] = []
-        for row, label in enumerate(("NE", "NW", "SE", "SW")):
-            btn = QPushButton(f"Mark {label}")
-            btn.clicked.connect(lambda _=False, corner=label: self._send_action(
-                {"action": "mark_corner", "corner": corner, "drone_id": "drone_0"}))
-            self._corner_btns.append(btn)
-            corners.addWidget(btn, row // 2, row % 2)
-        setup_layout.addLayout(corners)
-
-        self._grid_btn = QPushButton("Generate Grid")
-        self._grid_btn.clicked.connect(self._send_generate_grid)
-        setup_layout.addWidget(self._grid_btn)
-
-        self._start_btn = QPushButton("Start Mission")
-        self._start_btn.setStyleSheet("font-weight: bold;")
-        self._start_btn.clicked.connect(lambda: self._send_action({"action": "start_mission"}))
-        setup_layout.addWidget(self._start_btn)
-
-        left.addWidget(setup_box)
-
-        boundary_box = QGroupBox("Boundary Capture")
-        boundary_layout = QVBoxLayout(boundary_box)
-        self._mark_boundary_btn = QPushButton("Mark Boundary Point")
-        self._mark_boundary_btn.clicked.connect(
-            lambda: self._send_action({"action": "mark_boundary"})
-        )
-        boundary_layout.addWidget(self._mark_boundary_btn)
-
-        self._close_boundary_btn = QPushButton("Close Boundary")
-        self._close_boundary_btn.clicked.connect(
-            lambda: self._send_action({"action": "close_boundary"})
-        )
-        boundary_layout.addWidget(self._close_boundary_btn)
-
-        self._clear_boundary_btn = QPushButton("Clear Boundary")
-        self._clear_boundary_btn.clicked.connect(self._clear_boundary)
-        boundary_layout.addWidget(self._clear_boundary_btn)
-
-        self._boundary_points_label = QLabel("Points marked: 0")
-        boundary_layout.addWidget(self._boundary_points_label)
-        left.addWidget(boundary_box)
-
-        drone_box = QGroupBox("Per-Drone Controls")
-        drone_layout = QVBoxLayout(drone_box)
-        self._takeoff_btn = QPushButton("Take Off Selected Drone")
-        self._takeoff_btn.clicked.connect(
-            lambda: self._send_action(
-                {"action": "takeoff", "altitude_m": self._altitude_m}
-            )
-        )
-        drone_layout.addWidget(self._takeoff_btn)
-
-        self._land_btn = QPushButton("Land Selected Drone")
-        self._land_btn.clicked.connect(lambda: self._send_action({"action": "land"}))
-        drone_layout.addWidget(self._land_btn)
-
-        self._rth_btn = QPushButton("RTH Selected Drone")
-        self._rth_btn.clicked.connect(lambda: self._send_rth_drone(self._selected_drone_name()))
-        drone_layout.addWidget(self._rth_btn)
-
-        hint = QLabel(
-            "Focus this tab and use W/S/A/D + Up/Down.\n"
-            "Click the mini map or selector to change the active drone."
-        )
-        hint.setWordWrap(True)
-        drone_layout.addWidget(hint)
+        drone_layout.addLayout(drone_row)
         left.addWidget(drone_box)
 
-        mini_box = QGroupBox("Mini Map")
+        # Flight controls
+        flight_box = QGroupBox("Ovládání letu")
+        flight_layout = QVBoxLayout(flight_box)
+        flight_layout.setSpacing(6)
+
+        self._takeoff_btn = QPushButton("Vzlétnout")
+        self._takeoff_btn.clicked.connect(
+            lambda: self._send_action({"action": "takeoff", "altitude_m": self._altitude_m})
+        )
+        flight_layout.addWidget(self._takeoff_btn)
+
+        self._land_btn = QPushButton("Přistát")
+        self._land_btn.clicked.connect(lambda: self._send_action({"action": "land"}))
+        flight_layout.addWidget(self._land_btn)
+
+        self._rth_btn = QPushButton("RTH")
+        self._rth_btn.clicked.connect(
+            lambda: self._send_rth_drone(self._selected_drone_name())
+        )
+        flight_layout.addWidget(self._rth_btn)
+        left.addWidget(flight_box)
+
+        # Keyboard hint
+        keys_box = QGroupBox("Klávesy")
+        keys_layout = QVBoxLayout(keys_box)
+        hint = QLabel(
+            "<div style='line-height: 150%;'>"
+            "W / S  &mdash;  vpřed / vzad<br>"
+            "A / D  &mdash;  vlevo / vpravo<br>"
+            "&uarr; / &darr;  &mdash;  výška nahoru / dolů<br>"
+            "&larr; / &rarr;  &mdash;  otáčení (yaw)"
+            "</div>"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #94A3B8; font-size: 12px;")
+        keys_layout.addWidget(hint)
+        left.addWidget(keys_box)
+
+        # Mini map
+        mini_box = QGroupBox("Mini mapa")
         mini_layout = QVBoxLayout(mini_box)
         self._mini_map = FieldView(swarm)
-        self._mini_map.setMinimumSize(320, 240)
+        self._mini_map.setMinimumSize(280, 240)
         self._mini_map.drone_clicked.connect(self._select_drone)
         mini_layout.addWidget(self._mini_map)
         left.addWidget(mini_box, stretch=1)
 
         root.addLayout(left, stretch=1)
 
-        center = QVBoxLayout()
-        center.setSpacing(10)
-
-        camera_box = QGroupBox("Camera Stream")
+        # ── Right: camera stream ─────────────────────────────────────────────
+        camera_box = QGroupBox("Kamera")
         camera_layout = QVBoxLayout(camera_box)
-        self._camera_label = QLabel("No stream")
+        camera_layout.setSpacing(4)
+
+        self._camera_label = QLabel("Žádný stream")
         self._camera_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._camera_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._camera_label.setMinimumSize(640, 420)
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self._camera_label.setMinimumSize(640, 480)
         self._camera_label.setStyleSheet(
-            "background: #111; color: #666; font-size: 18px;")
-        self._camera_meta = QLabel("Selected drone: drone_0")
+            "background: #020617; color: #334155; font-size: 15px;"
+        )
+
+        self._camera_meta = QLabel(f"drone_{0}")
+        self._camera_meta.setStyleSheet("color: #475569; font-size: 11px;")
+
         camera_layout.addWidget(self._camera_label, stretch=1)
         camera_layout.addWidget(self._camera_meta)
-        center.addWidget(camera_box, stretch=1)
 
-        root.addLayout(center, stretch=2)
+        root.addWidget(camera_box, stretch=3)
 
+        # ── Timers ───────────────────────────────────────────────────────────
         self._motion_timer = QTimer(self)
         self._motion_timer.setInterval(MOVE_TICK_MS)
         self._motion_timer.timeout.connect(self._flush_motion)
@@ -210,6 +178,8 @@ class ManualControlWidget(QWidget):
         swarm.add_mission_listener(self.update_mission)
         self._refresh_camera_meta()
         self._update_enabled_state()
+
+    # ── Public API ───────────────────────────────────────────────────────────
 
     def set_bridge_connected(self, connected: bool) -> None:
         self._bridge_connected = connected
@@ -235,18 +205,16 @@ class ManualControlWidget(QWidget):
 
     def update_mission(self, ms: MissionState) -> None:
         if ms.complete:
-            text = "Mission complete"
+            text = "Mise dokončena"
         elif ms.ready:
-            text = "Mission running - manual motion disabled"
+            text = "Mise probíhá"
         elif ms.setup_status:
             text = ms.setup_status
         else:
-            text = "Waiting for field setup"
+            text = "Čekám na field setup"
         self._status_label.setText(text)
-        self._grid_btn.setEnabled(self._bridge_connected and not ms.ready and not ms.complete)
-        self._start_btn.setEnabled(
-            self._bridge_connected and ms.field_ready and not ms.ready and not ms.complete
-        )
+
+    # ── Keyboard events ──────────────────────────────────────────────────────
 
     def keyPressEvent(self, ev) -> None:
         if ev.isAutoRepeat():
@@ -289,10 +257,13 @@ class ManualControlWidget(QWidget):
             self._flush_motion()
         return super().event(ev)
 
+    # ── Private helpers ──────────────────────────────────────────────────────
+
     def _motion_keys(self) -> set[int]:
         return {
             Qt.Key.Key_W, Qt.Key.Key_S, Qt.Key.Key_A, Qt.Key.Key_D,
             Qt.Key.Key_Up, Qt.Key.Key_Down,
+            Qt.Key.Key_Left, Qt.Key.Key_Right,
         }
 
     def _selected_drone_name(self) -> str:
@@ -320,37 +291,47 @@ class ManualControlWidget(QWidget):
             return
         if not self._pressed_keys:
             if self._motion_active:
+                self._send_velocity_setpoint(0.0, 0.0, 0.0, 0.0)
                 self._send_action({"action": "hold"})
                 self._motion_active = False
+                self._desired_yaw = None
             return
-        pos = self._get_drone_position(self._selected_drone_name())
-        if pos is None:
-            return
-        current_x, current_y, _current_z = pos
-        vx = 0.0
-        vy = 0.0
+
+        vx = vy = vz = yaw_rate = 0.0
         if Qt.Key.Key_W in self._pressed_keys:
             vx += MOVE_SPEED_MPS
         if Qt.Key.Key_S in self._pressed_keys:
             vx -= MOVE_SPEED_MPS
-        if Qt.Key.Key_A in self._pressed_keys:
-            vy -= MOVE_SPEED_MPS
         if Qt.Key.Key_D in self._pressed_keys:
             vy += MOVE_SPEED_MPS
+        if Qt.Key.Key_A in self._pressed_keys:
+            vy -= MOVE_SPEED_MPS
         if Qt.Key.Key_Up in self._pressed_keys:
-            self._altitude_m -= ALT_SPEED_MPS * (MOVE_TICK_MS / 1000.0)
+            vz -= ALT_SPEED_MPS
         if Qt.Key.Key_Down in self._pressed_keys:
-            self._altitude_m += ALT_SPEED_MPS * (MOVE_TICK_MS / 1000.0)
-        self._altitude_m = max(0.5, self._altitude_m)
+            vz += ALT_SPEED_MPS
+        if Qt.Key.Key_Right in self._pressed_keys:
+            yaw_rate += YAW_RATE_RAD_S
+        if Qt.Key.Key_Left in self._pressed_keys:
+            yaw_rate -= YAW_RATE_RAD_S
 
-        target_x = current_x + vx * LOOKAHEAD_S
-        target_y = current_y + vy * LOOKAHEAD_S
-        self._motion_active = True
-        self._send_goto_drone_cb(
-            self._selected_drone_name(),
-            target_x,
-            target_y,
-            self._altitude_m,
+        if vx or vy or vz or yaw_rate:
+            self._motion_active = True
+            self._send_velocity_setpoint(vx, vy, vz, yaw_rate)
+        elif self._motion_active:
+            self._send_velocity_setpoint(0.0, 0.0, 0.0, 0.0)
+            self._send_action({"action": "hold"})
+            self._motion_active = False
+
+    def _send_velocity_setpoint(
+        self, vx: float, vy: float, vz: float, yaw_rate: float,
+    ) -> None:
+        self._send_action(
+            {
+                "action": "manual_velocity",
+                "velocity_ned": [float(vx), float(vy), float(vz)],
+                "yaw_rate_rad_s": float(yaw_rate),
+            }
         )
 
     def _send_action(self, payload: dict) -> None:
@@ -364,23 +345,14 @@ class ManualControlWidget(QWidget):
         if self._bridge_connected and self._send_rth_drone_cb is not None:
             self._send_rth_drone_cb(drone_name)
 
-    def on_boundary_point_acked(self) -> None:
-        self._boundary_points += 1
-        self._boundary_points_label.setText(f"Points marked: {self._boundary_points}")
-
-    def _clear_boundary(self) -> None:
-        self._send_action({"action": "clear_boundary"})
-        self._boundary_points = 0
-        self._boundary_points_label.setText("Points marked: 0")
-
     def _refresh_camera_meta(self) -> None:
         did = self._selected_drone_name()
-        stale = ""
+        suffix = ""
         if self._last_frame_t > 0 and time.monotonic() - self._last_frame_t > CAM_STALE_S:
-            stale = " - stream stale"
+            suffix = "  [stream stale]"
         if not self._bridge_connected:
-            stale = " - bridge disconnected"
-        self._camera_meta.setText(f"Selected drone: {did}{stale}")
+            suffix = "  [bridge odpojen]"
+        self._camera_meta.setText(f"{did}{suffix}")
 
     def _set_camera_pixmap(self, pixmap: QPixmap) -> None:
         scaled = pixmap.scaled(
@@ -391,15 +363,6 @@ class ManualControlWidget(QWidget):
         self._camera_label.setPixmap(scaled)
 
     def _update_enabled_state(self) -> None:
-        for btn in self._pad_btns:
-            btn.setEnabled(self._bridge_connected)
-        for btn in self._corner_btns:
-            btn.setEnabled(self._bridge_connected)
-        self._mark_boundary_btn.setEnabled(self._bridge_connected)
-        self._close_boundary_btn.setEnabled(self._bridge_connected)
-        self._clear_boundary_btn.setEnabled(self._bridge_connected)
         self._takeoff_btn.setEnabled(self._bridge_connected)
         self._land_btn.setEnabled(self._bridge_connected)
         self._rth_btn.setEnabled(self._bridge_connected)
-        self._grid_btn.setEnabled(self._bridge_connected)
-        self._start_btn.setEnabled(False)

@@ -42,6 +42,7 @@ import signal
 from PyQt6.QtWidgets import QApplication
 
 from ui.main_window import MainWindow
+from ui.style import DARK_QSS
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +73,9 @@ def parse_args() -> argparse.Namespace:
         help="Path to overhead PNG (top-down satellite/aerial view). "
              "A sidecar .json with ned_x_min/max/y_min/max aligns it to NED coords. "
              "Example: ../worlds/agro_field_overhead.png")
+    p.add_argument(
+        "--origin-file", type=str, default=None,
+        help="Optional per-drone PX4 local-origin file written by scout_launcher.")
     return p.parse_args()
 
 
@@ -83,6 +87,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Scout Swarm Center")
+    app.setStyleSheet(DARK_QSS)
 
     window = MainWindow(
         drone_count=args.drones,
@@ -93,6 +98,7 @@ def main() -> int:
         bridge_host=args.bridge_host,
         bridge_port=args.bridge_port,
         world_image=args.world_image,
+        origin_file=args.origin_file,
     )
     window.show()
 

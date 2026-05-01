@@ -23,7 +23,7 @@ from scout_control.avoidance.local_planner import (
     PlannerTarget,
 )
 from scout_control.avoidance.scan_manager import ScanManager
-from scout_control.avoidance.types import PointBatch
+from scout_control.avoidance.types import PointBatch, ScanCommand
 
 
 def _cell_probability(mapper: LocalMapper, x: float, y: float, now_s: float) -> float:
@@ -405,6 +405,90 @@ def test_scan_manager_dense_capture_enriches_mapper(tmp_path) -> None:
     assert meta["topics"] == {"camera": "/test/camera", "depth": "/test/depth"}
     assert meta["timestamp_provenance"]["source"] == "sensor"
     assert "DepthProjector" in meta["projection_path"]
+
+
+def test_scan_manager_treats_ground_only_depth_as_clear_scan(tmp_path) -> None:
+    mapper = LocalMapper(LocalMapperConfig(resolution_m=0.5, span_x_m=16.0, span_y_m=16.0))
+    mapper.update_pose(0.0, 0.0, -5.0, 0.0, 0.0)
+    scan = ScanManager(
+        mapper=mapper,
+        assets_dir=tmp_path,
+        hover_ticks=1,
+        spin_ticks=2,
+        point_stride=2,
+        free_distance_m=3.0,
+        cam_hfov_deg=72.0,
+        camera_topic="/test/camera",
+        depth_topic="/test/depth",
+        log_cb=lambda _msg: None,
+        run_log_cb=lambda _event, **_fields: None,
+    )
+    scan.start_scan(
+        reason="ground_only",
+        pose_ned=(0.0, 0.0, -5.0),
+        yaw=0.0,
+        mission_target_ned=(8.0, 0.0),
+        target_id="target_clear",
+        target_name="Target Clear",
+        phase_name="STOP_HOVER",
+        closest_m=99.0,
+        committed_side="none",
+    )
+    scan._depth_candidate_points = 32
+
+    result = scan._process_scan(
+        pose_ned=(0.0, 0.0, -5.0),
+        rgb_frame=None,
+        obstacle_sectors={"left": 99.0, "center": 99.0, "right": 99.0},
+        command=ScanCommand(hold_position=True, desired_yaw=0.0),
+    )
+
+    assert result.finished
+    assert result.success
+    assert result.failure_reason == ""
+    assert result.point_batch is not None
+    assert result.point_batch.point_count == 0
+    snapshot, _summary = mapper.update(now_s=1.0)
+    assert snapshot.valid_for_planning
+
+
+def test_local_mapper_filters_own_drone_near_field_points() -> None:
+    mapper = LocalMapper(
+        LocalMapperConfig(
+            resolution_m=0.5,
+            span_x_m=8.0,
+            span_y_m=8.0,
+            self_filter_radius_m=1.0,
+            warn_distance_m=2.0,
+            critical_distance_m=2.0,
+        )
+    )
+    mapper.update_pose(0.0, 0.0, -5.0, 0.0, 0.0)
+    near_self = PointBatch(
+        source="depth",
+        frame="world_ned",
+        stamp_s=1.0,
+        points_xyz=np.array([[0.25, 0.0, -5.0], [0.0, -0.3, -5.0]], dtype=np.float32),
+        confidence=1.0,
+        sensor_range_m=20.0,
+    )
+    assert mapper.ingest_point_batch(near_self) == 0
+    _snapshot, summary = mapper.update(now_s=1.1)
+    assert not summary.critical
+    assert summary.closest_m == pytest.approx(99.0)
+
+    far_obstacle = PointBatch(
+        source="depth",
+        frame="world_ned",
+        stamp_s=2.0,
+        points_xyz=np.array([[1.5, 0.0, -5.0]], dtype=np.float32),
+        confidence=1.0,
+        sensor_range_m=20.0,
+    )
+    mapper.ingest_point_batch(far_obstacle)
+    _snapshot, summary = mapper.update(now_s=2.1)
+    assert summary.critical
+    assert summary.closest_m == pytest.approx(1.75, abs=0.3)
 
 
 def test_scan_manager_prunes_old_scan_artifacts(tmp_path) -> None:

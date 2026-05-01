@@ -4,9 +4,6 @@ avoidance_panel.py — Per-drone avoidance status panel
 Collapsible widget that shows:
   • Per-drone row: ID | state badge | planner_state | blocked duration
   • Blocked event history (last 20 entries, append-only for session)
-
-Consumes AVOIDANCE_STATUS data via SwarmManager listeners — no new bridge
-messages needed.
 """
 
 from __future__ import annotations
@@ -18,13 +15,13 @@ from typing import Optional
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QPlainTextEdit,
+    QHBoxLayout, QHeaderView, QLabel, QPlainTextEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from core.swarm_manager import DroneRecord, SwarmManager
 
-_MAX_HISTORY = 20
+_MAX_HISTORY = 30
 
 _STATE_COLORS: dict[str, QColor] = {
     "NOMINAL":  QColor(80, 200, 120),
@@ -38,7 +35,8 @@ COL_STATE = 1
 COL_PLAN  = 2
 COL_DUR   = 3
 _COL_COUNT = 4
-_HEADERS = ["Drone", "State", "Planner", "Blocked"]
+_HEADERS = ["Drone", "Stav", "Planner", "Blokováno"]
+_COL_WIDTHS = [90, 90, 110, 90]
 
 
 class AvoidancePanel(QWidget):
@@ -48,7 +46,6 @@ class AvoidancePanel(QWidget):
         super().__init__(parent)
         self._swarm = swarm
         self._row_for_drone: dict[int, int] = {}
-        # drone_id → (cell_id_at_block, wall_time_of_block_start, display_ts)
         self._blocking_since: dict[int, tuple[str, float, str]] = {}
         self._history: list[str] = []
 
@@ -63,7 +60,8 @@ class AvoidancePanel(QWidget):
         self._toggle_btn.setChecked(True)
         self._toggle_btn.setFlat(True)
         self._toggle_btn.setStyleSheet(
-            "font-weight: bold; text-align: left; padding: 4px 2px;")
+            "font-weight: bold; text-align: left; padding: 6px 4px; color: #94A3B8;"
+        )
         self._toggle_btn.clicked.connect(self._on_toggle)
         hdr.addWidget(self._toggle_btn)
         hdr.addStretch()
@@ -81,24 +79,29 @@ class AvoidancePanel(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.setWordWrap(False)
+        self._table.setMinimumHeight(80)
+        self._table.verticalHeader().setDefaultSectionSize(26)
+
         h = self._table.horizontalHeader()
-        h.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        h.setStretchLastSection(True)
-        self._table.setMaximumHeight(130)
+        for col, w in enumerate(_COL_WIDTHS):
+            if col == COL_PLAN:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            else:
+                h.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                self._table.setColumnWidth(col, w)
         cl.addWidget(self._table)
 
         # History log
-        hist_lbl = QLabel("Blocked events:")
-        hist_lbl.setFont(QFont("Sans", 8))
+        hist_lbl = QLabel("Zablokování:")
+        hist_lbl.setStyleSheet("color: #64748B; font-size: 11px; padding: 2px 0 0 0;")
         cl.addWidget(hist_lbl)
 
         self._hist_log = QPlainTextEdit()
         self._hist_log.setReadOnly(True)
         self._hist_log.setMaximumBlockCount(_MAX_HISTORY + 4)
-        mono = QFont("Monospace", 8)
-        mono.setStyleHint(QFont.StyleHint.TypeWriter)
-        self._hist_log.setFont(mono)
-        self._hist_log.setMaximumHeight(110)
+        self._hist_log.setMinimumHeight(90)
         cl.addWidget(self._hist_log)
 
         layout.addWidget(self._content)
@@ -106,10 +109,9 @@ class AvoidancePanel(QWidget):
         swarm.add_listener(self._on_drone_update)
         swarm.add_avoidance_event_listener(self._on_avoidance_event)
 
-    # ── Public ──────────────────────────────────────────────────────────────
+    # ── Public ───────────────────────────────────────────────────────────────
 
     def tick(self) -> None:
-        """Call from the 20 fps repaint timer to refresh live blocked durations."""
         now = time.monotonic()
         for drone_id, (_cell_id, start_wall, _ts) in self._blocking_since.items():
             row = self._row_for_drone.get(drone_id)
@@ -125,7 +127,7 @@ class AvoidancePanel(QWidget):
         self._content.setVisible(expanded)
         self._toggle_btn.setText("▼  Avoidance" if expanded else "►  Avoidance")
 
-    # ── Listeners ───────────────────────────────────────────────────────────
+    # ── Listeners ────────────────────────────────────────────────────────────
 
     def _on_drone_update(self, rec: DroneRecord) -> None:
         row = self._row_for_drone.get(rec.drone_id)
@@ -181,7 +183,7 @@ class AvoidancePanel(QWidget):
         if new_state not in ("CRITICAL", "BLOCKED"):
             self._blocking_since.pop(drone_id, None)
 
-    # ── Helpers ─────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _set(self, row: int, col: int, text: str) -> None:
         item = self._table.item(row, col)

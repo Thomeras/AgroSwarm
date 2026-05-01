@@ -168,6 +168,7 @@ SCAN_RETRY_LIMIT = 2
 NO_PATH_BLOCKED_THRESHOLD = 3
 BLOCKED_RETRY_TICKS = 100
 COMMAND_RETRY_INTERVAL_S = 1.0
+MANUAL_VELOCITY_STALE_S = 0.35
 
 
 class RuntimePhase(Enum):
@@ -180,6 +181,7 @@ class RuntimePhase(Enum):
     LOCAL_REPLAN = auto()
     DETOUR_EXECUTION = auto()
     BLOCKED = auto()
+    MANUAL_VELOCITY = auto()
     RETURN_HOME = auto()
     LANDING = auto()
     ABORT = auto()
@@ -221,6 +223,7 @@ class ObstacleAvoidanceRuntime(Node):
         self.declare_parameter("local_map_depth_half_life_s", 10.0)
         self.declare_parameter("local_map_scan_half_life_s", 75.0)
         self.declare_parameter("local_map_blocked_half_life_s", 140.0)
+        self.declare_parameter("local_map_self_filter_radius_m", 1.0)
         self.declare_parameter("local_map_peer_cost_gain", 1.0)
         self.declare_parameter("local_map_blocked_cost_gain", 1.0)
         self.declare_parameter("peer_drone_ids", [])
@@ -244,8 +247,12 @@ class ObstacleAvoidanceRuntime(Node):
         self.declare_parameter("relax_dead_reckoning_gate", False)
         self.declare_parameter("force_arm", False)
         self.declare_parameter("altitude_policy_mode", "FixedNED")
+        self.declare_parameter("local_origin_ned_x", 0.0)
+        self.declare_parameter("local_origin_ned_y", 0.0)
 
         self._drone_id = int(self.get_parameter("drone_id").value)
+        self._local_origin_x = float(self.get_parameter("local_origin_ned_x").value)
+        self._local_origin_y = float(self.get_parameter("local_origin_ned_y").value)
         self._default_alt = float(self.get_parameter("default_altitude_m").value)
         self._default_cruise = float(self.get_parameter("default_cruise_speed").value)
         self._default_clear_d = float(self.get_parameter("default_clear_dist").value)
@@ -293,6 +300,9 @@ class ObstacleAvoidanceRuntime(Node):
         )
         self._local_map_blocked_half_life_s = max(
             0.1, float(self.get_parameter("local_map_blocked_half_life_s").value)
+        )
+        self._local_map_self_filter_radius_m = max(
+            0.0, float(self.get_parameter("local_map_self_filter_radius_m").value)
         )
         self._local_map_peer_cost_gain = float(
             self.get_parameter("local_map_peer_cost_gain").value
@@ -395,11 +405,15 @@ class ObstacleAvoidanceRuntime(Node):
         self._drone_y = 0.0
         self._drone_z = 0.0
         self._drone_yaw = 0.0
+        self._desired_hover_yaw: float = float("nan")
         self._pos_valid = False
 
         self._vsp_x = 0.0
         self._vsp_y = 0.0
         self._vsp_z = 0.0
+        self._manual_velocity_ned = (0.0, 0.0, 0.0)
+        self._manual_yaw_rate = 0.0
+        self._manual_velocity_last_ts = 0.0
 
         self._home_x = 0.0
         self._home_y = 0.0
@@ -409,6 +423,7 @@ class ObstacleAvoidanceRuntime(Node):
         self._active_target_id = ""
         self._active_target_name = ""
         self._active_target_xy: tuple[float, float] | None = None
+        self._active_target_world_xy: tuple[float, float] | None = None
         self._active_target_alt = self._default_alt
         self._active_target_speed = self._default_cruise
         self._active_target_clear_dist = self._default_clear_d
@@ -505,6 +520,7 @@ class ObstacleAvoidanceRuntime(Node):
                 depth_half_life_s=self._local_map_depth_half_life_s,
                 scan_half_life_s=self._local_map_scan_half_life_s,
                 blocked_half_life_s=self._local_map_blocked_half_life_s,
+                self_filter_radius_m=self._local_map_self_filter_radius_m,
                 peer_cost_gain=self._local_map_peer_cost_gain,
                 blocked_cost_gain=self._local_map_blocked_cost_gain,
                 warn_distance_m=self._warn_dist,
@@ -636,9 +652,15 @@ class ObstacleAvoidanceRuntime(Node):
             QOS_SENSOR,
         )
         self._lidar_obstacle_sub = None
+        if self._enable_lidar_obstacle_points and not self._lidar_obstacle_topic:
+            self.get_logger().warn(
+                "enable_lidar_obstacle_points=true but lidar_obstacle_topic is empty; "
+                "leaving LaserScan obstacle ingestion disabled so downward terrain range "
+                "is not treated as a horizontal obstacle"
+            )
+            self._enable_lidar_obstacle_points = False
         if self._enable_lidar_obstacle_points:
-            lidar_topic = self._lidar_obstacle_topic or topics.downward_lidar_scan
-            self._lidar_obstacle_topic = lidar_topic
+            lidar_topic = self._lidar_obstacle_topic
             self._lidar_obstacle_sub = self.create_subscription(
                 LaserScan,
                 lidar_topic,
@@ -684,6 +706,7 @@ class ObstacleAvoidanceRuntime(Node):
         self.get_logger().info(
             f"obstacle_avoidance_runtime ready — drone_id={self._drone_id} "
             f"default_alt={self._default_alt}m default_speed={self._default_cruise}m/s "
+            f"local_origin_ned=({self._local_origin_x:.2f},{self._local_origin_y:.2f}) "
             f"legacy_topics={'on' if self._publish_legacy_obstacle_topics else 'off'}"
         )
         self._run_log.log(
@@ -701,6 +724,10 @@ class ObstacleAvoidanceRuntime(Node):
             lidar_obstacle_topic=self._lidar_obstacle_topic,
             target_cmd_topic=topics.avoidance_target_cmd,
             event_topic=topics.avoidance_events,
+            local_origin_ned=[
+                round(float(self._local_origin_x), 3),
+                round(float(self._local_origin_y), 3),
+            ],
         )
 
     @property
@@ -722,7 +749,7 @@ class ObstacleAvoidanceRuntime(Node):
         health = self._health_monitor.update_pose_message(msg, now_s=time.time())
         self._runtime_readiness = self._health_monitor.evaluate(
             now_s=time.time(),
-            command_active=self._active_target_xy is not None,
+            command_active=self._command_active(),
             owner_conflict=self._px4_ownership_guard.conflict,
         )
         self._pos_valid = bool(health.valid)
@@ -944,12 +971,34 @@ class ObstacleAvoidanceRuntime(Node):
         wall_epoch_floor = 1_000_000_000.0
         return (float(a_s) >= wall_epoch_floor) == (float(b_s) >= wall_epoch_floor)
 
+    def _world_to_local_xy(self, x: float, y: float) -> tuple[float, float]:
+        return (float(x) - self._local_origin_x, float(y) - self._local_origin_y)
+
+    def _local_to_world_xy(self, x: float, y: float) -> tuple[float, float]:
+        return (float(x) + self._local_origin_x, float(y) + self._local_origin_y)
+
     def _rth_target_cb(self, msg: Point) -> None:
-        self._home_x = float(msg.x)
-        self._home_y = float(msg.y)
+        world_x = float(msg.x)
+        world_y = float(msg.y)
+        self._home_x, self._home_y = self._world_to_local_xy(world_x, world_y)
         self._home_captured = True
+        if self._active_command == "return_home" and self._active_target_xy is not None:
+            self._active_target_xy = (self._home_x, self._home_y)
+            self._active_target_world_xy = (world_x, world_y)
+            self._run_log.log(
+                "return_home_target_updated",
+                home_ned=[
+                    round(float(world_x), 3),
+                    round(float(world_y), 3),
+                ],
+                home_local_ned=[
+                    round(float(self._home_x), 3),
+                    round(float(self._home_y), 3),
+                ],
+            )
         self.get_logger().info(
-            f"home set from rth_target: NED({self._home_x:.2f}, {self._home_y:.2f})"
+            f"home set from rth_target: world NED({world_x:.2f}, {world_y:.2f}) "
+            f"-> local NED({self._home_x:.2f}, {self._home_y:.2f})"
         )
 
     def _depth_cb(self, msg: Image) -> None:
@@ -1070,11 +1119,13 @@ class ObstacleAvoidanceRuntime(Node):
                 return
             self._vsp_x = self._drone_x
             self._vsp_y = self._drone_y
+            world_x, world_y = self._local_to_world_xy(self._drone_x, self._drone_y)
             self._activate_target(
                 command=cmd,
                 target_id=target_id,
                 name=name,
                 target_xy=(self._drone_x, self._drone_y),
+                world_target_xy=(world_x, world_y),
                 altitude_m=float(command.altitude_m),
                 cruise_speed=float(command.cruise_speed_mps),
                 clear_dist=float(
@@ -1106,11 +1157,13 @@ class ObstacleAvoidanceRuntime(Node):
                     reason="missing_target_ned",
                 )
                 return
+            local_target = self._world_to_local_xy(float(target[0]), float(target[1]))
             self._activate_target(
                 command=cmd,
                 target_id=target_id,
                 name=name,
-                target_xy=(float(target[0]), float(target[1])),
+                target_xy=local_target,
+                world_target_xy=(float(target[0]), float(target[1])),
                 altitude_m=float(command.altitude_m),
                 cruise_speed=float(command.cruise_speed_mps),
                 clear_dist=float(
@@ -1140,6 +1193,7 @@ class ObstacleAvoidanceRuntime(Node):
                 target_id=target_id,
                 name=name,
                 target_xy=(self._home_x, self._home_y),
+                world_target_xy=self._local_to_world_xy(self._home_x, self._home_y),
                 altitude_m=float(command.altitude_m),
                 cruise_speed=float(command.cruise_speed_mps),
                 clear_dist=float(
@@ -1155,6 +1209,9 @@ class ObstacleAvoidanceRuntime(Node):
             return
 
         if cmd == "hold":
+            self._manual_velocity_ned = (0.0, 0.0, 0.0)
+            self._manual_yaw_rate = 0.0
+            self._manual_velocity_last_ts = 0.0
             self._clear_active_target()
             self._transition_to(RuntimePhase.STOP_HOVER, reason="external_hold_command")
             self._publish_command_feedback(
@@ -1165,7 +1222,45 @@ class ObstacleAvoidanceRuntime(Node):
             )
             return
 
+        if cmd == "manual_velocity":
+            velocity = command.velocity_ned
+            if velocity is None:
+                self._publish_command_feedback(
+                    accepted=False,
+                    command=cmd,
+                    target_id=target_id,
+                    reason="missing_velocity_ned",
+                )
+                return
+            self._clear_active_target()
+            self._manual_velocity_ned = (
+                float(velocity[0]),
+                float(velocity[1]),
+                float(velocity[2]),
+            )
+            self._manual_yaw_rate = (
+                0.0 if math.isnan(command.yaw_rate_rad_s)
+                else float(command.yaw_rate_rad_s)
+            )
+            self._manual_velocity_last_ts = time.time()
+            self._transition_to(
+                RuntimePhase.MANUAL_VELOCITY,
+                reason="external_manual_velocity_command",
+                target_id=target_id,
+                target_name=name,
+            )
+            self._publish_command_feedback(
+                accepted=True,
+                command=cmd,
+                target_id=target_id,
+                payload=command.to_payload(),
+            )
+            return
+
         if cmd == "land":
+            self._manual_velocity_ned = (0.0, 0.0, 0.0)
+            self._manual_yaw_rate = 0.0
+            self._manual_velocity_last_ts = 0.0
             self._clear_active_target()
             self._land_sent = False
             self._transition_to(RuntimePhase.LANDING, reason="external_land_command")
@@ -1178,6 +1273,9 @@ class ObstacleAvoidanceRuntime(Node):
             return
 
         if cmd == "cancel":
+            self._manual_velocity_ned = (0.0, 0.0, 0.0)
+            self._manual_yaw_rate = 0.0
+            self._manual_velocity_last_ts = 0.0
             self._clear_active_target()
             self._transition_to(RuntimePhase.STOP_HOVER, reason="external_cancel_command")
             self._publish_command_feedback(
@@ -1186,6 +1284,26 @@ class ObstacleAvoidanceRuntime(Node):
                 target_id=target_id,
                 payload=command.to_payload(),
             )
+            return
+
+        if cmd == "yaw_to":
+            if not math.isnan(command.desired_yaw_rad):
+                self._desired_hover_yaw = command.desired_yaw_rad
+                if self._phase not in (RuntimePhase.STOP_HOVER,):
+                    self._transition_to(RuntimePhase.STOP_HOVER, reason="yaw_to_command")
+                self._publish_command_feedback(
+                    accepted=True,
+                    command=cmd,
+                    target_id=target_id,
+                    payload=command.to_payload(),
+                )
+            else:
+                self._publish_command_feedback(
+                    accepted=False,
+                    command=cmd,
+                    target_id=target_id,
+                    reason="missing_desired_yaw_rad",
+                )
             return
 
         self.get_logger().warn(f"Unknown target command: {cmd}")
@@ -1203,15 +1321,23 @@ class ObstacleAvoidanceRuntime(Node):
         target_id: str,
         name: str,
         target_xy: tuple[float, float],
+        world_target_xy: tuple[float, float],
         altitude_m: float,
         cruise_speed: float,
         clear_dist: float,
     ) -> None:
         previous_target = self._active_target_xy
+        self._manual_velocity_ned = (0.0, 0.0, 0.0)
+        self._manual_yaw_rate = 0.0
+        self._manual_velocity_last_ts = 0.0
         self._active_command = command
         self._active_target_id = target_id
         self._active_target_name = name
         self._active_target_xy = target_xy
+        self._active_target_world_xy = (
+            world_target_xy if world_target_xy is not None
+            else self._local_to_world_xy(target_xy[0], target_xy[1])
+        )
         self._active_target_alt = altitude_m
         self._active_target_speed = cruise_speed
         self._active_target_clear_dist = clear_dist
@@ -1229,10 +1355,15 @@ class ObstacleAvoidanceRuntime(Node):
         self._land_sent = False
         self._last_arm_request_ts = 0.0
         self._last_offboard_request_ts = 0.0
+        self._desired_hover_yaw = float("nan")
         self._scan_manager.reset()
         if previous_target != target_xy:
             self._actual_path.clear()
-        if self._phase == RuntimePhase.STOP_HOVER or self._phase == RuntimePhase.IDLE:
+        if self._phase in (
+            RuntimePhase.STOP_HOVER,
+            RuntimePhase.IDLE,
+            RuntimePhase.LANDING,
+        ):
             next_phase = RuntimePhase.TAKEOFF if not self._is_at_target_altitude() else RuntimePhase.CRUISE_TO_TARGET
             self._transition_to(
                 next_phase,
@@ -1245,7 +1376,11 @@ class ObstacleAvoidanceRuntime(Node):
             command=command,
             target_id=target_id,
             target_name=name,
-            target_ned=[round(target_xy[0], 3), round(target_xy[1], 3)],
+            target_ned=[
+                round(self._active_target_world_xy[0], 3),
+                round(self._active_target_world_xy[1], 3),
+            ],
+            target_local_ned=[round(target_xy[0], 3), round(target_xy[1], 3)],
             altitude_m=round(float(altitude_m), 3),
             cruise_speed_mps=round(float(cruise_speed), 3),
             clear_dist_m=round(float(clear_dist), 3),
@@ -1256,6 +1391,7 @@ class ObstacleAvoidanceRuntime(Node):
         self._active_target_id = ""
         self._active_target_name = ""
         self._active_target_xy = None
+        self._active_target_world_xy = None
         self._detour_target = None
         self._detour_side = "none"
         self._detour_strategy = "none"
@@ -1353,14 +1489,22 @@ class ObstacleAvoidanceRuntime(Node):
     def _refresh_runtime_readiness(self) -> None:
         self._runtime_readiness = self._health_monitor.evaluate(
             now_s=time.time(),
-            command_active=self._active_target_xy is not None,
+            command_active=self._command_active(),
             owner_conflict=self._px4_ownership_guard.conflict,
         )
         self._pos_valid = bool(self._runtime_readiness.pose.valid)
 
+    def _command_active(self) -> bool:
+        return self._active_target_xy is not None or self._phase == RuntimePhase.MANUAL_VELOCITY
+
     def _enforce_runtime_safety(self) -> bool:
         readiness = self._runtime_readiness
         if readiness.navigation_allowed:
+            if self._phase == RuntimePhase.ABORT and self._active_target_xy is not None:
+                self._blocked_reason = ""
+                self._blocked_severity = "none"
+                self._transition_to(RuntimePhase.LOCAL_REPLAN, reason="safety_recovered")
+                return True
             self._last_safety_action_reason = ""
             return False
 
@@ -1467,6 +1611,8 @@ class ObstacleAvoidanceRuntime(Node):
             self._do_detour_execution()
         elif self._phase == RuntimePhase.BLOCKED:
             self._do_blocked()
+        elif self._phase == RuntimePhase.MANUAL_VELOCITY:
+            self._do_manual_velocity()
         elif self._phase == RuntimePhase.RETURN_HOME:
             self._do_return_home()
         elif self._phase == RuntimePhase.LANDING:
@@ -1529,7 +1675,8 @@ class ObstacleAvoidanceRuntime(Node):
                 return
             elif plan.status in {PlannerResultStatus.NO_PATH, PlannerResultStatus.BLOCKED}:
                 self._no_path_streak += 1
-                self._mark_current_zone_blocked(score=1.0 + 0.25 * self._no_path_streak)
+                if self._planner_failure_should_block_current_zone(plan):
+                    self._mark_current_zone_blocked(score=1.0 + 0.25 * self._no_path_streak)
                 self._transition_to(RuntimePhase.STOP_HOVER, reason="path_blocked_or_no_path")
                 return
 
@@ -1574,11 +1721,15 @@ class ObstacleAvoidanceRuntime(Node):
         self._vsp_x = self._drone_x
         self._vsp_y = self._drone_y
         self._vsp_z = self._target_z_setpoint() if self._active_target_xy is not None else self._drone_z
-        self._publish_setpoint(self._vsp_x, self._vsp_y, self._vsp_z, self._drone_yaw)
+        hover_yaw = self._desired_hover_yaw if not math.isnan(self._desired_hover_yaw) else self._drone_yaw
+        self._publish_setpoint(self._vsp_x, self._vsp_y, self._vsp_z, hover_yaw)
 
         if self._phase_ticks < STOP_HOVER_REPLAN_TICKS:
             return
         if self._obstacle_critical or self._no_path_streak > 0:
+            if self._scan_attempts_for_target >= SCAN_RETRY_LIMIT:
+                self._transition_to(RuntimePhase.LOCAL_REPLAN, reason="scan_retry_limit_replan")
+                return
             self._transition_to(RuntimePhase.SCAN_360, reason="map_enrichment_needed")
             return
         self._transition_to(RuntimePhase.LOCAL_REPLAN, reason="hover_replan_trigger")
@@ -1629,7 +1780,8 @@ class ObstacleAvoidanceRuntime(Node):
             return
 
         self._no_path_streak += 1
-        self._mark_current_zone_blocked(score=1.0 + 0.5 * self._no_path_streak)
+        if self._planner_failure_should_block_current_zone(plan):
+            self._mark_current_zone_blocked(score=1.0 + 0.5 * self._no_path_streak)
         if self._no_path_streak >= NO_PATH_BLOCKED_THRESHOLD and self._scan_attempts_for_target >= SCAN_RETRY_LIMIT:
             self._blocked_reason = "replan_failed_after_scan_retries"
             self._blocked_severity = "hard"
@@ -1681,6 +1833,21 @@ class ObstacleAvoidanceRuntime(Node):
         # Periodic retry
         if self._phase_ticks % BLOCKED_RETRY_TICKS == 0 and self._active_target_xy is not None:
             self._transition_to(RuntimePhase.LOCAL_REPLAN, reason="blocked_retry_replan")
+
+    def _do_manual_velocity(self) -> None:
+        if time.time() - self._manual_velocity_last_ts > MANUAL_VELOCITY_STALE_S:
+            self._manual_velocity_ned = (0.0, 0.0, 0.0)
+            self._manual_yaw_rate = 0.0
+            self._transition_to(RuntimePhase.STOP_HOVER, reason="manual_velocity_stale")
+            return
+
+        vx, vy, vz = self._manual_velocity_ned
+        self._publish_velocity_setpoint(vx, vy, vz, self._manual_yaw_rate)
+        if self._pos_valid:
+            self._vsp_x = self._drone_x
+            self._vsp_y = self._drone_y
+            self._vsp_z = self._drone_z
+            self._actual_path.append((self._drone_x, self._drone_y, self._drone_z))
 
     def _do_return_home(self) -> None:
         # Return home is basically a cruise to the home target
@@ -1754,7 +1921,7 @@ class ObstacleAvoidanceRuntime(Node):
     def _sync_planner_grid(self) -> LocalGridSnapshot:
         snap = self._local_grid_snapshot
         hard_occupancy = np.asarray(
-            snap.occupied_mask | snap.dynamic_no_go_mask,
+            snap.occupied_mask,
             dtype=np.bool_,
         )
         unknown_mask = np.array(snap.unknown_mask, dtype=np.bool_, copy=True)
@@ -1828,6 +1995,8 @@ class ObstacleAvoidanceRuntime(Node):
 
         if new_phase == RuntimePhase.SCAN_360 and self._active_target_xy is not None:
             self._scan_attempts_for_target += 1
+            self._blocked_history.clear()
+            self._local_mapper.clear_blocked_history()
             self._scan_manager.start_scan(
                 reason=reason,
                 pose_ned=(self._drone_x, self._drone_y, self._drone_z),
@@ -1929,6 +2098,19 @@ class ObstacleAvoidanceRuntime(Node):
         self._blocked_severity = "hard"
         return RuntimePhase.BLOCKED
 
+    def _planner_failure_should_block_current_zone(self, plan: PlanResult | None) -> bool:
+        if plan is None:
+            return False
+        if plan.planner_state == LocalPlannerState.DEGRADED:
+            return False
+        degraded_reasons = {
+            "planner_map_not_ready",
+            "start_cell_blocked",
+            "start_outside_grid",
+        }
+        reason = str(plan.reason or "")
+        return not any(reason.startswith(item) for item in degraded_reasons)
+
     def _mark_current_zone_blocked(self, *, score: float) -> None:
         if not self._pos_valid:
             return
@@ -2008,17 +2190,20 @@ class ObstacleAvoidanceRuntime(Node):
             return
         self._home_x = self._drone_x
         self._home_y = self._drone_y
+        world_x, world_y = self._local_to_world_xy(self._home_x, self._home_y)
         self._home_captured = True
         self._run_log.log(
             "home_captured",
-            home_ned=[round(float(self._home_x), 3), round(float(self._home_y), 3)],
+            home_ned=[round(float(world_x), 3), round(float(world_y), 3)],
+            home_local_ned=[round(float(self._home_x), 3), round(float(self._home_y), 3)],
         )
 
     def _publish_offboard_heartbeat(self) -> None:
         if not self._runtime_readiness.setpoint_publish_allowed:
             return
         self._px4_publishers.publish_offboard_heartbeat(
-            timestamp_us=self._px4_timestamp_us()
+            timestamp_us=self._px4_timestamp_us(),
+            velocity=self._phase == RuntimePhase.MANUAL_VELOCITY,
         )
 
     def _publish_setpoint(self, x: float, y: float, z: float, yaw: float = float("nan")) -> None:
@@ -2045,6 +2230,37 @@ class ObstacleAvoidanceRuntime(Node):
             timestamp_us=self._px4_timestamp_us(),
         )
 
+    def _publish_velocity_setpoint(
+        self,
+        vx: float,
+        vy: float,
+        vz: float,
+        yawspeed: float,
+    ) -> None:
+        self._refresh_runtime_readiness()
+        if not self._runtime_readiness.setpoint_publish_allowed:
+            reason = self._runtime_readiness.reason
+            if reason != self._last_setpoint_gate_reason:
+                self._last_setpoint_gate_reason = reason
+                self._run_log.log(
+                    "velocity_setpoint_publish_blocked",
+                    reason=reason,
+                    readiness=self._runtime_readiness.to_payload(),
+                    phase=self._phase.name,
+                    target_id=self._active_target_id,
+                )
+            return
+        self._last_setpoint_gate_reason = ""
+        self._px4_publishers.publish_velocity_setpoint(
+            vx=vx,
+            vy=vy,
+            vz=vz,
+            yaw=float("nan"),
+            current_yaw=self._drone_yaw,
+            yawspeed=yawspeed,
+            timestamp_us=self._px4_timestamp_us(),
+        )
+
     def _send_command(
         self,
         cmd: int,
@@ -2058,6 +2274,7 @@ class ObstacleAvoidanceRuntime(Node):
             param2=param2,
             param3=param3,
             timestamp_us=self._px4_timestamp_us(),
+            target_system=self._drone_id + 1,
         )
         self._run_log.log(
             "vehicle_command",
@@ -2130,17 +2347,33 @@ class ObstacleAvoidanceRuntime(Node):
             "target_id": self._active_target_id,
             "target_name": self._active_target_name,
             "mission_name": self._active_target_name,
-            "target_ned": None if self._active_target_xy is None else [
+            "target_ned": None if self._active_target_world_xy is None else [
+                round(float(self._active_target_world_xy[0]), 2),
+                round(float(self._active_target_world_xy[1]), 2),
+            ],
+            "target_local_ned": None if self._active_target_xy is None else [
                 round(float(self._active_target_xy[0]), 2),
                 round(float(self._active_target_xy[1]), 2),
             ],
             "subgoal_ned": None if not self._last_plan_result or not self._last_plan_result.subgoal_xy else [
+                round(float(self._local_to_world_xy(*self._last_plan_result.subgoal_xy)[0]), 2),
+                round(float(self._local_to_world_xy(*self._last_plan_result.subgoal_xy)[1]), 2),
+            ],
+            "subgoal_local_ned": None if not self._last_plan_result or not self._last_plan_result.subgoal_xy else [
                 round(float(self._last_plan_result.subgoal_xy[0]), 2),
                 round(float(self._last_plan_result.subgoal_xy[1]), 2),
             ],
             "home_ned": None if not self._home_captured else [
+                round(float(self._local_to_world_xy(self._home_x, self._home_y)[0]), 2),
+                round(float(self._local_to_world_xy(self._home_x, self._home_y)[1]), 2),
+            ],
+            "home_local_ned": None if not self._home_captured else [
                 round(float(self._home_x), 2),
                 round(float(self._home_y), 2),
+            ],
+            "local_origin_ned": [
+                round(float(self._local_origin_x), 2),
+                round(float(self._local_origin_y), 2),
             ],
             "home_captured": bool(self._home_captured),
             "navigator_ready": bool(self._runtime_readiness.navigation_allowed),
@@ -2210,6 +2443,11 @@ class ObstacleAvoidanceRuntime(Node):
             "reassign_recommended": blocked_severity == "HARD",
             "blocked_since_s": round(float(self._blocked_since_s), 2) if self._blocked_since_s > 0.0 else 0.0,
             "drone_ned": [
+                round(float(self._local_to_world_xy(self._drone_x, self._drone_y)[0]), 2),
+                round(float(self._local_to_world_xy(self._drone_x, self._drone_y)[1]), 2),
+                round(float(self._drone_z), 2),
+            ],
+            "drone_local_ned": [
                 round(float(self._drone_x), 2),
                 round(float(self._drone_y), 2),
                 round(float(self._drone_z), 2),

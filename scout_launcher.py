@@ -21,6 +21,7 @@ import locale
 import os
 import random
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
@@ -729,11 +730,29 @@ def _swarm_spawn_poses_for_world(world: str, drone_count: int) -> list[tuple[flo
     return poses[:drone_count]
 
 
+def _write_swarm_spawn_origins(spawn_poses: list[tuple[float, float, float]]) -> str:
+    """Persist Gazebo spawn origins as shared world NED offsets for ROS/GCS."""
+    perimeters_dir = Path(WS_DIR) / "perimeters"
+    perimeters_dir.mkdir(parents=True, exist_ok=True)
+    path = perimeters_dir / "spawn_origins.json"
+    origins = []
+    for drone_id, (gz_x, gz_y, gz_z) in enumerate(spawn_poses):
+        origins.append({
+            "drone_id": f"drone_{drone_id}",
+            "gz_enu": {"x": float(gz_x), "y": float(gz_y), "z": float(gz_z)},
+            "ned": {"x": float(gz_y), "y": float(gz_x), "z": float(-gz_z)},
+        })
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"origins": origins}, f, indent=2)
+    return str(path)
+
+
 def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     """Launch N-drone swarm: instance 0 starts Gazebo, instances 1..N-1 attach."""
     pad_poses = _swarm_pad_poses_for_world(world)
     drone_count = max(1, min(len(pad_poses), int(drone_count)))
     spawn_poses = _swarm_spawn_poses_for_world(world, drone_count)
+    spawn_origins_file = _write_swarm_spawn_origins(spawn_poses)
 
     print(f"\n{BOLD}{BLU}{'━' * 46}{RST}")
     print(f"{BOLD}{BLU}  Swarm Launch Sequence ({drone_count} drones){RST}")
@@ -809,12 +828,17 @@ def _launch_sequence_swarm(world: str, model: str, drone_count: int) -> None:
     print(_step(next_step, T, "Starting Swarm Center GCS..."))
     _open_terminal(
         "Swarm Center GCS",
-        f"cd {WS_DIR}/swarm_center && python3 main.py --drones {drone_count} --base-port 14540",
+        (
+            f"cd {WS_DIR}/swarm_center && "
+            f"python3 main.py --drones {drone_count} --base-port 14540 "
+            f"--origin-file {shlex.quote(spawn_origins_file)}"
+        ),
     )
     print(_dim("terminal opened"))
 
     print(f"\n{GRN}{BOLD}Swarm launched!{RST}")
     print(f"{YLW}  Initial spawns are random staging points; mapped pads become RTH homes during setup.{RST}")
+    print(f"{YLW}  Spawn origins written to {spawn_origins_file}{RST}")
     for drone_id, (x, y, _z) in enumerate(spawn_poses[:drone_count]):
         px4_ns = "/fmu/out/..." if drone_id == 0 else f"/px4_{drone_id}/fmu/out/..."
         print(

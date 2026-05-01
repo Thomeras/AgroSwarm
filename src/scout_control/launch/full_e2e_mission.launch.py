@@ -46,11 +46,13 @@ Override defaults:
 """
 
 import sys
+import json
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from scout_control.utils.paths import SPAWN_ORIGINS_FILE
 
 
 _PAD_NED_BY_WORLD = {
@@ -67,6 +69,36 @@ _PAD_NED_BY_WORLD = {
         ( 12.0, -26.0),  # pad_3: Gz ENU(-26,  12)
     ],
 }
+
+
+def _load_spawn_origins(drone_count: int) -> list[tuple[float, float]]:
+    origins = [(0.0, 0.0) for _ in range(max(1, int(drone_count)))]
+    try:
+        with open(SPAWN_ORIGINS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return origins
+    items = data.get("origins", []) if isinstance(data, dict) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(str(item.get("drone_id", "")).split("_")[-1])
+            ned = item.get("ned", {})
+            if 0 <= idx < len(origins) and isinstance(ned, dict):
+                origins[idx] = (float(ned.get("x", 0.0)), float(ned.get("y", 0.0)))
+        except (ValueError, TypeError):
+            continue
+    return origins
+
+
+def _origins_payload(origins: list[tuple[float, float]]) -> str:
+    return json.dumps({
+        "origins": [
+            {"drone_id": f"drone_{idx}", "ned": {"x": x, "y": y}}
+            for idx, (x, y) in enumerate(origins)
+        ]
+    })
 
 
 def _parse_launch_arg(argv, name: str, default: str) -> str:
@@ -109,6 +141,7 @@ def generate_launch_description() -> LaunchDescription:
     _model_base = _gz_model_base(_model)
     _pad_ned = _PAD_NED_BY_WORLD.get(_world_name, _PAD_NED_BY_WORLD["swarm_field"])
     _drone_count = _parse_drone_count(sys.argv, max_count=len(_pad_ned))
+    _spawn_origins = _load_spawn_origins(_drone_count)
 
     # ── Launch arguments ──────────────────────────────────────────────────────
     world_arg   = DeclareLaunchArgument(
@@ -184,6 +217,7 @@ def generate_launch_description() -> LaunchDescription:
                 "default_altitude_m": altitude,
                 "manual_cruise_speed_mps": cruise_speed,
                 "manual_clear_radius_m": 0.15,
+                "local_origins_ned_json": _origins_payload(_spawn_origins),
             }],
             output="screen",
         )],
@@ -213,6 +247,12 @@ def generate_launch_description() -> LaunchDescription:
                     "altitude_policy_mode": "TerrainFollow",
                     "depth_topic":          f"/drone_{i}/depth/image_raw",
                     "camera_info_topic":    f"/drone_{i}/camera/camera_info",
+                    # The forward depth camera sits close to the x500 airframe. A
+                    # wider self filter avoids persistent rotor/body edge hits
+                    # becoming a local obstacle ring during 360 scans.
+                    "local_map_self_filter_radius_m": 2.2,
+                    "local_origin_ned_x": _spawn_origins[i][0],
+                    "local_origin_ned_y": _spawn_origins[i][1],
                 }],
                 output="screen",
             )],

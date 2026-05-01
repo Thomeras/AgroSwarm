@@ -61,6 +61,7 @@ from scout_control.utils.bridge_protocol import (
     MSG_DRONE_STATUS, MSG_EMERGENCY_STOP, MSG_GOTO_CELL, MSG_GOTO_DRONE, MSG_GRID_RELOAD,
     MSG_GENERATE_GRID, MSG_HELLO, MSG_MISSION_COMPLETE, MSG_MISSION_READY, MSG_PEER_CELLS,
     MSG_NO_GO_OVERLAY, MSG_PING, MSG_PONG, MSG_REFINED_GRID_EVENT,
+    MSG_PLANNED_ROUTES, MSG_ROUTE_CONFLICT,
     MSG_RTH_ALL, MSG_RTH_DRONE, MSG_SET_MODE, MSG_SETUP_COMPLETE, MSG_SETUP_STATUS,
     MSG_START_MISSION, MSG_TASK_STATUS,
     MSG_MANUAL_CONTROL,
@@ -135,6 +136,12 @@ QOS_AVOIDANCE_STATUS = QoSProfile(
     depth=1,
 )
 QOS_AVOIDANCE_EVENTS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
+QOS_BEST_EFFORT = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
@@ -242,6 +249,12 @@ class GcsBridge(Node):
         self.create_subscription(
             String, swarm_topics.mission_complete,
             self._mission_complete_cb, QOS_VOLATILE_BE)
+        self.create_subscription(
+            String, "/swarm/planned_routes",
+            self._planned_routes_cb, QOS_LATCHED_RELIABLE)
+        self.create_subscription(
+            String, "/swarm/route_conflicts",
+            self._route_conflicts_cb, QOS_BEST_EFFORT)
         self.create_subscription(
             String, "/field/setup_status",
             self._setup_status_cb, QOS_VOLATILE_BE)
@@ -368,6 +381,12 @@ class GcsBridge(Node):
 
     def _mission_complete_cb(self, msg: String) -> None:
         self._enqueue_json(MSG_MISSION_COMPLETE, msg.data)
+
+    def _planned_routes_cb(self, msg: String) -> None:
+        self._enqueue_json(MSG_PLANNED_ROUTES, msg.data)
+
+    def _route_conflicts_cb(self, msg: String) -> None:
+        self._enqueue_json(MSG_ROUTE_CONFLICT, msg.data)
 
     def _setup_status_cb(self, msg: String) -> None:
         self._enqueue_json(MSG_SETUP_STATUS, msg.data)
@@ -683,10 +702,26 @@ class GcsBridge(Node):
                 return
             self._last_goto_t[drone_id] = now
             pub = self._target_cmd_pubs.get(drone_id)
-            target_ned = data.get("target_ned")
             if pub is None:
                 self.get_logger().warn(f"goto_drone: unknown drone_id '{drone_id}'")
                 return
+
+            yaw_to_rad = data.get("yaw_to_rad")
+            if yaw_to_rad is not None:
+                try:
+                    payload = {
+                        "command": "yaw_to",
+                        "target_id": f"manual_yaw{int(now * 1000) % 100000}",
+                        "desired_yaw_rad": float(yaw_to_rad),
+                    }
+                    out = String()
+                    out.data = json.dumps(payload)
+                    pub.publish(out)
+                except (TypeError, ValueError) as exc:
+                    self.get_logger().warn(f"yaw_drone: invalid payload: {exc}")
+                return
+
+            target_ned = data.get("target_ned")
             if (
                 not isinstance(target_ned, (list, tuple))
                 or len(target_ned) != 2
@@ -700,7 +735,7 @@ class GcsBridge(Node):
                     "target_ned": [float(target_ned[0]), float(target_ned[1])],
                     "altitude_m": float(data.get("altitude_m", 5.0)),
                     "clear_radius_m": float(data.get("clear_radius_m", 0.15)),
-                    "cruise_speed_mps": float(data.get("cruise_speed_mps", 2.0)),
+                    "cruise_speed_mps": float(data.get("cruise_speed_mps", 4.0)),
                 }
                 out = String()
                 out.data = json.dumps(payload)
@@ -718,6 +753,41 @@ class GcsBridge(Node):
             action = str(data.get("action", "")).lower()
             if not action:
                 self.get_logger().warn("manual_control: missing action")
+                return
+            if action == "manual_velocity":
+                drone_id = str(data.get("drone_id", "")).strip()
+                pub = self._target_cmd_pubs.get(drone_id)
+                if pub is None:
+                    self.get_logger().warn(
+                        f"manual_velocity: unknown drone_id '{drone_id}'"
+                    )
+                    return
+                velocity_ned = data.get("velocity_ned")
+                if (
+                    not isinstance(velocity_ned, (list, tuple))
+                    or len(velocity_ned) != 3
+                ):
+                    self.get_logger().warn(
+                        f"manual_velocity: invalid velocity_ned {velocity_ned!r}"
+                    )
+                    return
+                try:
+                    payload = {
+                        "command": "manual_velocity",
+                        "target_id": f"manual_velocity{int(time.time() * 1000) % 100000}",
+                        "velocity_ned": [
+                            float(velocity_ned[0]),
+                            float(velocity_ned[1]),
+                            float(velocity_ned[2]),
+                        ],
+                        "yaw_rate_rad_s": float(data.get("yaw_rate_rad_s", 0.0)),
+                    }
+                except (TypeError, ValueError) as exc:
+                    self.get_logger().warn(f"manual_velocity: invalid payload: {exc}")
+                    return
+                out = String()
+                out.data = json.dumps(payload)
+                pub.publish(out)
                 return
             out = String()
             out.data = json.dumps(data)

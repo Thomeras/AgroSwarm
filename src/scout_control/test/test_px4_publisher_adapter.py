@@ -56,6 +56,17 @@ def test_publish_offboard_heartbeat_matches_runtime_wire_fields() -> None:
     assert msg.timestamp == 12345
 
 
+def test_publish_offboard_heartbeat_can_select_velocity_control() -> None:
+    adapter, offboard_pub, _, _ = _adapter()
+
+    adapter.publish_offboard_heartbeat(timestamp_us=12345, velocity=True)
+
+    msg = offboard_pub.messages[-1]
+    assert msg.position is False
+    assert msg.velocity is True
+    assert msg.timestamp == 12345
+
+
 def test_publish_setpoint_uses_current_yaw_when_yaw_is_nan() -> None:
     adapter, _, setpoint_pub, _ = _adapter()
 
@@ -76,6 +87,29 @@ def test_publish_setpoint_uses_current_yaw_when_yaw_is_nan() -> None:
     assert msg.yaw == 0.75
     assert math.isnan(msg.yawspeed)
     assert msg.timestamp == 45678
+
+
+def test_publish_velocity_setpoint_uses_velocity_control_fields() -> None:
+    adapter, _, setpoint_pub, _ = _adapter()
+
+    adapter.publish_velocity_setpoint(
+        vx=1.0,
+        vy=-2.0,
+        vz=0.5,
+        yaw=float("nan"),
+        current_yaw=0.25,
+        yawspeed=-0.6,
+        timestamp_us=45679,
+    )
+
+    msg = setpoint_pub.messages[-1]
+    assert all(math.isnan(value) for value in msg.position)
+    assert msg.velocity == [1.0, -2.0, 0.5]
+    assert all(math.isnan(value) for value in msg.acceleration)
+    assert all(math.isnan(value) for value in msg.jerk)
+    assert msg.yaw == 0.25
+    assert msg.yawspeed == -0.6
+    assert msg.timestamp == 45679
 
 
 def test_send_command_matches_px4_vehicle_command_defaults() -> None:

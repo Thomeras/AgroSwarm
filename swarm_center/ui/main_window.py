@@ -27,13 +27,13 @@ Data flow:
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow, QMessageBox, QSplitter, QStatusBar, QTabWidget,
-    QVBoxLayout, QWidget,
 )
 
 from core.app_logger import AppLogger
@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         bridge_host: str = DEFAULT_HOST,
         bridge_port: int = DEFAULT_PORT,
         world_image: Optional[str] = None,
+        origin_file: Optional[str] = None,
     ) -> None:
         super().__init__()
 
@@ -90,10 +91,19 @@ class MainWindow(QMainWindow):
         self._last_mission_ready: bool = False
         self._last_mission_complete: bool = False
         self._last_mission_id: Optional[str] = None
+        self._planned_routes: dict[str, list[str]] = {}
+        self._planned_conflicts: list[dict] = []
+        self._planned_route_items: dict[str, object] = {}
+        self._conflict_decay: dict[str, float] = {}
+        self._show_planned_routes: bool = True
 
         # ── MAVLink ─────────────────────────────────────────────────────────
         self._mav = SwarmMavlinkManager(
-            drone_count=drone_count, host=host, base_port=base_port)
+            drone_count=drone_count,
+            host=host,
+            base_port=base_port,
+            origin_file=origin_file,
+        )
         self._mav.telemetry_updated.connect(self._on_telemetry)
         self._mav.connection_changed.connect(self._on_connection_changed)
         self._mav.log.connect(self._on_mav_log)
@@ -117,6 +127,8 @@ class MainWindow(QMainWindow):
         br.grid_reload.connect(self._on_grid_reload)
         br.no_go_overlay.connect(self._on_no_go_overlay)
         br.refined_grid_event.connect(self._on_refined_grid_event)
+        br.planned_routes_received.connect(self._on_planned_routes)
+        br.route_conflict_received.connect(self._on_route_conflicts)
         br.hello.connect(self._on_bridge_hello)
         br.depth_frame.connect(self._on_depth_frame_for_map)
         br.camera_info.connect(self._on_camera_info_for_map)
@@ -135,6 +147,8 @@ class MainWindow(QMainWindow):
             get_drone_position=self._get_drone_ned,
             send_goto_drone=self._bridge_runner.client.send_goto_drone,
             send_rth_drone=self._bridge_runner.client.send_rth_drone,
+            send_yaw_drone=self._bridge_runner.client.send_yaw_drone,
+            get_drone_yaw=self._get_drone_yaw,
         )
 
         # M4 — Camera feed (must be created before connecting bridge signals)
@@ -159,6 +173,7 @@ class MainWindow(QMainWindow):
 
         self._control.reset_view_clicked.connect(self._field_view.reset_view)
         self._control.overlay_toggled.connect(self._field_view.set_overlay_visibility)
+        self._control.overlay_toggled.connect(self._on_overlay_toggled)
         self._control.load_grid_clicked.connect(self._load_grid)
         self._control.cell_size_changed.connect(self._on_cell_size_changed)
         self._control.mode_changed.connect(self._on_mode_changed)
@@ -181,27 +196,28 @@ class MainWindow(QMainWindow):
         self._swarm.add_mission_listener(self._control.update_mission)
         self._swarm.add_mission_listener(self._on_mission_state_changed)
 
-        # Right column: control panel (top) + drone list + avoidance panel (bottom)
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(self._control, stretch=2)
-        right_layout.addWidget(self._drone_list, stretch=1)
-        right_layout.addWidget(self._avoidance_panel, stretch=0)
+        # Right column: vertical splitter → control | drones | avoidance
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.addWidget(self._control)
+        right_splitter.addWidget(self._drone_list)
+        right_splitter.addWidget(self._avoidance_panel)
+        right_splitter.setSizes([420, 240, 220])
+        right_splitter.setChildrenCollapsible(False)
 
-        # Left tabs: Mission / Camera / 3D
+        # Left tabs: Mission / Manual / Camera / 3D
         self._left_tabs = QTabWidget()
         self._left_tabs.addTab(self._field_view, "Mission")
         self._left_tabs.addTab(self._manual_control, "Manual")
         self._left_tabs.addTab(self._camera_view, "Camera")
         self._left_tabs.addTab(self._viewport_3d, "3D Map")
+        self._left_tabs.currentChanged.connect(self._on_tab_changed)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._left_tabs)
-        splitter.addWidget(right)
+        splitter.addWidget(right_splitter)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([1000, 400])
+        splitter.setSizes([1050, 450])
         self.setCentralWidget(splitter)
 
         # ── Menu ────────────────────────────────────────────────────────────
@@ -317,6 +333,19 @@ class MainWindow(QMainWindow):
     def _on_mav_log(self, drone_id: int, msg: str) -> None:
         self._logger.info(f"drone_{drone_id}", msg)
 
+    def _get_drone_yaw(self, drone_id: str) -> float | None:
+        telem = self._mav.get_telemetry(drone_id)
+        if telem is not None and telem.connected:
+            return telem.yaw
+        try:
+            drone_num = int(drone_id.split("_")[-1])
+        except (ValueError, IndexError):
+            return None
+        rec = self._swarm.drone(drone_num)
+        if rec is None or not rec.telemetry.connected:
+            return None
+        return rec.telemetry.yaw
+
     def _get_drone_ned(self, drone_id: str) -> tuple[float, float, float] | None:
         telem = self._mav.get_telemetry(drone_id)
         if telem is not None and telem.connected:
@@ -396,6 +425,49 @@ class MainWindow(QMainWindow):
             f"cells={int(data.get('total_cells', 0))} | path={path or '?'}"
         )
         self.statusBar().showMessage("Refined grid overlay updated", 5000)
+
+    def _on_overlay_toggled(self, layer: str, visible: bool) -> None:
+        if layer == "planned_routes":
+            self._show_planned_routes = bool(visible)
+            self._render_planned_routes()
+
+    def _on_planned_routes(self, payload: dict) -> None:
+        raw_routes = payload.get("routes", {})
+        self._planned_routes = (
+            {str(k): list(v) for k, v in raw_routes.items()}
+            if isinstance(raw_routes, dict)
+            else {}
+        )
+        conflicts = payload.get("conflicts", [])
+        self._planned_conflicts = list(conflicts) if isinstance(conflicts, list) else []
+        now = time.time()
+        for conflict in self._planned_conflicts:
+            for key in (conflict.get("cell_a"), conflict.get("cell_b")):
+                if key:
+                    self._conflict_decay[str(key)] = now + 5.0
+        self._render_planned_routes()
+
+    def _on_route_conflicts(self, payload: dict) -> None:
+        conflicts = payload.get("conflicts", [])
+        self._planned_conflicts = list(conflicts) if isinstance(conflicts, list) else []
+        now = time.time()
+        for conflict in self._planned_conflicts:
+            for key in (conflict.get("cell_a"), conflict.get("cell_b")):
+                if key:
+                    self._conflict_decay[str(key)] = now + 5.0
+        self._render_planned_routes()
+
+    def _render_planned_routes(self) -> None:
+        now = time.time()
+        self._conflict_decay = {
+            cell_id: expires
+            for cell_id, expires in self._conflict_decay.items()
+            if expires > now
+        }
+        routes = self._planned_routes if self._show_planned_routes else {}
+        conflicts = self._planned_conflicts if self._show_planned_routes else []
+        decay = self._conflict_decay if self._show_planned_routes else {}
+        self._field_view.set_planned_routes(routes, conflicts, decay)
 
     def _try_reload_default_grid(self) -> None:
         found = find_default_grid_file()
@@ -619,6 +691,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._logger.error("report", f"Report generation failed: {exc}")
             QMessageBox.warning(self, "Report", f"Generation failed:\n{exc}")
+
+    def _on_tab_changed(self, index: int) -> None:
+        if self._left_tabs.widget(index) is self._manual_control:
+            self._manual_control.setFocus()
 
     # ── Menu ────────────────────────────────────────────────────────────────
 

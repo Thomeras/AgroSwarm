@@ -29,6 +29,7 @@ MAVLink messages we care about (Milestone 1):
 from __future__ import annotations
 
 import collections
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -103,11 +104,18 @@ class MavlinkWorker(QObject):
     connection_changed = pyqtSignal(int, bool)
     log = pyqtSignal(int, str)
 
-    def __init__(self, drone_id: int, host: str, port: int) -> None:
+    def __init__(
+        self,
+        drone_id: int,
+        host: str,
+        port: int,
+        local_origin_ned: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
         super().__init__()
         self._drone_id = drone_id
         self._host = host
         self._port = port
+        self._origin_x, self._origin_y = local_origin_ned
         self._running = False
         self._conn: Optional[mavutil.mavfile] = None
         self._telem = DroneTelemetry(drone_id=drone_id)
@@ -244,8 +252,8 @@ class MavlinkWorker(QObject):
             changed = True
 
         elif mtype == "LOCAL_POSITION_NED":
-            self._telem.x_ned = msg.x
-            self._telem.y_ned = msg.y
+            self._telem.x_ned = msg.x + self._origin_x
+            self._telem.y_ned = msg.y + self._origin_y
             self._telem.z_ned = msg.z
             # Also use the NED velocities (more accurate than GPS-derived)
             self._telem.vx = msg.vx
@@ -368,11 +376,18 @@ class SwarmMavlinkManager(QObject):
     connection_changed = pyqtSignal(int, bool)
     log = pyqtSignal(int, str)
 
-    def __init__(self, drone_count: int, host: str, base_port: int) -> None:
+    def __init__(
+        self,
+        drone_count: int,
+        host: str,
+        base_port: int,
+        origin_file: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self._workers: list[MavlinkWorker] = []
         self._threads: list[QThread] = []
         self._telemetry: dict[int, DroneTelemetry] = {}
+        origins = self._load_origins(origin_file)
 
         for i in range(drone_count):
             # PX4 SITL convention: instance N uses GCS port 14550+N
@@ -380,7 +395,12 @@ class SwarmMavlinkManager(QObject):
             # offboard range since that's what users more commonly configure
             # for pymavlink. Configurable via base_port.
             port = base_port + i
-            worker = MavlinkWorker(drone_id=i, host=host, port=port)
+            worker = MavlinkWorker(
+                drone_id=i,
+                host=host,
+                port=port,
+                local_origin_ned=origins.get(i, (0.0, 0.0)),
+            )
             thread = QThread()
             worker.moveToThread(thread)
             thread.started.connect(worker.run)
@@ -393,6 +413,29 @@ class SwarmMavlinkManager(QObject):
 
             self._workers.append(worker)
             self._threads.append(thread)
+
+    @staticmethod
+    def _load_origins(path: Optional[str]) -> dict[int, tuple[float, float]]:
+        if not path:
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        origins: dict[int, tuple[float, float]] = {}
+        items = data.get("origins", []) if isinstance(data, dict) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(str(item.get("drone_id", "")).split("_")[-1])
+                ned = item.get("ned", {})
+                if isinstance(ned, dict):
+                    origins[idx] = (float(ned.get("x", 0.0)), float(ned.get("y", 0.0)))
+            except (ValueError, TypeError):
+                continue
+        return origins
 
     def get_telemetry(self, drone_id: int | str) -> Optional[DroneTelemetry]:
         if isinstance(drone_id, str):

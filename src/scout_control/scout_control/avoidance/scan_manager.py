@@ -80,6 +80,7 @@ class ScanManager:
         self._closest_m = 99.0
         self._target_ned = (0.0, 0.0)
         self._last_depth_ts = 0.0
+        self._depth_candidate_points = 0
         self._last_projection_meta: dict[str, Any] = {}
         self._depth_timestamp_provenance = "unavailable"
         self._point_keys: set[tuple[int, int, int]] = set()
@@ -122,6 +123,7 @@ class ScanManager:
         self._committed_side = committed_side
         self._target_ned = (float(mission_target_ned[0]), float(mission_target_ned[1]))
         self._last_depth_ts = 0.0
+        self._depth_candidate_points = 0
         self._last_projection_meta = {}
         self._depth_timestamp_provenance = "unavailable"
         self._point_keys.clear()
@@ -194,6 +196,7 @@ class ScanManager:
         self._failure_reason = ""
         self._closest_m = 99.0
         self._committed_side = "none"
+        self._depth_candidate_points = 0
         self._point_keys.clear()
         self._points_world = []
         self._best_sectors = {"left": 99.0, "center": 99.0, "right": 99.0}
@@ -221,6 +224,7 @@ class ScanManager:
             is_dense_scan=True,
             encoding=self._depth_encoding,
         )
+        self._depth_candidate_points += int(body_batch.point_count)
         self._last_projection_meta = self._projector.last_projection_metadata
         self._depth_timestamp_provenance = "sensor" if depth_ts > 0.0 else "wall_time"
         if body_batch.point_count == 0:
@@ -275,7 +279,10 @@ class ScanManager:
         )
         inserted_voxels = self._mapper.ingest_point_batch(point_batch)
 
-        success = point_batch.point_count > 0
+        # A ground-only scan in an open field projects valid depth samples, then
+        # removes them at the ground filter. That is a clear scan, not a sensor
+        # failure; only fail when no usable depth samples were captured at all.
+        success = point_batch.point_count > 0 or self._depth_candidate_points > 0
         if not success:
             self._failure_reason = "no_depth_points_captured"
 

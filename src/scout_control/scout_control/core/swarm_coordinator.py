@@ -36,7 +36,7 @@ from px4_msgs.msg import (
 from std_msgs.msg import String
 
 from scout_control.avoidance.telemetry_hub import TelemetryHub
-from scout_control.utils.paths import GRID_FILE
+from scout_control.utils.paths import GRID_FILE, SPAWN_ORIGINS_FILE
 from scout_control.utils.task_allocator import TaskAllocator
 
 # ── QoS ──────────────────────────────────────────────────────────────────────
@@ -71,6 +71,9 @@ class SwarmCoordinator(Node):
         self.declare_parameter("deferred_retry_delay_s", 12.0)
         self.declare_parameter("hard_block_cooldown_s", 30.0)
         self.declare_parameter("max_deferrals_per_cell", 3)
+        self.declare_parameter("strategy", "proximity")
+        self.declare_parameter("cruise_speed_mps", 2.0)
+        self.declare_parameter("route_conflict_window_s", 6.0)
 
         self._n_drones:      int   = self.get_parameter("drone_count").value
         self._ready_timeout: float = self.get_parameter("ready_timeout").value
@@ -84,6 +87,14 @@ class SwarmCoordinator(Node):
         self._max_deferrals_per_cell: int = int(
             self.get_parameter("max_deferrals_per_cell").value
         )
+        self._strategy: str = str(self.get_parameter("strategy").value)
+        self._cruise_speed_mps: float = float(
+            self.get_parameter("cruise_speed_mps").value
+        )
+        self._route_conflict_window_s: float = float(
+            self.get_parameter("route_conflict_window_s").value
+        )
+        self._local_origins = self._load_local_origins()
 
         # ── Publishers ────────────────────────────────────────────────────────
         swarm_topics = TelemetryHub(drone_id=0).swarm
@@ -99,6 +110,8 @@ class SwarmCoordinator(Node):
             String, swarm_topics.mission_complete, QOS_VOLATILE)
         self._rth_pub              = self.create_publisher(
             String, swarm_topics.rth_request,      QOS_VOLATILE)
+        self._planned_routes_pub   = self.create_publisher(
+            String, "/swarm/planned_routes", QOS_LATCHED)
 
         # ── Initial allocator (placeholder grid — reloaded on mission_ready) ──
         self._cell_by_id: dict = {}
@@ -184,6 +197,10 @@ class SwarmCoordinator(Node):
             deferred_retry_delay_s=self._deferred_retry_delay_s,
             hard_block_cooldown_s=self._hard_block_cooldown_s,
             max_deferrals_per_cell=self._max_deferrals_per_cell,
+            strategy=self._strategy,
+            cruise_speed_mps=self._cruise_speed_mps,
+            route_conflict_window_s=self._route_conflict_window_s,
+            on_planned_routes=self._publish_planned_routes,
         )
 
     # ── Timer wrappers — indirection so _allocator can be hot-swapped ─────────
@@ -202,8 +219,26 @@ class SwarmCoordinator(Node):
     def _make_pos_cb(self, drone_id: str):
         def _cb(msg: VehicleLocalPosition) -> None:
             if msg.xy_valid:
-                self._allocator.update_drone_position(drone_id, msg.x, msg.y)
+                ox, oy = self._local_origins.get(drone_id, (0.0, 0.0))
+                self._allocator.update_drone_position(drone_id, msg.x + ox, msg.y + oy)
         return _cb
+
+    def _load_local_origins(self) -> dict[str, tuple[float, float]]:
+        origins: dict[str, tuple[float, float]] = {}
+        try:
+            with open(SPAWN_ORIGINS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return origins
+        items = data.get("origins", []) if isinstance(data, dict) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            drone_id = str(item.get("drone_id", "")).strip()
+            ned = item.get("ned", {})
+            if drone_id and isinstance(ned, dict):
+                origins[drone_id] = (float(ned.get("x", 0.0)), float(ned.get("y", 0.0)))
+        return origins
 
     def _drone_status_cb(self, msg: String) -> None:
         """Forward /swarm/drone_status to TaskAllocator."""
@@ -270,6 +305,11 @@ class SwarmCoordinator(Node):
         msg      = String()
         msg.data = json.dumps({"drone_id": drone_id, "reason": "mission_complete"})
         self._rth_pub.publish(msg)
+
+    def _publish_planned_routes(self, payload: dict) -> None:
+        msg = String()
+        msg.data = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        self._planned_routes_pub.publish(msg)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

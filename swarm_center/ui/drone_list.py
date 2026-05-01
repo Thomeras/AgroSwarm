@@ -24,17 +24,17 @@ COL_ID     = 0
 COL_CONN   = 1
 COL_MODE   = 2
 COL_ARMED  = 3
-COL_NED    = 4
-COL_CELL   = 5
-COL_ASSIGN = 6
-COL_ALT    = 7
-COL_SPEED  = 8
-COL_BATT   = 9
-COL_COUNT  = 10
+COL_ALT    = 4
+COL_SPEED  = 5
+COL_CELL   = 6
+COL_ASSIGN = 7
+COL_BATT   = 8
+COL_COUNT  = 9
 
-HEADERS = [
-    "ID", "Link", "Mode", "Arm", "NED (x,y)", "Cell", "Assigned", "Alt", "Speed", "Batt",
-]
+HEADERS = ["Drone", "Link", "Mode", "Arm", "Alt", "Speed", "Cell", "Assigned", "Batt"]
+
+# Fixed column widths (px); -1 = stretch
+_COL_WIDTHS = [90, 45, 90, 70, 70, 80, 55, 120, 55]
 
 
 class DroneListPanel(QWidget):
@@ -47,8 +47,9 @@ class DroneListPanel(QWidget):
         super().__init__(parent)
         self._swarm = swarm
 
-        self._title = QLabel("Swarm")
+        self._title = QLabel("Roj dronů")
         self._title.setFont(QFont("Sans", 11, QFont.Weight.Bold))
+        self._title.setStyleSheet("color: #94A3B8; padding: 4px 0 2px 0;")
 
         self._table = QTableWidget(0, COL_COUNT)
         self._table.setHorizontalHeaderLabels(HEADERS)
@@ -56,13 +57,24 @@ class DroneListPanel(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(True)
+        self._table.setWordWrap(False)
+        self._table.setMinimumHeight(100)
 
         hdr = self._table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setStretchLastSection(True)
+        for col, w in enumerate(_COL_WIDTHS):
+            if col == COL_ASSIGN:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            else:
+                hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+                self._table.setColumnWidth(col, w)
+
+        self._table.verticalHeader().setDefaultSectionSize(26)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
         layout.addWidget(self._title)
         layout.addWidget(self._table)
 
@@ -74,7 +86,7 @@ class DroneListPanel(QWidget):
 
         swarm.add_listener(self._on_update)
 
-    # ── Listener ────────────────────────────────────────────────────────────
+    # ── Listener ─────────────────────────────────────────────────────────────
 
     def _on_update(self, rec: DroneRecord) -> None:
         row = self._row_for_drone.get(rec.drone_id)
@@ -82,7 +94,7 @@ class DroneListPanel(QWidget):
             row = self._table.rowCount()
             self._table.insertRow(row)
             self._row_for_drone[rec.drone_id] = row
-            # ID cell gets the drone's colour
+
             colour = DRONE_COLORS[rec.drone_id % len(DRONE_COLORS)]
             id_item = QTableWidgetItem(f"drone_{rec.drone_id}")
             id_item.setForeground(colour)
@@ -93,15 +105,18 @@ class DroneListPanel(QWidget):
 
         self._set(row, COL_CONN,
                   "●" if t.connected else "○",
-                  QColor(80, 200, 120) if t.connected else QColor(180, 100, 100))
+                  QColor(80, 200, 120) if t.connected else QColor(180, 80, 80))
 
-        self._set(row, COL_MODE, t.mode)
+        self._set(row, COL_MODE, t.mode or "—")
 
         self._set(row, COL_ARMED,
                   "ARMED" if t.armed else "disarm",
-                  QColor(255, 100, 100) if t.armed else QColor(160, 160, 160))
+                  QColor(255, 80, 80) if t.armed else QColor(100, 116, 139))
 
-        self._set(row, COL_NED, f"({t.x_ned:+.1f}, {t.y_ned:+.1f})")
+        self._set(row, COL_ALT, f"{-t.z_ned:+.1f}m")
+
+        speed = math.sqrt(t.vx * t.vx + t.vy * t.vy)
+        self._set(row, COL_SPEED, f"{speed:.1f} m/s")
 
         self._set(row, COL_CELL, rec.cell.id if rec.cell is not None else "—")
 
@@ -110,13 +125,9 @@ class DroneListPanel(QWidget):
             assigned = f"{assigned} ({rec.allocator_status.lower()})"
         self._set(row, COL_ASSIGN, assigned)
 
-        self._set(row, COL_ALT, f"{-t.z_ned:+.1f} m")   # NED z negative = up
-
-        speed = math.sqrt(t.vx * t.vx + t.vy * t.vy)
-        self._set(row, COL_SPEED, f"{speed:.1f} m/s")
-
         if t.battery_remaining >= 0:
-            self._set(row, COL_BATT, f"{t.battery_remaining}%",
+            self._set(row, COL_BATT,
+                      f"{t.battery_remaining}%",
                       self._batt_colour(t.battery_remaining))
         else:
             self._set(row, COL_BATT, "—")
@@ -128,7 +139,7 @@ class DroneListPanel(QWidget):
             if row is not None:
                 self._table.selectRow(row)
 
-    # ── Event handlers ───────────────────────────────────────────────────────
+    # ── Event handlers ────────────────────────────────────────────────────────
 
     def _on_item_clicked(self, item: QTableWidgetItem) -> None:
         drone_id = self._drone_for_row(item.row())
@@ -141,7 +152,7 @@ class DroneListPanel(QWidget):
         if drone_id is None:
             return
         menu = QMenu(self)
-        arm_act = menu.addAction(f"ARM drone_{drone_id}")
+        arm_act   = menu.addAction(f"ARM drone_{drone_id}")
         disarm_act = menu.addAction(f"DISARM drone_{drone_id}")
         chosen = menu.exec(self._table.viewport().mapToGlobal(pos))
         if chosen == arm_act:
@@ -155,7 +166,7 @@ class DroneListPanel(QWidget):
                 return did
         return None
 
-    # ── Helpers ─────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _set(self, row: int, col: int, text: str, colour: QColor | None = None) -> None:
         item = self._table.item(row, col)

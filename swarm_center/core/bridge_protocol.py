@@ -87,6 +87,13 @@ Swarm Center → ROS2 (received by gcs_bridge):
   MSG_REFINED_GRID_EVENT
     data: {path, no_go_count, caution_count, total_cells}
     Notification that refined_grid.json is available (Phase 4A output available).
+
+--- v1.4 payloads ---
+  MSG_PLANNED_ROUTES
+    data: {"routes": {drone_id: [cell_id, ...]}, "conflicts": [...], "generated_t": float}
+
+  MSG_ROUTE_CONFLICT
+    data: {"conflicts": [...]}
 """
 
 # Message type constants — string values are wire format
@@ -101,6 +108,8 @@ MSG_SETUP_COMPLETE     = "setup_complete"
 MSG_GRID_RELOAD        = "grid_reload"
 MSG_NO_GO_OVERLAY      = "no_go_overlay"
 MSG_REFINED_GRID_EVENT = "refined_grid_event"
+MSG_PLANNED_ROUTES     = "planned_routes"
+MSG_ROUTE_CONFLICT     = "route_conflict"
 
 MSG_SET_MODE           = "set_mode"
 MSG_RTH_ALL            = "rth_all"
@@ -123,9 +132,9 @@ MSG_DEPTH_FRAME        = "depth_frame"     # {drone_id, seq, data_b64, width, he
 MSG_CAMERA_INFO        = "camera_info"     # {drone_id, width, height, k}
 MSG_CAMERA_CONTROL     = "camera_control"  # GCS→ROS2: {drone_id|"all", enabled, fps_limit}
 
-# Protocol version — wire format stays JSON; 1.3 adds field model overlay payloads.
-BRIDGE_VERSION = "1.3"
-PROTOCOL_VERSION = "1.3"   # alias for forward-compatibility checks
+# Protocol version — wire format stays JSON; 1.4 adds planned route payloads.
+BRIDGE_VERSION = "1.4"
+PROTOCOL_VERSION = "1.4"   # alias for forward-compatibility checks
 
 # Default endpoint (localhost-only)
 DEFAULT_HOST = "127.0.0.1"

@@ -34,7 +34,7 @@ from typing import Optional
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QPolygonF,
-    QPaintEvent, QMouseEvent, QWheelEvent,
+    QPainterPath, QPaintEvent, QMouseEvent, QWheelEvent,
 )
 from PyQt6.QtWidgets import QWidget
 
@@ -66,6 +66,11 @@ DRONE_COLORS = [
     QColor(120, 220, 140),   # green
     QColor(240, 180, 255),   # magenta
     QColor(255, 200, 80),    # amber
+]
+_DRONE_COLORS = [
+    QColor("#e6194B"), QColor("#3cb44b"), QColor("#ffe119"),
+    QColor("#4363d8"), QColor("#f58231"), QColor("#911eb4"),
+    QColor("#42d4f4"), QColor("#f032e6"),
 ]
 
 TRAIL_MAX = 2000      # samples
@@ -131,6 +136,10 @@ class FieldView(QWidget):
         self._show_obstacles: bool = True
         self._show_terrain: bool = True
         self._show_sector_preview: bool = True
+        self._show_planned_routes: bool = True
+        self._planned_routes: dict[str, list[str]] = {}
+        self._planned_conflicts: list[dict] = []
+        self._conflict_decay: dict[str, float] = {}
         self.reload_field_model()
 
         self.setMinimumSize(QSize(600, 500))
@@ -266,6 +275,19 @@ class FieldView(QWidget):
             self._show_terrain = visible
         elif layer == "sector_preview":
             self._show_sector_preview = visible
+        elif layer == "planned_routes":
+            self._show_planned_routes = visible
+        self.update()
+
+    def set_planned_routes(
+        self,
+        routes: dict[str, list[str]],
+        conflicts: list[dict],
+        conflict_decay: dict[str, float],
+    ) -> None:
+        self._planned_routes = {str(k): list(v) for k, v in routes.items()}
+        self._planned_conflicts = list(conflicts)
+        self._conflict_decay = dict(conflict_decay)
         self.update()
 
     def _build_terrain_pixmap(
@@ -403,6 +425,7 @@ class FieldView(QWidget):
         self._paint_axes(p, grid)
         self._paint_markers(p, grid)
         self._paint_trails(p)
+        self._paint_planned_routes(p, grid)
         self._paint_drones(p)
         self._paint_scale_bar(p, grid)
 
@@ -763,6 +786,60 @@ class FieldView(QWidget):
             p.drawText(QPointF(lx + 1, ly + 1), label)
             p.setPen(COL_TEXT)
             p.drawText(QPointF(lx, ly), label)
+
+    def _paint_planned_routes(self, p: QPainter, grid: FieldGrid) -> None:
+        if not self._show_planned_routes:
+            return
+        cell_by_id = {cell.id: cell for cell in grid.cells}
+        for drone_id in sorted(self._planned_routes):
+            points = []
+            for cell_id in self._planned_routes[drone_id]:
+                cell = cell_by_id.get(str(cell_id))
+                if cell is not None:
+                    points.append(self._ned_to_screen(cell.x, cell.y))
+            if len(points) < 2:
+                continue
+            colour = _DRONE_COLORS[hash(drone_id) % len(_DRONE_COLORS)]
+            path = QPainterPath(points[0])
+            for pt in points[1:]:
+                path.lineTo(pt)
+            route_colour = QColor(colour)
+            route_colour.setAlpha(190)
+            p.setPen(QPen(route_colour, 2.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+            self._paint_route_arrowhead(p, points[-2], points[-1], colour)
+
+        now = time.time()
+        half = grid.cell_size_m / 2.0
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for cell_id, expires in list(self._conflict_decay.items()):
+            if expires <= now:
+                continue
+            cell = cell_by_id.get(str(cell_id))
+            if cell is None:
+                continue
+            tl = self._ned_to_screen(cell.x + half, cell.y - half)
+            br = self._ned_to_screen(cell.x - half, cell.y + half)
+            p.setPen(QPen(QColor(255, 40, 40), 1.5))
+            p.drawRect(QRectF(tl, br))
+
+    def _paint_route_arrowhead(
+        self, p: QPainter, a: QPointF, b: QPointF, colour: QColor
+    ) -> None:
+        angle = math.atan2(b.y() - a.y(), b.x() - a.x())
+        size = 8.0
+        left = QPointF(
+            b.x() - size * math.cos(angle - math.pi / 6.0),
+            b.y() - size * math.sin(angle - math.pi / 6.0),
+        )
+        right = QPointF(
+            b.x() - size * math.cos(angle + math.pi / 6.0),
+            b.y() - size * math.sin(angle + math.pi / 6.0),
+        )
+        p.setPen(QPen(colour, 1.0))
+        p.setBrush(QBrush(colour))
+        p.drawPolygon(QPolygonF([b, left, right]))
 
     def _paint_scale_bar(self, p: QPainter, grid: FieldGrid) -> None:
         # Pick a round number of metres that's ~10% of screen width

@@ -15,6 +15,9 @@ Note:
   `full_e2e_mission.launch.py` uses the `world:=...` launch arg to generate
   Gazebo sensor bridge topics under `/world/<world>/...`.
 
+  All operator control (manual flight, pad marking, boundary, mission confirm)
+  goes through Swarm Center. No separate manual controller terminal is needed.
+
 
 0. CLEAN
 --------
@@ -46,8 +49,12 @@ Use `scout_launcher.py` when possible:
 Recommended selections:
 
   launch mode: swarm
-  world: tilted_field or swarm_field
+  world: swarm_field  (swarm mode forces swarm_field regardless of selection)
   model: gz_x500_mono_cam_down_lidar
+
+The launcher starts PX4 SITL, MicroXRCE-DDS, QGroundControl and Swarm Center
+automatically. Steps 2, 3, 6 below are handled by the launcher — skip them
+when using `scout_launcher.py`.
 
 Manual equivalent for drone_0 on tilted_field:
 
@@ -60,7 +67,7 @@ Manual equivalent for drone_0 on swarm_field:
 
   cd ~/PX4-Autopilot
   PX4_GZ_WORLD=swarm_field \
-  PX4_GZ_MODEL_POSE='-6,-6,0,0,0,0' \
+  PX4_GZ_MODEL_POSE='-26,-12,0,0,0,0' \
   make px4_sitl gz_x500_mono_cam_down_lidar
 
 Manual equivalent for drone_i, i=1..N-1, in extra terminals after Gazebo is up.
@@ -80,16 +87,18 @@ Pad poses for tilted_field:
   drone_2 / pad_2: Gz ENU(-8, 70)  = NED(70, -8)
   drone_3 / pad_3: Gz ENU(-8, 100) = NED(100, -8)
 
-Pad poses for swarm_field:
+Pad poses for swarm_field (pads outside west edge of crop area):
 
-  drone_0 / pad_0: Gz ENU(-6, -6) = NED(-6, -6)
-  drone_1 / pad_1: Gz ENU( 6, -6) = NED(-6,  6)
-  drone_2 / pad_2: Gz ENU(-6,  6) = NED( 6, -6)
-  drone_3 / pad_3: Gz ENU( 6,  6) = NED( 6,  6)
+  drone_0 / pad_0: Gz ENU(-26, -12) = NED(-12, -26)
+  drone_1 / pad_1: Gz ENU(-26,  -4) = NED( -4, -26)
+  drone_2 / pad_2: Gz ENU(-26,   4) = NED(  4, -26)
+  drone_3 / pad_3: Gz ENU(-26,  12) = NED( 12, -26)
 
 
 2. START MICROXRCE
 ------------------
+
+(Handled automatically by `scout_launcher.py` — skip if using the launcher.)
 
 One shared agent is expected for multi-instance PX4 SITL:
 
@@ -98,6 +107,8 @@ One shared agent is expected for multi-instance PX4 SITL:
 
 3. BUILD AND SOURCE WORKSPACE
 -----------------------------
+
+(Handled automatically by `scout_launcher.py` before running the scenario.)
 
   cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
   source /opt/ros/jazzy/setup.bash
@@ -124,7 +135,9 @@ Isaac Sim workflow:
 5. START FULL E2E BACKEND
 -------------------------
 
-In a new sourced terminal:
+(Handled automatically by `scout_launcher.py` after scenario selection.)
+
+In a new sourced terminal (manual launch):
 
   cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
   source /opt/ros/jazzy/setup.bash
@@ -140,40 +153,34 @@ Examples:
 6. START SWARM CENTER
 ---------------------
 
+(Handled automatically by `scout_launcher.py` in swarm mode.)
+
+Manual start only (if not using the launcher):
+
   cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
   python3 swarm_center/main.py --drones N
-
-
-7. START LEGACY MANUAL CONTROLLER
----------------------------------
-
-Run in an extra real terminal for WASD flight during setup:
-
-  cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
-  source /opt/ros/jazzy/setup.bash
-  source install/setup.bash
-  ros2 run scout_control manual_controller
-
-The manual controller is setup-only. It should stop automatically after
-`/swarm/mission_ready`.
 
 
 SETUP PHASE - SWARM CENTER MANUAL TAB
 =====================================
 
-8. Select `drone_0` in the drone combo.
+All manual drone control during setup goes through Swarm Center.
+No separate terminal controller is needed.
 
-9. Arm `drone_0` from the drone_list panel.
+7. Select `drone_0` in the drone combo.
 
-10. Take off:
+8. Arm `drone_0` from the drone_list panel.
+
+9. Take off:
     - send RTH Drone so the drone flies to its home, or
     - arm in offboard and take off.
 
-11. Fly with WASD to the physical/sim position of `pad_0`, then press:
+10. Use Swarm Center manual controls to fly `drone_0` to the physical/sim
+    position of `pad_0`, then press:
 
     Set pad_0
 
-12. Fly to each remaining pad and press the matching button:
+11. Fly to each remaining pad and press the matching button:
 
     Set pad_1
     Set pad_2
@@ -181,16 +188,16 @@ SETUP PHASE - SWARM CENTER MANUAL TAB
 
     Stop after `pad_N-1` for the selected drone count.
 
-13. `field_setup_coordinator` assigns pads. Drones `1..N-1` receive RTH
+12. `field_setup_coordinator` assigns pads. Drones `1..N-1` receive RTH
     targets and land on their assigned pads.
 
-14. With `drone_0`, fly the field boundary:
+13. With `drone_0`, fly the field boundary using Swarm Center manual controls:
 
     - fly to each field corner
     - press `Mark Boundary Point` at every corner
     - after the last corner, press `Close Boundary`
 
-15. Press `Generate Grid`.
+14. Press `Generate Grid`.
 
     Expected output:
 
@@ -198,15 +205,15 @@ SETUP PHASE - SWARM CENTER MANUAL TAB
       perimeters/field_grid.json
       perimeters/home_positions.json
 
-16. Swarm Center displays the generated grid with sectors.
+15. Swarm Center displays the generated grid with sectors.
 
-17. Return `drone_0` to `pad_0`:
+16. Return `drone_0` to `pad_0`:
 
     RTH Drone
 
-18. Wait until `drone_0` has landed.
+17. Wait until `drone_0` has landed.
 
-19. Press `Start Mission`.
+18. Press `Start Mission`.
 
     The autonomous mission begins after `/swarm/mission_ready`.
 
@@ -214,36 +221,46 @@ SETUP PHASE - SWARM CENTER MANUAL TAB
 MAPPING PHASE
 =============
 
-20. All available drones take off and map their assigned sectors.
+19. All available drones take off and map their assigned sectors.
 
-21. Swarm Center displays sector and cell progress.
+20. Swarm Center displays sector and cell progress.
 
-22. When mapping is complete, drones return and land on their pads.
+21. When mapping is complete, drones return and land on their pads.
 
 
 SPRAYING PHASE
 ==============
 
-23. Operator confirms spraying:
+22. Operator confirms spraying:
 
     mode selector -> SPRAYING
 
-24. Drones take off and spray their assigned cells.
+23. Drones take off and spray their assigned cells.
 
-25. Mission complete: drones return and land.
+24. Mission complete: drones return and land.
 
-26. Swarm Center offers HTML report generation.
+25. Swarm Center offers HTML report generation.
 
 
 NOTES
 =====
 
+- If Gazebo does not open after `make px4_sitl ...`, a stale gz-sim socket is
+  the most common cause. Kill all and retry:
+
+    pkill -9 -f "px4"; pkill -9 -f "gz sim"; pkill -9 -f "gzserver"
+
+  Wait ~5 s before retrying. `scout_launcher.py` does this automatically via
+  `_kill_stale()` but the 2-second sleep may be too short on slow machines.
+
+- Swarm field initial spawns are randomised staging positions (outside the
+  40×40 crop area). Pads are operator-discovered during setup; drone positions
+  at spawn are NOT the pad positions.
+
 - For Isaac Sim use `isaac_e2e_mission.launch.py`; pad coordinates differ, see
   `CLAUDE.md`.
 - If a drone is missing, `task_allocator` waits for `ready_timeout=600s`, then
   starts with the available drones.
-- WASD control works only while `legacy_manual_controller` is running in an
-  extra terminal.
 - `MSG_GOTO_DRONE` works through `obstacle_avoidance_runtime` even without the
   legacy manual controller.
 - `obstacle_avoidance_runtime` is the only flight owner during the mission.

@@ -59,6 +59,7 @@ class LocalMapperConfig:
     blocked_query_offset_m: float = 2.0
     peer_cost_gain: float = 1.0
     blocked_cost_gain: float = 1.0
+    self_filter_radius_m: float = 1.0
     voxel_size_m: float = 0.2
     max_batches: int = 16
 
@@ -252,6 +253,25 @@ class LocalMapper:
             self._last_validity_reason = "degraded_points_outside_collision_band"
             return 0
         points = points[in_band]
+
+        self_radius = max(0.0, float(self._config.self_filter_radius_m))
+        if self_radius > 0.0:
+            self_dist = np.hypot(points[:, 0] - self._pose_x, points[:, 1] - self._pose_y)
+            outside_self = self_dist >= self_radius
+            if not np.any(outside_self):
+                self._last_sensor_stamp = max(self._last_sensor_stamp, float(batch.stamp_s))
+                self._last_validity_reason = "tracking_self_filtered"
+                self._recent_batches.append(
+                    {
+                        "stamp_s": float(batch.stamp_s),
+                        "source": batch.source,
+                        "point_count": 0,
+                        "is_dense_scan": bool(batch.is_dense_scan),
+                        "self_filtered_points": int(points.shape[0]),
+                    }
+                )
+                return 0
+            points = points[outside_self]
 
         gx = np.floor((points[:, 0] - self._origin_x) / self._resolution).astype(np.int32)
         gy = np.floor((points[:, 1] - self._origin_y) / self._resolution).astype(np.int32)
@@ -532,6 +552,29 @@ class LocalMapper:
         dx = wx - snapshot.drone_ned[0]
         dy = wy - snapshot.drone_ned[1]
         dist = np.hypot(dx, dy)
+        self_radius = max(0.0, float(self._config.self_filter_radius_m))
+        if self_radius > 0.0:
+            outside_self = dist >= self_radius
+            if not np.any(outside_self):
+                return LocalClearanceSummary(
+                    state=snapshot.state,
+                    stamp_s=snapshot.stamp_s,
+                    valid_for_planning=snapshot.valid_for_planning,
+                    validity_reason=snapshot.validity_reason,
+                    closest_m=99.0,
+                    forward_m=99.0,
+                    left_m=99.0,
+                    center_m=99.0,
+                    right_m=99.0,
+                    warn=False,
+                    critical=False,
+                    free_directions=("left", "center", "right"),
+                )
+            wx = wx[outside_self]
+            wy = wy[outside_self]
+            dx = dx[outside_self]
+            dy = dy[outside_self]
+            dist = dist[outside_self]
         angle = np.arctan2(dy, dx) - snapshot.drone_yaw_rad
         angle = np.arctan2(np.sin(angle), np.cos(angle))
 

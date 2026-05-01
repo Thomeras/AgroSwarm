@@ -55,14 +55,14 @@ N uses `/px4_N` for PX4 input/output topics.
 | `/{drone_ns}/camera/image_raw` | sensor | `sensor_msgs/Image` | best-effort volatile | Native sim or bridge topic. Backend may override template. |
 | `/{drone_ns}/depth/image_raw` | sensor | `sensor_msgs/Image` | best-effort volatile | Native sim depth; runtime may gate navigation on freshness. |
 | `/{drone_ns}/camera/camera_info` | sensor | `sensor_msgs/CameraInfo` | best-effort volatile | Camera calibration/info. |
-| `/{drone_ns}/downward_lidar/scan` | sensor | `sensor_msgs/LaserScan` | best-effort volatile | Terrain/range input. May also be used as optional obstacle point input only when `obstacle_avoidance_runtime.enable_lidar_obstacle_points=true`; disabled by default. |
+| `/{drone_ns}/downward_lidar/scan` | sensor | `sensor_msgs/LaserScan` | best-effort volatile | Terrain/range input. Not used as a horizontal obstacle source. |
 
 Optional LiDAR obstacle ingestion is configured on `obstacle_avoidance_runtime`
 with `enable_lidar_obstacle_points`, `lidar_obstacle_topic`,
 `lidar_obstacle_confidence`, `lidar_obstacle_stride`, and
-`lidar_obstacle_stale_after_s`. If `lidar_obstacle_topic` is empty, the runtime
-uses the canonical `/{drone_ns}/downward_lidar/scan` topic when obstacle
-ingestion is enabled.
+`lidar_obstacle_stale_after_s`. `lidar_obstacle_topic` must name an explicit
+horizontal obstacle scan topic; if it is empty, LaserScan obstacle ingestion is
+left disabled even when `enable_lidar_obstacle_points=true`.
 
 ## PX4 Topics
 

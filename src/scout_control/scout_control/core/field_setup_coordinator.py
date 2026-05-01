@@ -107,11 +107,13 @@ class FieldSetupCoordinator(Node):
         self.declare_parameter("cell_size_m", 5.0)
         self.declare_parameter("drone_count", 2)
         self.declare_parameter("boundary_inset_m", 1.0)
+        self.declare_parameter("auto_resume_setup", True)
         self._cell_size: float = float(self.get_parameter("cell_size_m").value)
         self._drone_count: int = max(1, int(self.get_parameter("drone_count").value))
         self._boundary_inset: float = max(
             0.0, float(self.get_parameter("boundary_inset_m").value)
         )
+        self._auto_resume_setup = bool(self.get_parameter("auto_resume_setup").value)
 
         self._state = SetupState.IDLE
         self._capture_mode: str | None = None   # "polygon" | "corners"
@@ -159,9 +161,10 @@ class FieldSetupCoordinator(Node):
 
         self.create_timer(1.0, self._status_timer)
 
-        self._publish_status(
-            "IDLE - waiting for pad assignments in Swarm Center Manual tab"
-        )
+        if not self._try_resume_existing_setup():
+            self._publish_status(
+                "IDLE - waiting for pad assignments in Swarm Center Manual tab"
+            )
         self.get_logger().info(
             f"FieldSetupCoordinator ready | cell_size={self._cell_size} m | "
             f"drone_count={self._drone_count} | "
@@ -214,6 +217,112 @@ class FieldSetupCoordinator(Node):
 
         if all(pad_id in self._pads for pad_id in self._required_pad_ids()):
             self._enter_assign_pads()
+
+    def _try_resume_existing_setup(self) -> bool:
+        if not self._auto_resume_setup:
+            return False
+
+        try:
+            with open(HOME_POS_FILE, encoding="utf-8") as f:
+                home_payload = json.load(f)
+            with open(GRID_FILE, encoding="utf-8") as f:
+                grid_payload = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+
+        homes = home_payload.get("home_positions", [])
+        cells = grid_payload.get("cells", [])
+        if not isinstance(homes, list) or not isinstance(cells, list) or not cells:
+            return False
+
+        pads: dict[str, dict] = {}
+        for item in homes:
+            if not isinstance(item, dict):
+                continue
+            pad_id = str(item.get("pad_id", "")).strip()
+            drone_id = str(item.get("drone_id", "")).strip()
+            ned = item.get("ned", {})
+            if not pad_id or not drone_id or not isinstance(ned, dict):
+                continue
+            pads[pad_id] = {
+                "drone_id": drone_id,
+                "x": float(ned.get("x", 0.0)),
+                "y": float(ned.get("y", 0.0)),
+                "z": float(ned.get("z", -0.5)),
+                "charging_capable": bool(item.get("charging_capable", False)),
+                "orientation_deg": float(item.get("orientation_deg", 0.0)),
+                "service_priority": int(item.get("service_priority", 0)),
+                "allowed_drone_classes": item.get("allowed_drone_classes", ["*"]),
+            }
+
+        required_pads = self._required_pad_ids()
+        if not all(pad_id in pads for pad_id in required_pads):
+            self.get_logger().warn(
+                "Existing setup is incomplete; missing pad(s): "
+                + ", ".join(pid for pid in required_pads if pid not in pads)
+            )
+            return False
+
+        self._pads = pads
+        self._capture_mode = str(grid_payload.get("capture_mode", "polygon") or "polygon")
+        self._landed_drones = set(self._required_drone_ids())
+        self._state = SetupState.READY_FOR_MISSION
+
+        try:
+            with open(BOUNDARY_FILE, encoding="utf-8") as f:
+                boundary_payload = json.load(f)
+            vertices = boundary_payload.get("vertices_ned", [])
+            if isinstance(vertices, list):
+                self._boundary_points = [
+                    {
+                        "x": float(v.get("x", 0.0)),
+                        "y": float(v.get("y", 0.0)),
+                        "z": float(v.get("z", -5.0)),
+                    }
+                    for v in vertices
+                    if isinstance(v, dict)
+                ]
+            self._boundary_closed = bool(boundary_payload.get("closed", True))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            self._boundary_points = []
+            self._boundary_closed = True
+
+        cell_count = len(cells)
+        complete_payload = json.dumps({
+            "status": "ready",
+            "cells": cell_count,
+            "field_size": self._field_size_label(grid_payload),
+            "cell_size_m": float(grid_payload.get("cell_size_m", self._cell_size)),
+            "capture_mode": self._capture_mode,
+            "resumed": True,
+            "home_positions_file": HOME_POS_FILE,
+            "grid_file": GRID_FILE,
+            "boundary_file": BOUNDARY_FILE,
+        })
+        msg_c = String()
+        msg_c.data = complete_payload
+        self._complete_pub.publish(msg_c)
+        self._publish_status(
+            f"READY_FOR_MISSION - resumed mapped field from disk "
+            f"({cell_count} cells). Start from Swarm Center."
+        )
+        self.get_logger().info(
+            f"Resumed setup from disk: {len(self._pads)} pads, {cell_count} cells"
+        )
+        return True
+
+    def _field_size_label(self, grid_payload: dict) -> str:
+        try:
+            cells = grid_payload.get("cells", [])
+            if cells:
+                xs = [float(c["x"]) for c in cells if "x" in c]
+                ys = [float(c["y"]) for c in cells if "y" in c]
+                if xs and ys:
+                    cell = float(grid_payload.get("cell_size_m", self._cell_size))
+                    return f"{(max(xs) - min(xs) + cell):.0f}x{(max(ys) - min(ys) + cell):.0f}"
+        except (TypeError, ValueError):
+            pass
+        return "mapped"
 
     # Legacy 4-corner callback
     def _corner_cb(self, msg: String) -> None:

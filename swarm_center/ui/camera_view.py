@@ -62,6 +62,7 @@ class _DroneCamera(QWidget):
         self._res_label = QLabel("")
 
         info = QHBoxLayout()
+        info.setSpacing(20)
         info.addWidget(self._fps_label)
         info.addWidget(self._res_label)
         info.addStretch()
