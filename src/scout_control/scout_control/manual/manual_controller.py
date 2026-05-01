@@ -100,6 +100,9 @@ class ManualController(Node):
         self._boundary_close_pub = self.create_publisher(
             String, "/field/boundary_close", QOS_VOL
         )
+        self._boundary_clear_pub = self.create_publisher(
+            String, "/field/boundary_clear", QOS_VOL
+        )
         self._mission_confirm_pub = self.create_publisher(
             String, "/field/mission_confirm", QOS_VOL
         )
@@ -195,7 +198,7 @@ class ManualController(Node):
         elif action == "close_boundary":
             self._close_boundary()
         elif action == "clear_boundary":
-            self.get_logger().info("clear_boundary requested; reset via field setup restart if needed")
+            self._clear_boundary()
         elif action == "generate_grid":
             self._publish_json(self._generate_grid_pub, {"source": "manual_controller"})
         elif action == "start_mission":
@@ -340,6 +343,12 @@ class ManualController(Node):
         self._publish_json(
             self._boundary_close_pub,
             {"closed": True, "source": "manual_controller"},
+        )
+
+    def _clear_boundary(self) -> None:
+        self._publish_json(
+            self._boundary_clear_pub,
+            {"source": "manual_controller"},
         )
 
     def _confirm_mission(self, source: str) -> None:

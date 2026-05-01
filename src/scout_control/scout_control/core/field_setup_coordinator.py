@@ -32,6 +32,7 @@ Topics:
     /field/corner_marked       String JSON (legacy 4-corner flow)
     /field/boundary_point      String JSON {"index":, "ned":{x,y,z}, "type":"vertex"}
     /field/boundary_close      String JSON
+    /field/boundary_clear      String JSON
     /swarm/landed_confirmation String JSON
     /field/mission_confirm     String JSON
     /field/generate_grid       String JSON
@@ -149,6 +150,9 @@ class FieldSetupCoordinator(Node):
         self.create_subscription(
             String, "/field/boundary_close",
             self._boundary_close_cb, QOS_VOL)
+        self.create_subscription(
+            String, "/field/boundary_clear",
+            self._boundary_clear_cb, QOS_VOL)
         self.create_subscription(
             String, self._swarm_topics.landed_confirmation,
             self._landed_cb, QOS_VOL)
@@ -430,6 +434,20 @@ class FieldSetupCoordinator(Node):
             f"Boundary closed with {len(self._boundary_points)} vertices"
         )
         self._enter_generate_grid()
+
+    def _boundary_clear_cb(self, msg: String) -> None:
+        if self._state != SetupState.CAPTURE_BOUNDARY:
+            return
+        if self._capture_mode not in (None, "polygon"):
+            self.get_logger().warn(
+                "Ignoring /field/boundary_clear: already in corners mode"
+            )
+            return
+        self._capture_mode = None
+        self._boundary_points = []
+        self._boundary_closed = False
+        self.get_logger().info("Boundary vertices cleared")
+        self._publish_status("CAPTURE_BOUNDARY [polygon] - 0 vertices")
 
     def _generate_grid_cb(self, msg: String) -> None:
         if self._state == SetupState.CAPTURE_BOUNDARY:

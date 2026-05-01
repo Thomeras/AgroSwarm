@@ -295,7 +295,13 @@ def test_planned_routes_callback_shape() -> None:
     _start_mission(alloc)
     alloc.tick_status_publish()
     assert callbacks
-    assert set(callbacks[-1]) == {"routes", "conflicts", "generated_t"}
+    assert set(callbacks[-1]) == {
+        "routes",
+        "route_points",
+        "conflicts",
+        "generated_t",
+        "dynamic_blocked_zones",
+    }
     assert isinstance(callbacks[-1]["routes"], dict)
     assert isinstance(callbacks[-1]["conflicts"], list)
 
@@ -318,3 +324,85 @@ def test_conflict_pass_runs_after_start() -> None:
     )
     _start_mission(alloc)
     assert alloc.planned_routes()["generated_t"] > 0.0
+
+
+def test_blocked_status_creates_dynamic_zone_and_replans_route() -> None:
+    grid = {"cols": 3, "rows": 1, "cell_size_m": 0.25, "cells": [
+        {"id": "x0_y0", "x": 0.0, "y": 0.0},
+        {"id": "x1_y0", "x": 1.0, "y": 0.0},
+        {"id": "x2_y0", "x": 2.0, "y": 0.0},
+    ]}
+    alloc = TaskAllocator(
+        grid_data=grid,
+        n_drones=1,
+        ready_timeout=0.01,
+        logger=_Logger(),
+        on_next_cell=lambda _drone_id, _cell: None,
+        on_task_status=lambda _payload: None,
+        on_mission_complete=lambda _payload: None,
+        on_rth=lambda _drone_id: None,
+        strategy="proximity",
+        dynamic_obstacle_radius_m=0.6,
+        dynamic_obstacle_ttl_s=60.0,
+    )
+    _start_mission(alloc)
+
+    alloc.handle_drone_status({
+        "drone_id": "drone_0",
+        "status": "BLOCKED",
+        "blocked_severity": "SOFT",
+        "blocked_reason": "tree_detected",
+        "drone_ned": [1.0, 0.0, -5.0],
+    })
+
+    planned = alloc.planned_routes()
+    planned_ids = [
+        cell["id"]
+        for route in planned["routes"].values()
+        for cell in route
+    ]
+    assert "x1_y0" not in planned_ids
+    assert any(cell["id"] == "x1_y0" for cell in alloc._deferred_cells)
+    assert planned["dynamic_blocked_zones"]
+
+
+def test_dynamic_zone_inserts_detour_for_crossing_route() -> None:
+    grid = {"cols": 2, "rows": 1, "cell_size_m": 0.5, "cells": [
+        {"id": "x0_y0", "x": 0.0, "y": 0.0},
+        {"id": "x1_y0", "x": 4.0, "y": 0.0},
+    ]}
+    alloc = TaskAllocator(
+        grid_data=grid,
+        n_drones=1,
+        ready_timeout=0.01,
+        logger=_Logger(),
+        on_next_cell=lambda _drone_id, _cell: None,
+        on_task_status=lambda _payload: None,
+        on_mission_complete=lambda _payload: None,
+        on_rth=lambda _drone_id: None,
+        strategy="proximity",
+        dynamic_obstacle_radius_m=0.6,
+        dynamic_obstacle_ttl_s=60.0,
+    )
+    alloc.update_drone_position("drone_0", 0.0, 0.0)
+    _start_mission(alloc)
+
+    rec = alloc._drones["drone_0"]
+    rec.current_cell = None
+    rec.assigned_cells = [alloc._cells["x1_y0"]]
+    alloc._dynamic_blocked_zones["tree"] = {
+        "id": "tree",
+        "x": 2.0,
+        "y": 0.0,
+        "radius_m": 0.6,
+        "source_drone": "drone_0",
+        "reason": "test",
+        "expires_s": 9999999999.0,
+    }
+    alloc._run_conflict_pass()
+
+    planned = alloc.planned_routes()["routes"]["drone_0"]
+    assert planned[0]["kind"] == "detour_waypoint"
+    assert planned[1]["kind"] == "detour_waypoint"
+    assert planned[-1]["id"] == "x1_y0"
+    assert abs(float(planned[0]["y"])) > 0.5

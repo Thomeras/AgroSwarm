@@ -7,10 +7,10 @@ from __future__ import annotations
 import os
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout,
-    QLabel, QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QLabel, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QVBoxLayout,
+    QWidget, QSizePolicy,
 )
 
 from core.swarm_manager import MissionState
@@ -37,18 +37,36 @@ class ControlPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._bridge_connected = False
+        self.setMinimumWidth(320)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root_layout.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
 
         # ── Connections ─────────────────────────────────────────────────────
         conn_group = QGroupBox("Připojení")
         conn_layout = QVBoxLayout(conn_group)
         conn_layout.setSpacing(6)
         self._mav_label = QLabel("MAVLink: inicializuji…")
+        self._mav_label.setWordWrap(True)
+        self._mav_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self._mav_label.setStyleSheet("font-size: 12px;")
         self._bridge_label = QLabel("ROS2 bridge: připojuji…")
+        self._bridge_label.setWordWrap(True)
+        self._bridge_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self._bridge_label.setStyleSheet("font-size: 12px;")
         conn_layout.addWidget(self._mav_label)
         conn_layout.addWidget(self._bridge_label)
@@ -61,7 +79,8 @@ class ControlPanel(QWidget):
 
         self._setup_label = QLabel("Setup: čekám…")
         self._setup_label.setWordWrap(True)
-        self._setup_label.setStyleSheet("font-size: 12px; color: #94A3B8; min-height: 32px;")
+        self._setup_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._setup_label.setStyleSheet("font-size: 12px; color: #94A3B8;")
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
@@ -70,7 +89,8 @@ class ControlPanel(QWidget):
 
         self._progress_label = QLabel("Mise: nezahájená")
         self._progress_label.setWordWrap(True)
-        self._progress_label.setStyleSheet("font-size: 12px; min-height: 32px;")
+        self._progress_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self._progress_label.setStyleSheet("font-size: 12px;")
 
         prog_layout.addWidget(self._setup_label)
         prog_layout.addWidget(self._progress)
@@ -80,10 +100,13 @@ class ControlPanel(QWidget):
         # ── Control ──────────────────────────────────────────────────────────
         ctrl_group = QGroupBox("Ovládání")
         ctrl_layout = QVBoxLayout(ctrl_group)
-        ctrl_layout.setSpacing(6)
+        ctrl_layout.setSpacing(8)
 
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Režim:"))
+        mode_row.setSpacing(8)
+        mode_lbl = QLabel("Režim:")
+        mode_lbl.setFixedWidth(72)
+        mode_row.addWidget(mode_lbl)
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(["MAPPING", "SPRAYING", "CHECKING"])
         self._mode_combo.currentTextChanged.connect(self.mode_changed)
@@ -124,19 +147,20 @@ class ControlPanel(QWidget):
         # ── View ─────────────────────────────────────────────────────────────
         view_group = QGroupBox("Zobrazení")
         view_layout = QVBoxLayout(view_group)
-        view_layout.setSpacing(6)
+        view_layout.setSpacing(8)
 
-        btn_row = QHBoxLayout()
         self._reset_btn = QPushButton("Reset pohledu")
         self._reset_btn.clicked.connect(self.reset_view_clicked)
         self._load_btn = QPushButton("Načíst grid JSON…")
         self._load_btn.clicked.connect(self._on_load_grid)
-        btn_row.addWidget(self._reset_btn)
-        btn_row.addWidget(self._load_btn)
-        view_layout.addLayout(btn_row)
+        view_layout.addWidget(self._reset_btn)
+        view_layout.addWidget(self._load_btn)
 
         size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("Buňka (m):"))
+        size_row.setSpacing(8)
+        cell_lbl = QLabel("Buňka (m):")
+        cell_lbl.setFixedWidth(72)
+        size_row.addWidget(cell_lbl)
         self._cell_size_spin = QDoubleSpinBox()
         self._cell_size_spin.setRange(0.5, 100.0)
         self._cell_size_spin.setSingleStep(0.5)
@@ -147,13 +171,13 @@ class ControlPanel(QWidget):
         )
         size_row.addWidget(self._cell_size_spin, stretch=1)
         self._apply_cell_size_btn = QPushButton("Použít")
-        self._apply_cell_size_btn.setFixedWidth(60)
+        self._apply_cell_size_btn.setMinimumWidth(72)
         self._apply_cell_size_btn.clicked.connect(self._on_apply_cell_size)
         size_row.addWidget(self._apply_cell_size_btn)
         view_layout.addLayout(size_row)
 
         overlay_lbl = QLabel("Vrstvy overlay:")
-        overlay_lbl.setStyleSheet("color: #64748B; font-size: 12px;")
+        overlay_lbl.setStyleSheet("color: #64748B; font-size: 11px; margin-top: 4px;")
         view_layout.addWidget(overlay_lbl)
 
         self._chk_no_go = QCheckBox("No-go zóny")
@@ -174,7 +198,7 @@ class ControlPanel(QWidget):
         self._chk_sector_preview.toggled.connect(
             lambda v: self.overlay_toggled.emit("sector_preview", v))
 
-        self._chk_planned_routes = QCheckBox("Planned routes")
+        self._chk_planned_routes = QCheckBox("Plánované trasy")
         self._chk_planned_routes.setChecked(True)
         self._chk_planned_routes.toggled.connect(
             lambda v: self.overlay_toggled.emit("planned_routes", v))
@@ -182,6 +206,7 @@ class ControlPanel(QWidget):
         for chk in (self._chk_no_go, self._chk_obstacles,
                     self._chk_terrain, self._chk_sector_preview,
                     self._chk_planned_routes):
+            chk.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
             view_layout.addWidget(chk)
 
         layout.addWidget(view_group)

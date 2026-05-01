@@ -137,9 +137,10 @@ class FieldView(QWidget):
         self._show_terrain: bool = True
         self._show_sector_preview: bool = True
         self._show_planned_routes: bool = True
-        self._planned_routes: dict[str, list[str]] = {}
+        self._planned_routes: dict[str, list] = {}
         self._planned_conflicts: list[dict] = []
         self._conflict_decay: dict[str, float] = {}
+        self._planned_dynamic_zones: list[dict] = []
         self.reload_field_model()
 
         self.setMinimumSize(QSize(600, 500))
@@ -281,13 +282,15 @@ class FieldView(QWidget):
 
     def set_planned_routes(
         self,
-        routes: dict[str, list[str]],
+        routes: dict[str, list],
         conflicts: list[dict],
         conflict_decay: dict[str, float],
+        dynamic_zones: Optional[list[dict]] = None,
     ) -> None:
         self._planned_routes = {str(k): list(v) for k, v in routes.items()}
         self._planned_conflicts = list(conflicts)
         self._conflict_decay = dict(conflict_decay)
+        self._planned_dynamic_zones = list(dynamic_zones or [])
         self.update()
 
     def _build_terrain_pixmap(
@@ -790,13 +793,21 @@ class FieldView(QWidget):
     def _paint_planned_routes(self, p: QPainter, grid: FieldGrid) -> None:
         if not self._show_planned_routes:
             return
+        self._paint_dynamic_planned_zones(p)
         cell_by_id = {cell.id: cell for cell in grid.cells}
         for drone_id in sorted(self._planned_routes):
             points = []
-            for cell_id in self._planned_routes[drone_id]:
-                cell = cell_by_id.get(str(cell_id))
-                if cell is not None:
-                    points.append(self._ned_to_screen(cell.x, cell.y))
+            route_items = self._planned_routes[drone_id]
+            for item in route_items:
+                if isinstance(item, dict):
+                    try:
+                        points.append(self._ned_to_screen(float(item["x"]), float(item["y"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                else:
+                    cell = cell_by_id.get(str(item))
+                    if cell is not None:
+                        points.append(self._ned_to_screen(cell.x, cell.y))
             if len(points) < 2:
                 continue
             colour = _DRONE_COLORS[hash(drone_id) % len(_DRONE_COLORS)]
@@ -823,6 +834,22 @@ class FieldView(QWidget):
             br = self._ned_to_screen(cell.x - half, cell.y + half)
             p.setPen(QPen(QColor(255, 40, 40), 1.5))
             p.drawRect(QRectF(tl, br))
+
+    def _paint_dynamic_planned_zones(self, p: QPainter) -> None:
+        if not self._planned_dynamic_zones:
+            return
+        p.setBrush(QBrush(QColor(255, 80, 40, 65)))
+        p.setPen(QPen(QColor(255, 80, 40, 180), 2.0, Qt.PenStyle.DashLine))
+        for zone in self._planned_dynamic_zones:
+            try:
+                x = float(zone["x"])
+                y = float(zone["y"])
+                radius_m = float(zone.get("radius_m", 1.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            centre = self._ned_to_screen(x, y)
+            radius_px = max(5.0, self._meters_to_pixels(radius_m))
+            p.drawEllipse(centre, radius_px, radius_px)
 
     def _paint_route_arrowhead(
         self, p: QPainter, a: QPointF, b: QPointF, colour: QColor

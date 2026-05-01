@@ -134,6 +134,8 @@ class TaskAllocator:
         strategy: Literal["snake", "proximity"] = "proximity",
         cruise_speed_mps: float = 2.0,
         route_conflict_window_s: float = 6.0,
+        dynamic_obstacle_radius_m: float = 3.0,
+        dynamic_obstacle_ttl_s: float = 180.0,
         on_planned_routes: Callable[[dict], None] | None = None,
     ) -> None:
         """
@@ -160,10 +162,13 @@ class TaskAllocator:
         self._strategy = strategy if strategy in {"snake", "proximity"} else "proximity"
         self._cruise_speed_mps = float(cruise_speed_mps)
         self._route_conflict_window_s = float(route_conflict_window_s)
+        self._dynamic_obstacle_radius_param_m = float(dynamic_obstacle_radius_m)
+        self._dynamic_obstacle_ttl_s = max(5.0, float(dynamic_obstacle_ttl_s))
         self._on_planned_routes = on_planned_routes
         self._planned_routes_cache: dict = {}
         self._last_conflicts: list = []
         self._planned_generated_t: float = 0.0
+        self._dynamic_blocked_zones: dict[str, dict] = {}
 
         self._on_next_cell_cb        = on_next_cell
         self._on_task_status_cb      = on_task_status
@@ -176,6 +181,9 @@ class TaskAllocator:
         self._cols_total:  int   = grid_data["cols"]
         self._rows_total:  int   = grid_data["rows"]
         self._cell_size_m: float = float(grid_data.get("cell_size_m", 1.0))
+        self._dynamic_obstacle_radius_m = max(
+            self._cell_size_m, self._dynamic_obstacle_radius_param_m
+        )
 
         self._cells: dict[str, dict] = {}
         for cell in grid_data["cells"]:
@@ -312,6 +320,9 @@ class TaskAllocator:
                 "completed_cells":  visited,
                 "cell_size_m":      self._cell_size_m,
                 "deferred_cells":   len(self._deferred_cells),
+                "dynamic_blocked_zones": self._active_dynamic_zones_unlocked(
+                    time.monotonic()
+                ),
             }
             if self._on_planned_routes and self._planned_routes_cache:
                 planned_snapshot = {
@@ -319,8 +330,15 @@ class TaskAllocator:
                         drone_id: [c.get("cell_id", c.get("id")) for c in cells]
                         for drone_id, cells in self._planned_routes_cache.items()
                     },
+                    "route_points": {
+                        drone_id: [self._route_point_payload(c) for c in cells]
+                        for drone_id, cells in self._planned_routes_cache.items()
+                    },
                     "conflicts": list(self._last_conflicts),
                     "generated_t": self._planned_generated_t,
+                    "dynamic_blocked_zones": self._active_dynamic_zones_unlocked(
+                        time.monotonic()
+                    ),
                 }
 
         self._on_task_status_cb(payload)
@@ -423,6 +441,7 @@ class TaskAllocator:
             if status == "BLOCKED":
                 if not self._mission_started or self._mission_done:
                     return
+                self._ingest_dynamic_blocked_zone(rec, normalized, now_s=now_s)
                 self._handle_blocked_status(rec, normalized, now_s=now_s)
                 self._maintenance_tick(now_s=now_s)
                 return
@@ -580,6 +599,14 @@ class TaskAllocator:
             cell = rec.assigned_cells.pop(0)
             if self._cells.get(cell["id"], {}).get("status") == "visited":
                 continue
+            if self._cell_blocked_by_dynamic_zone(cell, time.monotonic()):
+                self._defer_cell(
+                    cell,
+                    reason="dynamic_obstacle_zone",
+                    deferred_by=rec.drone_id,
+                    severity="HARD",
+                )
+                continue
 
             # Check for NFZ conflict with other drones
             if self._nfz_conflict(rec.drone_id, cell):
@@ -611,6 +638,8 @@ class TaskAllocator:
             return
         for i, cell in enumerate(rec.assigned_cells):
             if self._cells.get(cell["id"], {}).get("status") != "visited":
+                if self._cell_blocked_by_dynamic_zone(cell, time.monotonic()):
+                    continue
                 # Prefetch also respects NFZ
                 if self._nfz_conflict(rec.drone_id, cell):
                     continue
@@ -743,6 +772,314 @@ class TaskAllocator:
         rec.blocked_until_s = now_s + min(5.0, self._deferred_retry_delay_s / 2.0)
         self._log.info(f"{rec.drone_id}: SOFT BLOCKED ({reason}) — keep assignment")
 
+    def _ingest_dynamic_blocked_zone(
+        self, rec: DroneRecord, payload: dict, *, now_s: float
+    ) -> None:
+        center = self._blocked_zone_center(rec, payload)
+        if center is None:
+            return
+        radius = self._blocked_zone_radius(payload)
+        zone_id = (
+            f"{rec.drone_id}:{round(center[0], 1)}:"
+            f"{round(center[1], 1)}:{round(radius, 1)}"
+        )
+        reason = str(payload.get("blocked_reason", "runtime_blocked")).strip() or "runtime_blocked"
+        self._dynamic_blocked_zones[zone_id] = {
+            "id": zone_id,
+            "x": float(center[0]),
+            "y": float(center[1]),
+            "radius_m": float(radius),
+            "source_drone": rec.drone_id,
+            "reason": reason,
+            "expires_s": now_s + self._dynamic_obstacle_ttl_s,
+        }
+        self._defer_cells_inside_dynamic_zones(now_s=now_s, source_drone=rec.drone_id)
+        self._run_conflict_pass()
+        self._log.warn(
+            f"{rec.drone_id}: dynamic obstacle zone registered "
+            f"NED({center[0]:.1f},{center[1]:.1f}) r={radius:.1f}m reason={reason}"
+        )
+
+    def _blocked_zone_center(
+        self, rec: DroneRecord, payload: dict
+    ) -> tuple[float, float] | None:
+        zone = payload.get("blocked_zone")
+        if isinstance(zone, dict):
+            try:
+                return (float(zone["x"]), float(zone["y"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+
+        for key in ("obstacle_ned", "blocked_ned", "drone_ned", "target_ned", "subgoal_ned"):
+            value = payload.get(key)
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                try:
+                    return (float(value[0]), float(value[1]))
+                except (TypeError, ValueError):
+                    continue
+
+        return None
+
+    def _blocked_zone_radius(self, payload: dict) -> float:
+        zone = payload.get("blocked_zone")
+        if isinstance(zone, dict):
+            for key in ("radius_m", "radius", "r"):
+                if key in zone:
+                    try:
+                        return max(self._cell_size_m, float(zone[key]))
+                    except (TypeError, ValueError):
+                        pass
+        for key in ("blocked_radius_m", "obstacle_radius_m", "radius_m"):
+            if key in payload:
+                try:
+                    return max(self._cell_size_m, float(payload[key]))
+                except (TypeError, ValueError):
+                    pass
+        return self._dynamic_obstacle_radius_m
+
+    def _active_dynamic_zones_unlocked(self, now_s: float) -> list[dict]:
+        self._prune_dynamic_zones(now_s)
+        zones = []
+        for zone in self._dynamic_blocked_zones.values():
+            item = dict(zone)
+            item["ttl_s"] = round(max(0.0, float(zone["expires_s"]) - now_s), 2)
+            item.pop("expires_s", None)
+            zones.append(item)
+        return zones
+
+    def _prune_dynamic_zones(self, now_s: float) -> None:
+        expired = [
+            zone_id for zone_id, zone in self._dynamic_blocked_zones.items()
+            if float(zone.get("expires_s", 0.0)) <= now_s
+        ]
+        for zone_id in expired:
+            self._dynamic_blocked_zones.pop(zone_id, None)
+
+    def _cell_blocked_by_dynamic_zone(self, cell: dict, now_s: float) -> bool:
+        self._prune_dynamic_zones(now_s)
+        try:
+            cx = float(cell["x"])
+            cy = float(cell["y"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        for zone in self._dynamic_blocked_zones.values():
+            dx = cx - float(zone.get("x", 0.0))
+            dy = cy - float(zone.get("y", 0.0))
+            if math.hypot(dx, dy) <= float(zone.get("radius_m", 0.0)):
+                return True
+        return False
+
+    def _defer_cells_inside_dynamic_zones(
+        self, *, now_s: float, source_drone: str
+    ) -> None:
+        for cell in list(self._cells.values()):
+            if cell.get("status") == "visited":
+                continue
+            if not self._cell_blocked_by_dynamic_zone(cell, now_s):
+                continue
+            self._defer_cell(
+                cell,
+                reason="dynamic_obstacle_zone",
+                deferred_by=source_drone,
+                severity="HARD",
+            )
+
+        for rec in self._drones.values():
+            rec.assigned_cells = [
+                cell for cell in rec.assigned_cells
+                if not self._cell_blocked_by_dynamic_zone(cell, now_s)
+            ]
+            if (
+                rec.prefetched_cell is not None
+                and self._cell_blocked_by_dynamic_zone(rec.prefetched_cell, now_s)
+            ):
+                rec.prefetched_cell = None
+
+    def _route_with_dynamic_detours(
+        self,
+        drone_id: str,
+        route: list[dict],
+        start_xy: tuple[float, float],
+        *,
+        now_s: float,
+    ) -> list[dict]:
+        self._prune_dynamic_zones(now_s)
+        if not self._dynamic_blocked_zones or not route:
+            return route
+
+        out: list[dict] = []
+        prev = start_xy
+        for cell in route:
+            if self._is_detour_cell(cell):
+                out.append(cell)
+                prev = (float(cell.get("x", prev[0])), float(cell.get("y", prev[1])))
+                continue
+
+            detours = self._detours_for_segment(drone_id, prev, cell)
+            out.extend(detours)
+            out.append(cell)
+            prev = (float(cell.get("x", prev[0])), float(cell.get("y", prev[1])))
+        return out
+
+    def _detours_for_segment(
+        self,
+        drone_id: str,
+        start: tuple[float, float],
+        target: dict,
+    ) -> list[dict]:
+        try:
+            end = (float(target["x"]), float(target["y"]))
+        except (KeyError, TypeError, ValueError):
+            return []
+
+        target_id = str(target.get("id", target.get("cell_id", "target")))
+        candidates: list[dict] = []
+        for zone in self._dynamic_blocked_zones.values():
+            if self._cell_blocked_by_dynamic_zone(target, time.monotonic()):
+                continue
+            if not self._segment_intersects_zone(start, end, zone):
+                continue
+            candidates.extend(
+                self._build_detour_waypoints(drone_id, start, end, target_id, zone)
+            )
+
+        if not candidates:
+            return []
+        return self._dedupe_detours(candidates)
+
+    def _segment_intersects_zone(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        zone: dict,
+    ) -> bool:
+        cx = float(zone.get("x", 0.0))
+        cy = float(zone.get("y", 0.0))
+        radius = float(zone.get("radius_m", 0.0)) + max(0.5, self._cell_size_m * 0.5)
+        return self._point_segment_distance((cx, cy), start, end) <= radius
+
+    @staticmethod
+    def _point_segment_distance(
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> float:
+        px, py = point
+        ax, ay = start
+        bx, by = end
+        vx = bx - ax
+        vy = by - ay
+        denom = vx * vx + vy * vy
+        if denom <= 1e-9:
+            return math.hypot(px - ax, py - ay)
+        t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / denom))
+        qx = ax + t * vx
+        qy = ay + t * vy
+        return math.hypot(px - qx, py - qy)
+
+    def _build_detour_waypoints(
+        self,
+        drone_id: str,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        target_id: str,
+        zone: dict,
+    ) -> list[dict]:
+        ax, ay = start
+        bx, by = end
+        dx = bx - ax
+        dy = by - ay
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return []
+
+        ux = dx / length
+        uy = dy / length
+        nx = -uy
+        ny = ux
+        cx = float(zone.get("x", 0.0))
+        cy = float(zone.get("y", 0.0))
+        clearance = float(zone.get("radius_m", 0.0)) + max(self._cell_size_m, 1.0)
+
+        side = self._choose_detour_side((ax, ay), (bx, by), (cx, cy), (nx, ny))
+        lateral_x = nx * clearance * side
+        lateral_y = ny * clearance * side
+        forward = min(clearance, max(self._cell_size_m, length * 0.35))
+
+        raw_points = [
+            (cx - ux * forward + lateral_x, cy - uy * forward + lateral_y),
+            (cx + ux * forward + lateral_x, cy + uy * forward + lateral_y),
+        ]
+        zone_id = str(zone.get("id", "dynamic_zone")).replace(":", "_")
+        return [
+            {
+                "id": f"detour_{zone_id}_{target_id}_{idx}",
+                "cell_id": f"detour_{zone_id}_{target_id}_{idx}",
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "status": "detour",
+                "kind": "detour_waypoint",
+                "target_cell_id": target_id,
+                "zone_id": str(zone.get("id", "")),
+                "source_drone": drone_id,
+            }
+            for idx, (x, y) in enumerate(raw_points)
+        ]
+
+    def _choose_detour_side(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        center: tuple[float, float],
+        normal: tuple[float, float],
+    ) -> float:
+        candidates = []
+        for side in (1.0, -1.0):
+            probe = (
+                center[0] + normal[0] * side,
+                center[1] + normal[1] * side,
+            )
+            distance_to_drones = min(
+                (
+                    math.hypot(probe[0] - float(pos.get("x", 0.0)), probe[1] - float(pos.get("y", 0.0)))
+                    for pos in self._drone_positions.values()
+                ),
+                default=999.0,
+            )
+            route_bias = (
+                math.hypot(probe[0] - start[0], probe[1] - start[1])
+                + math.hypot(end[0] - probe[0], end[1] - probe[1])
+            )
+            candidates.append((-distance_to_drones, route_bias, side))
+        return min(candidates)[2]
+
+    @staticmethod
+    def _dedupe_detours(detours: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        seen: set[str] = set()
+        for detour in detours:
+            detour_id = str(detour.get("id", ""))
+            if detour_id in seen:
+                continue
+            seen.add(detour_id)
+            out.append(detour)
+        return out
+
+    @staticmethod
+    def _is_detour_cell(cell: dict) -> bool:
+        return str(cell.get("kind", "")) == "detour_waypoint" or str(cell.get("id", "")).startswith("detour_")
+
+    @staticmethod
+    def _route_point_payload(cell: dict) -> dict:
+        return {
+            "id": str(cell.get("cell_id", cell.get("id", ""))),
+            "x": float(cell.get("x", 0.0)),
+            "y": float(cell.get("y", 0.0)),
+            "kind": str(cell.get("kind", "cell")),
+            "target_cell_id": str(cell.get("target_cell_id", "")),
+            "zone_id": str(cell.get("zone_id", "")),
+        }
+
     def _handle_cell_deferred(
         self, rec: DroneRecord, payload: dict, *, now_s: float
     ) -> None:
@@ -814,7 +1151,11 @@ class TaskAllocator:
     def _eligible_for_reassign(self, cell_id: str, *, now_s: float) -> bool:
         meta = self._deferred_meta.get(cell_id)
         if meta is None:
-            return True
+            return not self._cell_blocked_by_dynamic_zone(
+                self._cells.get(cell_id, {}), now_s
+            )
+        if self._cell_blocked_by_dynamic_zone(self._cells.get(cell_id, {}), now_s):
+            return False
         if int(meta.get("attempts", 0)) > self._max_deferrals_per_cell:
             return False
         return now_s >= float(meta.get("next_eligible_s", 0.0))
@@ -873,15 +1214,30 @@ class TaskAllocator:
         routes: dict[str, list[dict]] = {}
         for drone_id, rec in self._drones.items():
             route: list[dict] = []
+            pos = self._drone_positions.get(drone_id, {})
+            start_xy = (float(pos.get("x", 0.0)), float(pos.get("y", 0.0)))
             if (
                 rec.current_cell is not None
                 and self._cells.get(rec.current_cell["id"], {}).get("status") != "visited"
+                and not self._cell_blocked_by_dynamic_zone(rec.current_cell, time.monotonic())
             ):
                 route.append(dict(rec.current_cell))
+                start_xy = (
+                    float(rec.current_cell.get("x", start_xy[0])),
+                    float(rec.current_cell.get("y", start_xy[1])),
+                )
             for cell in rec.assigned_cells:
-                if self._cells.get(cell["id"], {}).get("status") != "visited":
+                if (
+                    self._cells.get(cell["id"], {}).get("status") != "visited"
+                    and not self._cell_blocked_by_dynamic_zone(cell, time.monotonic())
+                ):
                     route.append(dict(cell))
-            routes[drone_id] = route
+            routes[drone_id] = self._route_with_dynamic_detours(
+                drone_id,
+                route,
+                start_xy,
+                now_s=time.monotonic(),
+            )
         return routes
 
     def _run_conflict_pass(self) -> list[dict]:
@@ -946,8 +1302,15 @@ class TaskAllocator:
         with self._lock:
             return deepcopy({
                 "routes": self._planned_routes_cache,
+                "route_points": {
+                    drone_id: [self._route_point_payload(c) for c in cells]
+                    for drone_id, cells in self._planned_routes_cache.items()
+                },
                 "conflicts": self._last_conflicts,
                 "generated_t": self._planned_generated_t,
+                "dynamic_blocked_zones": self._active_dynamic_zones_unlocked(
+                    time.monotonic()
+                ),
             })
 
     # ── Mission complete ──────────────────────────────────────────────────────

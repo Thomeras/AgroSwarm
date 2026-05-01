@@ -7,6 +7,7 @@ from PyQt6.QtCore import QEvent, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -113,6 +114,49 @@ class ManualControlWidget(QWidget):
         )
         flight_layout.addWidget(self._rth_btn)
         left.addWidget(flight_box)
+
+        # Field setup controls
+        setup_box = QGroupBox("Field setup")
+        setup_layout = QVBoxLayout(setup_box)
+        setup_layout.setSpacing(8)
+
+        boundary_row = QHBoxLayout()
+        self._mark_boundary_btn = QPushButton("Mark boundary")
+        self._mark_boundary_btn.clicked.connect(
+            lambda: self._send_action({"action": "mark_boundary"})
+        )
+        boundary_row.addWidget(self._mark_boundary_btn)
+
+        self._clear_boundary_btn = QPushButton("Clear boundary")
+        self._clear_boundary_btn.clicked.connect(
+            lambda: self._send_action({"action": "clear_boundary"})
+        )
+        boundary_row.addWidget(self._clear_boundary_btn)
+
+        self._close_boundary_btn = QPushButton("Close boundary")
+        self._close_boundary_btn.clicked.connect(
+            lambda: self._send_action({"action": "close_boundary"})
+        )
+        boundary_row.addWidget(self._close_boundary_btn)
+        setup_layout.addLayout(boundary_row)
+
+        self._pad_buttons: list[QPushButton] = []
+        pad_grid = QGridLayout()
+        pad_grid.setHorizontalSpacing(6)
+        pad_grid.setVerticalSpacing(6)
+        for i in range(drone_count):
+            btn = QPushButton(f"Mark pad_{i}")
+            btn.clicked.connect(lambda _checked=False, idx=i: self._mark_pad(idx))
+            self._pad_buttons.append(btn)
+            pad_grid.addWidget(btn, i // 2, i % 2)
+        setup_layout.addLayout(pad_grid)
+
+        self._start_mission_btn = QPushButton("Start mission")
+        self._start_mission_btn.clicked.connect(
+            lambda: self._send_action({"action": "start_mission", "source": "swarm_center"})
+        )
+        setup_layout.addWidget(self._start_mission_btn)
+        left.addWidget(setup_box)
 
         # Keyboard hint
         keys_box = QGroupBox("Klávesy")
@@ -334,6 +378,17 @@ class ManualControlWidget(QWidget):
             }
         )
 
+    def _mark_pad(self, pad_index: int) -> None:
+        self._send_action(
+            {
+                "action": "assign_pad",
+                "drone_id": f"drone_{pad_index}",
+                "pad_id": f"pad_{pad_index}",
+                "assigned_drone_id": f"drone_{pad_index}",
+                "mapper_drone_id": self._selected_drone_name(),
+            }
+        )
+
     def _send_action(self, payload: dict) -> None:
         if not self._bridge_connected:
             return
@@ -366,3 +421,9 @@ class ManualControlWidget(QWidget):
         self._takeoff_btn.setEnabled(self._bridge_connected)
         self._land_btn.setEnabled(self._bridge_connected)
         self._rth_btn.setEnabled(self._bridge_connected)
+        self._mark_boundary_btn.setEnabled(self._bridge_connected)
+        self._clear_boundary_btn.setEnabled(self._bridge_connected)
+        self._close_boundary_btn.setEnabled(self._bridge_connected)
+        self._start_mission_btn.setEnabled(self._bridge_connected)
+        for btn in self._pad_buttons:
+            btn.setEnabled(self._bridge_connected)

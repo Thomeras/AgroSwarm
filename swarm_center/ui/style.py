@@ -18,8 +18,8 @@ QWidget {
 QGroupBox {
     border: 1px solid #1E293B;
     border-radius: 6px;
-    margin-top: 10px;
-    padding: 12px 6px 6px 6px;
+    margin-top: 14px;
+    padding: 16px 8px 8px 8px;
     font-weight: bold;
     font-size: 11px;
     color: #64748B;
@@ -39,9 +39,10 @@ QPushButton {
     color: #E2E8F0;
     border: 1px solid #334155;
     border-radius: 5px;
-    padding: 6px 14px;
+    padding: 6px 10px;
     min-height: 30px;
-    font-size: 13px;
+    min-width: 0;
+    font-size: 12px;
 }
 QPushButton:hover {
     background-color: #334155;
@@ -111,8 +112,9 @@ QComboBox {
     background-color: #1E293B;
     border: 1px solid #334155;
     border-radius: 5px;
-    padding: 4px 10px;
+    padding: 4px 8px;
     min-height: 28px;
+    min-width: 0;
     color: #E2E8F0;
 }
 QComboBox:hover {
@@ -140,6 +142,7 @@ QDoubleSpinBox, QSpinBox {
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 28px;
+    min-width: 56px;
     color: #E2E8F0;
 }
 QDoubleSpinBox:hover, QSpinBox:hover {

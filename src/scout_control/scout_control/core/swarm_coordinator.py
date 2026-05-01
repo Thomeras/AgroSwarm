@@ -74,6 +74,8 @@ class SwarmCoordinator(Node):
         self.declare_parameter("strategy", "proximity")
         self.declare_parameter("cruise_speed_mps", 2.0)
         self.declare_parameter("route_conflict_window_s", 6.0)
+        self.declare_parameter("dynamic_obstacle_radius_m", 3.0)
+        self.declare_parameter("dynamic_obstacle_ttl_s", 180.0)
 
         self._n_drones:      int   = self.get_parameter("drone_count").value
         self._ready_timeout: float = self.get_parameter("ready_timeout").value
@@ -93,6 +95,12 @@ class SwarmCoordinator(Node):
         )
         self._route_conflict_window_s: float = float(
             self.get_parameter("route_conflict_window_s").value
+        )
+        self._dynamic_obstacle_radius_m: float = float(
+            self.get_parameter("dynamic_obstacle_radius_m").value
+        )
+        self._dynamic_obstacle_ttl_s: float = float(
+            self.get_parameter("dynamic_obstacle_ttl_s").value
         )
         self._local_origins = self._load_local_origins()
 
@@ -200,6 +208,8 @@ class SwarmCoordinator(Node):
             strategy=self._strategy,
             cruise_speed_mps=self._cruise_speed_mps,
             route_conflict_window_s=self._route_conflict_window_s,
+            dynamic_obstacle_radius_m=self._dynamic_obstacle_radius_m,
+            dynamic_obstacle_ttl_s=self._dynamic_obstacle_ttl_s,
             on_planned_routes=self._publish_planned_routes,
         )
 

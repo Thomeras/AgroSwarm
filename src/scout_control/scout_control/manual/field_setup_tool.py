@@ -138,6 +138,9 @@ class FieldSetupTool(Node):
         self._boundary_close_pub = self.create_publisher(
             String, "/field/boundary_close", QOS_SWARM
         )
+        self._boundary_clear_pub = self.create_publisher(
+            String, "/field/boundary_clear", QOS_SWARM
+        )
         self._mission_confirm_pub = self.create_publisher(String, "/field/mission_confirm", QOS_SWARM)
         self._rth_pubs = {
             d.did: self.create_publisher(Point, d.rth_target_topic, QOS_LATCHED)
@@ -207,6 +210,9 @@ class FieldSetupTool(Node):
             return
         if action == "close_boundary":
             self._close_boundary()
+            return
+        if action == "clear_boundary":
+            self._clear_boundary()
             return
         if action == "start_mission":
             self._confirm_mission(source=str(data.get("source", "field_setup_tool")))
@@ -330,6 +336,16 @@ class FieldSetupTool(Node):
         self._boundary_close_pub.publish(msg)
         self._flash(f"Boundary closed ({n} vertices)")
         self.get_logger().info(f"Boundary closed with {n} vertices")
+
+    def _clear_boundary(self) -> None:
+        with self._lock:
+            self._boundary_points = []
+            self._boundary_closed = False
+        msg = String()
+        msg.data = json.dumps({"source": "field_setup_tool"})
+        self._boundary_clear_pub.publish(msg)
+        self._flash("Boundary cleared")
+        self.get_logger().info("Boundary cleared")
 
     def _confirm_mission(self, source: str = "field_setup_tool") -> None:
         confirm_msg = String()

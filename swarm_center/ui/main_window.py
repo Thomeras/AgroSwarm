@@ -91,8 +91,9 @@ class MainWindow(QMainWindow):
         self._last_mission_ready: bool = False
         self._last_mission_complete: bool = False
         self._last_mission_id: Optional[str] = None
-        self._planned_routes: dict[str, list[str]] = {}
+        self._planned_routes: dict[str, list] = {}
         self._planned_conflicts: list[dict] = []
+        self._planned_dynamic_zones: list[dict] = []
         self._planned_route_items: dict[str, object] = {}
         self._conflict_decay: dict[str, float] = {}
         self._show_planned_routes: bool = True
@@ -433,13 +434,17 @@ class MainWindow(QMainWindow):
 
     def _on_planned_routes(self, payload: dict) -> None:
         raw_routes = payload.get("routes", {})
-        self._planned_routes = (
-            {str(k): list(v) for k, v in raw_routes.items()}
-            if isinstance(raw_routes, dict)
-            else {}
-        )
+        raw_route_points = payload.get("route_points", {})
+        if isinstance(raw_route_points, dict) and raw_route_points:
+            self._planned_routes = {str(k): list(v) for k, v in raw_route_points.items()}
+        elif isinstance(raw_routes, dict):
+            self._planned_routes = {str(k): list(v) for k, v in raw_routes.items()}
+        else:
+            self._planned_routes = {}
         conflicts = payload.get("conflicts", [])
         self._planned_conflicts = list(conflicts) if isinstance(conflicts, list) else []
+        zones = payload.get("dynamic_blocked_zones", [])
+        self._planned_dynamic_zones = list(zones) if isinstance(zones, list) else []
         now = time.time()
         for conflict in self._planned_conflicts:
             for key in (conflict.get("cell_a"), conflict.get("cell_b")):
@@ -467,7 +472,8 @@ class MainWindow(QMainWindow):
         routes = self._planned_routes if self._show_planned_routes else {}
         conflicts = self._planned_conflicts if self._show_planned_routes else []
         decay = self._conflict_decay if self._show_planned_routes else {}
-        self._field_view.set_planned_routes(routes, conflicts, decay)
+        zones = self._planned_dynamic_zones if self._show_planned_routes else []
+        self._field_view.set_planned_routes(routes, conflicts, decay, zones)
 
     def _try_reload_default_grid(self) -> None:
         found = find_default_grid_file()
