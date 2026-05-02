@@ -9,3 +9,7 @@ Current local files:
 
 Real video binaries are intentionally ignored by Git because they are large.
 Publish them as GitHub Release assets, Git LFS objects, or external storage.
+
+Published release:
+
+- https://github.com/Thomeras/agrone_project/releases/tag/phase-1-5-e2e-milestone

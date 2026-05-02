@@ -292,6 +292,12 @@ Current local evidence files:
 - `video/manual_maping.mp4`
 - `video/auto_maping_mission.mp4`
 
+Published release:
+
+- [Phase 1-5 E2E Mission Milestone](https://github.com/Thomeras/agrone_project/releases/tag/phase-1-5-e2e-milestone)
+- [manual_maping.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
+- [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
+
 ## Documentation
 
 - `docs/launch_files/phase15_Ndrone_e2e_runbook.txt` - final N-drone runbook.
