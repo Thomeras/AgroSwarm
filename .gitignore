@@ -2,6 +2,7 @@
 build/
 install/
 log/
+.colcon/
 
 # Python
 __pycache__/
@@ -13,6 +14,9 @@ __pycache__/
 dist/
 *.egg
 .eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Generated / runtime data
 cell_data/
@@ -20,8 +24,24 @@ spray_log.json
 perimeters/field_perimeter.json
 perimeters/field_grid.json
 perimeters/home_positions.json
+perimeters/spawn_origins.json
 logs/avoidance_logs/*
 !logs/avoidance_logs/.gitkeep
+logs/tmp/
+reports/*
+!reports/README.md
+!reports/20260427T120000Z/
+!reports/20260427T120000Z/**
+swarm_center/data/*
+!swarm_center/data/.gitkeep
+swarm_center/resources/*
+!swarm_center/resources/.gitkeep
+
+# Mission videos are too large for regular Git commits.
+# Keep placeholders/docs in Git; put final binaries in Git LFS, releases, or local storage.
+video/*
+!video/README.md
+!video/.gitkeep
 
 # IDE / editor
 .vscode/
@@ -40,6 +60,7 @@ Thumbs.db
 # PX4 SITL logs (if symlinked here)
 *.ulg
 *.ulog
+*.log
 
 # Environment files
 .env

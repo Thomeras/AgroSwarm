@@ -34,8 +34,8 @@ setup(
     zip_safe=True,
     maintainer='tj',
     maintainer_email='st78906@upce.cz',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='ROS2 control stack for the Scout autonomous agricultural drone swarm prototype',
+    license='UNLICENSED',
     extras_require={
         'test': [
             'pytest',

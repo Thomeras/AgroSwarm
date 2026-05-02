@@ -3,9 +3,9 @@
 <package format="3">
   <name>scout_control</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS2 control stack for the Scout autonomous agricultural drone swarm prototype</description>
   <maintainer email="st78906@upce.cz">tj</maintainer>
-  <license>TODO: License declaration</license>
+  <license>UNLICENSED</license>
 
   <depend>rclpy</depend>
   <depend>nav_msgs</depend>
