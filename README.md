@@ -283,15 +283,14 @@ Timestamped report folders are runtime artifacts and are ignored for future
 commits. The repository keeps `reports/README.md` as the stable documentation
 entry point.
 
-Mission videos belong in `video/`. The folder currently contains placeholders
-only; final video binaries should be stored locally, in Git LFS, or as GitHub
-release assets instead of normal Git commits.
+Mission videos belong in local `video/`. The current local evidence files are
+ignored by Git and should be uploaded as GitHub Release assets instead of normal
+Git commits.
 
-Suggested final filenames:
+Current local evidence files:
 
-- `video/phase1-5_e2e_mission_overview.mp4`
-- `video/phase1-5_swarm_center_view.mp4`
-- `video/phase1-5_gazebo_mission_view.mp4`
+- `video/manual_maping.mp4`
+- `video/auto_maping_mission.mp4`
 
 ## Documentation
 

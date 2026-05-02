@@ -1,12 +1,11 @@
-# Mission Videos
+# Phase 1-5 Mission Videos
 
-Put final Phase 1-5 E2E mission videos here locally.
+Final Phase 1-5 E2E mission videos are stored here locally.
 
-Suggested filenames:
+Current local files:
 
-- `phase1-5_e2e_mission_overview.mp4`
-- `phase1-5_swarm_center_view.mp4`
-- `phase1-5_gazebo_mission_view.mp4`
+- `manual_maping.mp4` - manual field/pad/boundary mapping setup.
+- `auto_maping_mission.mp4` - autonomous mapping mission evidence.
 
 Real video binaries are intentionally ignored by Git because they are large.
-Use Git LFS, GitHub releases, or external storage for final published videos.
+Publish them as GitHub Release assets, Git LFS objects, or external storage.
