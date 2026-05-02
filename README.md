@@ -2,6 +2,9 @@
 
 Status: Phase 1-5 / Phase 15 E2E mission milestone, tested successfully on 2026-05-02.
 
+License: all rights reserved. This project is public for demonstration and
+portfolio review only; see `LICENSE.md`.
+
 This repository contains a ROS2/PX4/Gazebo autonomous agricultural drone swarm
 prototype. The current milestone proves the full operator-driven setup flow and
 autonomous multi-drone field mission: pad setup, field boundary capture, grid
@@ -327,6 +330,13 @@ Fallback link: [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_proj
 - `docs/test_pahes1-5/known_issues.md` - final milestone known issues.
 - `scenarios/README.md` - current vs legacy scenario policy.
 - `swarm_center/README.md` - Swarm Center architecture and operation notes.
+
+## License
+
+This project is not open source. All rights are reserved by the project owner.
+The repository is public for demonstration, review, and portfolio purposes only.
+Do not copy, redistribute, commercialize, or create derivative works without
+prior written permission. See `LICENSE.md`.
 
 ## Legacy Policy
 
