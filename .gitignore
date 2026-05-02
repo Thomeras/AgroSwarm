@@ -59,6 +59,7 @@ scenarios/legacy/
 # Local-only project know-how and assistant notes.
 CLAUDE.md
 codex.md
+memory.md
 CODEXICEK/
 
 # IDE / editor
