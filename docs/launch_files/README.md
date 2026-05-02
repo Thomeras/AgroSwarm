@@ -1,19 +1,17 @@
 # Launch Runbooks
 
-Tato slozka obsahuje rucni operatorni postupy a poznamky ke spousteni.
+This directory contains public launch runbooks for validated project workflows.
 
-## Soubory
+## Current Public Runbook
 
-- `phase15_Ndrone_e2e_runbook.txt` — aktualni finalni Gazebo workflow single-drone field setup → N-drone swarm mission
+- `phase15_Ndrone_e2e_runbook.txt` - current Phase 1-5 / Phase 15 Gazebo
+  workflow: single-drone field setup followed by N-drone swarm mission.
 
-Tyto soubory jsou runbooky, ne runtime launch soubory.
-Skutecne ROS2 launch definice zustavaji v `src/scout_control/launch/`.
+Runbooks describe how to operate the system. Runtime ROS2 launch definitions
+live in `src/scout_control/launch/`.
 
-## Current Runbook
+## Scope
 
-Pro finalni Phase 1-5 / Phase 15 milestone pouzivej primarne:
-
-- `phase15_Ndrone_e2e_runbook.txt`
-
-Isaac a starsi Phase 1-3 runbooky jsou historicke/reference workflow. Pokud
-existuji lokalne, jsou ignorovane Gitem; nejsou hlavni finalni demo cesta.
+The published runbook documents the final demonstrated Gazebo E2E path. Older
+Isaac/Pegasus and partial-phase runbooks are not part of the public milestone
+documentation.

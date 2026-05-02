@@ -1,11 +1,12 @@
 # Mission Reports
 
-Swarm Center writes generated mission reports into timestamped folders such as:
+Swarm Center can generate mission reports into timestamped runtime folders such
+as:
 
 ```text
 reports/20260502T094157Z/report.html
 ```
 
-Timestamped report folders are runtime artifacts and are ignored by Git for new
-runs. Keep final evidence locally, or publish selected reports as release assets
-when needed.
+Timestamped report folders are runtime artifacts and are not committed to Git.
+Selected reports may be published separately as release assets when they are
+part of a public milestone package.

@@ -1,37 +1,33 @@
-# Documentation Map
+# Documentation
 
-Tato slozka drzi lidskou dokumentaci a dlouhodobe poznamky mimo root workspace.
+This directory contains the public documentation for the Scout Autonomous Swarm
+Phase 1-5 E2E milestone.
 
-## Struktura
+## Published Structure
 
-- `guides/` — operatorni a workflow navody
-- `private/` — lokalni necitovane nebo citlive podklady, ignorovane v gitu
-- `test_pahes1-5/` — finalni Phase 1-5 / Phase 15 E2E zaznamy a known issues
-- lokalni ignorovane slozky jako `archive/`, `internal/`, `plans/` a
-  `prompts/` mohou existovat v pracovnim adresari, ale nejsou publikovane na
-  GitHub jako soucast finalniho milestone
+- `guides/` - operator and workflow guides.
+- `launch_files/` - public runbooks for launching the validated E2E workflow.
+- `test_pahes1-5/` - final Phase 1-5 / Phase 15 known issues and result notes.
+- `topic_contract.md` - ROS2 topic, QoS, and payload contract.
 
-## Dulezite soubory
+## Primary Documents
 
-- `guides/E2E_OPERATOR_GUIDE.md` — operatorni guide pro plnou E2E misi
-- `test_pahes1-5/known_issues.md` — known issues z uspesneho finalniho E2E testu
-- `topic_contract.md` — centralni ROS2 topic/QoS/payload contract; lidsky
-  doplnek ke zdrojove pravde v `TelemetryHub`
+- `../README.md` - public project overview.
+- `launch_files/phase15_Ndrone_e2e_runbook.txt` - current N-drone E2E runbook.
+- `guides/E2E_OPERATOR_GUIDE.md` - operator guide for the full E2E mission.
+- `topic_contract.md` - public ROS2 communication contract.
+- `test_pahes1-5/known_issues.md` - known non-blocking milestone issues.
 
-Root workspace je vyhrazeny hlavne pro:
-- realne entrypointy a launchery (`scout_launcher.py`, `isaac_launcher.py`, `reset.sh`)
-- AI instrukcni soubory (`CLAUDE.md`, `codex.md`)
-- top-level projektove slozky (`src/`, `swarm_center/`, `worlds/`, `launch_files/`)
+Historical planning material, prompts, private material, and obsolete test
+runbooks are intentionally not part of the public milestone documentation.
 
 ## Source Of Truth
 
-Pro finalni Phase 1-5 milestone je hlavni dokumentace:
+For the Phase 1-5 milestone, use these documents as the authoritative public
+description:
 
-- root `README.md`
+- `../README.md`
 - `launch_files/phase15_Ndrone_e2e_runbook.txt`
 - `guides/E2E_OPERATOR_GUIDE.md`
 - `topic_contract.md`
 - `test_pahes1-5/known_issues.md`
-
-Stare Isaac/Phase 1-3 runbooky a archivni poznamky zustavaji pro kontext, ale
-jsou lokalni-only a nejsou aktualni navod pro finalni E2E demo.

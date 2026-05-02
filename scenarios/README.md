@@ -1,6 +1,6 @@
 # Scenarios
 
-This folder is consumed by `scout_launcher.py`.
+This directory contains scenario definitions consumed by `scout_launcher.py`.
 
 ## Current Production Scenario
 
@@ -9,12 +9,9 @@ This folder is consumed by `scout_launcher.py`.
 
 Use this scenario for the final demonstrated workflow.
 
-## Legacy Scenarios
+## Scenario Policy
 
-The local ignored `legacy/` folder may contain older single-purpose,
-partial-phase, and debug scenarios. They are intentionally not published as the
-current project path. Keep them locally for diagnostics, regression experiments,
-or historical reference.
-
-Do not use a legacy scenario as evidence for the final milestone unless it is
-explicitly revalidated and promoted back to this folder.
+Only scenarios validated for the current public milestone are published here.
+Experimental, obsolete, or single-node diagnostic scenarios are excluded from
+the public scenario set until they are revalidated against the current topic
+contract and production launch policy.

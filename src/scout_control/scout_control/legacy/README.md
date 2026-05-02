@@ -1,7 +1,7 @@
 # Legacy Scout Control Nodes
 
-This package contains historical controllers and experimental nodes kept for
-reference and debugging.
+This package contains historical controllers and experimental nodes retained for
+reference, diagnostics, and migration review.
 
 Current production flight ownership belongs to:
 

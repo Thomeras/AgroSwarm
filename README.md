@@ -14,8 +14,8 @@ avoidance runtime, and final HTML report generation.
 ## Current Result
 
 The latest end-to-end test was considered successful. The mission produced a
-local HTML report and mission evidence. Known non-blocking issues are documented
-in `docs/test_pahes1-5/known_issues.md`.
+generated HTML report and public video evidence. Known non-blocking issues are
+documented in `docs/test_pahes1-5/known_issues.md`.
 
 Validated flow:
 
@@ -99,7 +99,7 @@ runtime lidar obstacle parameters described in `docs/topic_contract.md`.
 .
 |-- scout_launcher.py              # interactive launcher for PX4/Gazebo/ROS2/Swarm Center
 |-- isaac_launcher.py              # Isaac/Pegasus launcher path
-|-- reset.sh                       # local cleanup helper
+|-- reset.sh                       # workspace cleanup helper
 |-- src/
 |   |-- scout_control/             # main ROS2 Python package
 |   |-- scout_control_msgs/        # custom ROS2 messages
@@ -107,9 +107,9 @@ runtime lidar obstacle parameters described in `docs/topic_contract.md`.
 |-- swarm_center/                  # PyQt6 ground control station
 |-- scenarios/                     # launcher scenario definitions
 |-- worlds/                        # USD/USDA/overlay world assets
-|-- perimeters/                    # source field assets; runtime files are ignored
-|-- reports/                       # generated mission reports; timestamped runs ignored
-|-- video/                         # video placeholders; final binaries stay out of Git
+|-- perimeters/                    # source field assets and generated runtime state
+|-- reports/                       # mission report documentation
+|-- video/                         # release video documentation
 `-- docs/                          # runbooks, topic contracts, known issues, plans
 ```
 
@@ -118,7 +118,7 @@ runtime lidar obstacle parameters described in `docs/topic_contract.md`.
 Recommended operator path:
 
 ```bash
-cd /home/tj/_Data/_Projekty/TJlabs/scout_ws
+cd scout_ws
 python3 scout_launcher.py
 ```
 
@@ -223,7 +223,7 @@ The `scout_control` package exposes these console scripts:
 - Utilities: `grid_generator`, `task_allocator`.
 - Visualization: `camera_hud`, `obstacle_viz`, `gimbal_cam_viz`,
   `scan_cloud_viz`.
-- Manual/debug tools: `field_setup_tool`, `manual_controller`,
+- Manual/setup tools: `field_setup_tool`, `manual_controller`,
   `legacy_manual_controller`.
 
 ## Important Topics
@@ -260,7 +260,8 @@ Current UI areas:
 
 ## Runtime Outputs
 
-These are intentionally ignored by Git because they are generated per run:
+These files and directories are generated per run and are intentionally not part
+of the public source package:
 
 - `build/`, `install/`, `log/`
 - Python caches and test caches
@@ -272,25 +273,24 @@ These are intentionally ignored by Git because they are generated per run:
 - `perimeters/home_positions.json`
 - `perimeters/spawn_origins.json`
 - timestamped `reports/<timestamp>/`
-- real video files under `video/`
+- video binaries under `video/`
 
 ## Reports And Video Evidence
 
-The final local E2E report was generated under:
+The final E2E report was generated under this runtime path during validation:
 
 ```text
 reports/20260502T094157Z/report.html
 ```
 
-Timestamped report folders are runtime artifacts and are ignored for future
-commits. The repository keeps `reports/README.md` as the stable documentation
-entry point.
+Timestamped report folders are runtime artifacts and are not part of normal
+source commits. The repository keeps `reports/README.md` as the stable
+documentation entry point.
 
-Mission videos belong in local `video/`. The current local evidence files are
-ignored by Git and should be uploaded as GitHub Release assets instead of normal
-Git commits.
+Mission videos are published as GitHub Release assets rather than normal Git
+files.
 
-Current local evidence files:
+Published video assets:
 
 - `video/manual_maping.mp4`
 - `video/auto_maping_mission.mp4`
@@ -340,15 +340,15 @@ prior written permission. See `LICENSE.md`.
 
 ## Legacy Policy
 
-Legacy launch scenarios and legacy nodes are kept as archive/debug material, not
-as the current production path. They should stay out of the final E2E launch
-unless revalidated against the current topic contract.
+Legacy launch scenarios and legacy nodes are archive/reference material, not the
+current production path. They should stay out of the final E2E launch unless
+revalidated against the current topic contract.
 
 Keep for now:
 
-- local ignored `scenarios/legacy/` for isolated node/debug workflows.
+- historical scenario definitions for isolated diagnostics and regression work.
 - `src/scout_control/scout_control/legacy/` for reference implementations.
-- local ignored older Isaac/Phase 1-3 runbooks for historical context.
+- older Isaac/Phase 1-3 runbooks for historical context.
 
 Candidate cleanup after the milestone:
 
@@ -362,4 +362,4 @@ Candidate cleanup after the milestone:
 
 This commit is intended as the first final push milestone for the Phase 1-5 E2E
 project state. The project is ready to be presented as a working autonomous
-swarm prototype with documented runtime limitations and local mission evidence.
+swarm prototype with documented runtime limitations and public mission evidence.
