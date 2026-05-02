@@ -298,6 +298,27 @@ Published release:
 - [manual_maping.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
 - [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
 
+### Manual Mapping Setup
+
+Manual mapping setup test driven from Swarm Center controls. The operator uses
+the GCS to control the drone during field setup, mark landing pads, capture the
+field boundary, and prepare the generated grid for the later autonomous mission.
+
+<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4" title="Manual mapping setup through Swarm Center controls"></video>
+
+Fallback link: [manual_maping.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
+
+### Autonomous Mapping Mission
+
+Autonomous mapping mission evidence. After the setup phase, the swarm mission
+backend takes over: cells are assigned, drones execute mapped routes through the
+current `obstacle_avoidance_runtime` flight owner, Swarm Center tracks progress,
+and the mission produces report data.
+
+<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4" title="Autonomous mapping mission"></video>
+
+Fallback link: [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
+
 ## Documentation
 
 - `docs/launch_files/phase15_Ndrone_e2e_runbook.txt` - final N-drone runbook.
