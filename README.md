@@ -1,5 +1,7 @@
 # Scout Autonomous Swarm - Phase 1-5 E2E Milestone
 
+AgroSwarm is a ROS2/PX4 autonomous agricultural drone swarm prototype that simulates multi-drone field mapping and spraying missions in Gazebo, with a custom PyQt6 ground control station, task allocation, obstacle avoidance, telemetry, and generated mission reports.
+
 Status: Phase 1-5 / Phase 15 E2E mission milestone, tested successfully on 2026-05-02.
 
 License: all rights reserved. This project is public for demonstration and
