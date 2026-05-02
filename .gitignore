@@ -56,6 +56,11 @@ docs/launch_files/launch_sim_e2e.txt
 # Local-only launcher scenarios that are not part of the current milestone.
 scenarios/legacy/
 
+# Local-only project know-how and assistant notes.
+CLAUDE.md
+codex.md
+CODEXICEK/
+
 # IDE / editor
 .vscode/
 .idea/
