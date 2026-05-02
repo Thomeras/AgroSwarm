@@ -1,3 +1,0 @@
-name: "Grid Generator (SIM 5m)"
-description: "Syntetické 100x100m pole, 5m buňky = 400 buněk. Nevyžaduje perimeter_flight."
-ros2_command: "ros2 run scout_control grid_generator --ros-args -p cell_size:=5.0 -p sim_mode:=true -p sim_field_size:=100.0 -p sim_origin_x:=20.0 -p sim_origin_y:=-50.0"

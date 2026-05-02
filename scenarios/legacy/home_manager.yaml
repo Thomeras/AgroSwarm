@@ -1,3 +1,0 @@
-name: "Home Manager"
-description: "Spravce pristavacich podlozek + RTH koordinator. Nacte home_positions.json a publikuje /swarm/home_positions"
-ros2_command: "ros2 run scout_control home_manager"

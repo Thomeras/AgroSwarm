@@ -1,3 +1,0 @@
-name: "Gimbal Bridge"
-description: "Bridge pro 2-osý servo gimbal (x500_scout). Ovládání přes /drone_N/servo/yaw a /pitch."
-ros2_command: "ros2 launch scout_control gimbal_bridge.launch.py model:={gz_model}"

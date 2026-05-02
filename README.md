@@ -71,6 +71,25 @@ See `docs/test_pahes1-5/known_issues.md`.
 - MAVLink / `pymavlink` for telemetry and arm/disarm operations.
 - NumPy, Pillow, pyqtgraph, PyOpenGL for visualization/reporting support.
 
+## Drone Sensor Stack
+
+Current final E2E model:
+
+- PX4/Gazebo model: `gz_x500_mono_cam_down_lidar`.
+- Downward RGB camera bridged to `/drone_N/camera/image_raw`.
+- Downward lidar bridged to `/drone_N/downward_lidar/scan` for range/terrain
+  support.
+- Forward depth camera bridged to `/drone_N/depth/image_raw`.
+- Forward camera info bridged to `/drone_N/camera/camera_info`.
+- PX4 local position, vehicle status, control mode, command ack, attitude,
+  battery/system status, and heartbeat are consumed through PX4 ROS2 topics and
+  MAVLink/Swarm Center telemetry.
+
+In the current milestone, `obstacle_avoidance_runtime` owns navigation and
+avoidance. Downward lidar is not treated as a horizontal obstacle source by
+default; explicit obstacle scans must be configured separately through the
+runtime lidar obstacle parameters described in `docs/topic_contract.md`.
+
 ## Repository Layout
 
 ```text
@@ -291,9 +310,9 @@ unless revalidated against the current topic contract.
 
 Keep for now:
 
-- `scenarios/legacy/` for isolated node/debug workflows.
+- local ignored `scenarios/legacy/` for isolated node/debug workflows.
 - `src/scout_control/scout_control/legacy/` for reference implementations.
-- older Isaac/Phase 1-3 runbooks for historical context.
+- local ignored older Isaac/Phase 1-3 runbooks for historical context.
 
 Candidate cleanup after the milestone:
 

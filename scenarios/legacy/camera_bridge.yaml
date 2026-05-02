@@ -1,3 +1,0 @@
-name: "Camera Bridge"
-description: "Gazebo camera → ROS2 /camera/image_raw bridge"
-ros2_command: "ros2 launch scout_control camera_bridge.launch.py world:={world} model:={gz_model}"

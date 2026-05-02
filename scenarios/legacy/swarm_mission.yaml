@@ -1,3 +1,0 @@
-name: "Swarm Mission"
-description: "E2E swarm spray mise pro 4 drony na swarm_field (task_allocator + 4x swarm_agent). Pred spustenim: grid_generator_sim"
-ros2_command: "ros2 launch scout_control swarm_mission.launch.py drone_count:=4"

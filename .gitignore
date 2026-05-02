@@ -43,6 +43,19 @@ video/*
 !video/README.md
 !video/.gitkeep
 
+# Local-only historical/debug documentation. Keep current docs tracked.
+docs/archive/
+docs/internal/
+docs/plans/
+docs/prompts/
+docs/launch_files/isaac_*.txt
+docs/launch_files/phase12_e2e_test.txt
+docs/launch_files/launch_info.txt
+docs/launch_files/launch_sim_e2e.txt
+
+# Local-only launcher scenarios that are not part of the current milestone.
+scenarios/legacy/
+
 # IDE / editor
 .vscode/
 .idea/

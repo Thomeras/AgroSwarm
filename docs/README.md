@@ -5,11 +5,11 @@ Tato slozka drzi lidskou dokumentaci a dlouhodobe poznamky mimo root workspace.
 ## Struktura
 
 - `guides/` — operatorni a workflow navody
-- `internal/` — technicke poznamky z vyvoje, debugging a historicke zavery
-- `plans/` — rozpracovane planovaci materialy a navrhy
 - `private/` — lokalni necitovane nebo citlive podklady, ignorovane v gitu
 - `test_pahes1-5/` — finalni Phase 1-5 / Phase 15 E2E zaznamy a known issues
-- `archive/` — historicke scratch poznamky a stare vystupy, nejsou source of truth
+- lokalni ignorovane slozky jako `archive/`, `internal/`, `plans/` a
+  `prompts/` mohou existovat v pracovnim adresari, ale nejsou publikovane na
+  GitHub jako soucast finalniho milestone
 
 ## Dulezite soubory
 
@@ -17,9 +17,6 @@ Tato slozka drzi lidskou dokumentaci a dlouhodobe poznamky mimo root workspace.
 - `test_pahes1-5/known_issues.md` — known issues z uspesneho finalniho E2E testu
 - `topic_contract.md` — centralni ROS2 topic/QoS/payload contract; lidsky
   doplnek ke zdrojove pravde v `TelemetryHub`
-- `internal/technical_notes.md` — technicke poznamky k architekture a bugfixum
-- `plans/scout_development_plan.docx` — starsi vyvojovy plan
-- `archive/development_notes/` — presunute `docs/tmp` poznamky z vyvoje
 
 Root workspace je vyhrazeny hlavne pro:
 - realne entrypointy a launchery (`scout_launcher.py`, `isaac_launcher.py`, `reset.sh`)
@@ -37,4 +34,4 @@ Pro finalni Phase 1-5 milestone je hlavni dokumentace:
 - `test_pahes1-5/known_issues.md`
 
 Stare Isaac/Phase 1-3 runbooky a archivni poznamky zustavaji pro kontext, ale
-nejsou aktualni navod pro finalni E2E demo.
+jsou lokalni-only a nejsou aktualni navod pro finalni E2E demo.
