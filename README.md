@@ -1,19 +1,29 @@
-# Scout Autonomous Swarm - Phase 1-5 E2E Milestone
+# AgroSwarm
 
 AgroSwarm is a ROS2/PX4 autonomous agricultural drone swarm prototype that simulates multi-drone field mapping and spraying missions in Gazebo, with a custom PyQt6 ground control station, task allocation, obstacle avoidance, telemetry, and generated mission reports.
+
+**[Demo video](#reports-and-video-evidence)** | **[Architecture](#architecture)** | **[Run instructions](#main-run-path)** | **[Current milestone](#current-milestone)** | **[Known limitations](#known-limitations)**
+
+![Autonomous AgroSwarm mission preview](docs/assets/autonomous-mission-preview.gif)
 
 Status: Phase 1-5 / Phase 15 E2E mission milestone, tested successfully on 2026-05-02.
 
 License: all rights reserved. This project is public for demonstration and
 portfolio review only; see `LICENSE.md`.
 
-This repository contains a ROS2/PX4/Gazebo autonomous agricultural drone swarm
-prototype. The current milestone proves the full operator-driven setup flow and
-autonomous multi-drone field mission: pad setup, field boundary capture, grid
-generation, mapping mission, spraying phase, Swarm Center monitoring, obstacle
-avoidance runtime, and final HTML report generation.
+## Why This Matters
 
-## Current Result
+This project explores how small autonomous drone teams could coordinate
+agricultural inspection and spraying tasks before deployment on real hardware.
+The current version focuses on simulation, operator workflow, swarm
+coordination, and mission evidence generation.
+
+AgroSwarm is built as a portfolio/research prototype around the full mission
+loop: pad setup, field boundary capture, grid generation, mapping mission,
+spraying phase, Swarm Center monitoring, obstacle avoidance runtime, and final
+HTML report generation.
+
+## Current Milestone
 
 The latest end-to-end test was considered successful. The mission produced a
 generated HTML report and public video evidence. Known non-blocking issues are
@@ -30,6 +40,18 @@ Validated flow:
 - Confirm and run the autonomous mapping/spraying mission.
 - Track live swarm state in the PyQt Swarm Center.
 - Generate an HTML report after mission completion.
+
+## Architecture
+
+Swarm Center is the PyQt6 ground control station used to monitor drone state,
+field grid progress, mission mode, telemetry, and runtime warnings.
+
+![Swarm Center mission view](docs/assets/swarm-center-screenshot.png)
+
+The mission stack combines PX4 SITL, Gazebo simulation, ROS2 mission logic,
+sensor bridges, a ground control station, and generated report evidence.
+
+![AgroSwarm architecture diagram](docs/assets/agroswarm-architecture.svg)
 
 ## What Works Now
 
@@ -50,7 +72,7 @@ Validated flow:
 - Swarm Center Mission, Camera, and 3D Map tabs.
 - HTML report generation in `reports/<timestamp>/`.
 
-## Known Issues
+## Known Limitations
 
 The milestone is successful, but these issues are intentionally left for later:
 
@@ -299,9 +321,9 @@ Published video assets:
 
 Published release:
 
-- [Phase 1-5 E2E Mission Milestone](https://github.com/Thomeras/agrone_project/releases/tag/phase-1-5-e2e-milestone)
-- [manual_maping.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
-- [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
+- [Phase 1-5 E2E Mission Milestone](https://github.com/Thomeras/AgroSwarm/releases/tag/phase-1-5-e2e-milestone)
+- [manual_maping.mp4](https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
+- [auto_maping_mission.mp4](https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
 
 ### Manual Mapping Setup
 
@@ -309,9 +331,9 @@ Manual mapping setup test driven from Swarm Center controls. The operator uses
 the GCS to control the drone during field setup, mark landing pads, capture the
 field boundary, and prepare the generated grid for the later autonomous mission.
 
-<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4" title="Manual mapping setup through Swarm Center controls"></video>
+<video controls src="https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4" title="Manual mapping setup through Swarm Center controls"></video>
 
-Fallback link: [manual_maping.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
+Fallback link: [manual_maping.mp4](https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4)
 
 ### Autonomous Mapping Mission
 
@@ -320,9 +342,9 @@ backend takes over: cells are assigned, drones execute mapped routes through the
 current `obstacle_avoidance_runtime` flight owner, Swarm Center tracks progress,
 and the mission produces report data.
 
-<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4" title="Autonomous mapping mission"></video>
+<video controls src="https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4" title="Autonomous mapping mission"></video>
 
-Fallback link: [auto_maping_mission.mp4](https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
+Fallback link: [auto_maping_mission.mp4](https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4)
 
 ## Documentation
 

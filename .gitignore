@@ -39,6 +39,7 @@ swarm_center/resources/*
 
 # Mission videos are too large for regular Git commits.
 # Keep placeholders/docs in Git; put final binaries in Git LFS, releases, or local storage.
+*.mp4
 video/*
 !video/README.md
 !video/.gitkeep

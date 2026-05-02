@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560" role="img" aria-labelledby="title desc">
+  <title id="title">AgroSwarm architecture</title>
+  <desc id="desc">High-level architecture for the AgroSwarm ROS2, PX4, Gazebo, and PyQt6 ground station prototype.</desc>
+  <defs>
+    <style>
+      .bg { fill: #0f172a; }
+      .panel { fill: #172033; stroke: #334155; stroke-width: 2; rx: 10; }
+      .node { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; rx: 8; }
+      .node-dark { fill: #223047; stroke: #64748b; stroke-width: 2; rx: 8; }
+      .title { fill: #f8fafc; font: 700 28px Arial, sans-serif; }
+      .label { fill: #0f172a; font: 700 18px Arial, sans-serif; }
+      .label-light { fill: #f8fafc; font: 700 18px Arial, sans-serif; }
+      .small { fill: #334155; font: 14px Arial, sans-serif; }
+      .small-light { fill: #cbd5e1; font: 14px Arial, sans-serif; }
+      .arrow { stroke: #38bdf8; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .arrow2 { stroke: #22c55e; stroke-width: 3; fill: none; marker-end: url(#arrowhead2); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowhead2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1120" height="560"/>
+  <text x="40" y="54" class="title">AgroSwarm autonomous mission stack</text>
+
+  <rect x="40" y="90" width="320" height="390" class="panel"/>
+  <text x="64" y="126" class="label-light">Simulation layer</text>
+  <rect x="70" y="155" width="260" height="70" class="node"/>
+  <text x="96" y="184" class="label">Gazebo swarm_field</text>
+  <text x="96" y="207" class="small">field, pads, drones, sensors</text>
+  <rect x="70" y="255" width="260" height="70" class="node"/>
+  <text x="96" y="284" class="label">PX4 SITL x N</text>
+  <text x="96" y="307" class="small">offboard flight and vehicle state</text>
+  <rect x="70" y="355" width="260" height="70" class="node"/>
+  <text x="96" y="384" class="label">Sensor bridges</text>
+  <text x="96" y="407" class="small">camera, depth, lidar, camera info</text>
+
+  <rect x="400" y="90" width="320" height="390" class="panel"/>
+  <text x="424" y="126" class="label-light">ROS2 mission backend</text>
+  <rect x="430" y="150" width="260" height="58" class="node"/>
+  <text x="456" y="185" class="label">field_setup_coordinator</text>
+  <rect x="430" y="225" width="260" height="58" class="node"/>
+  <text x="456" y="260" class="label">swarm_coordinator</text>
+  <rect x="430" y="300" width="260" height="58" class="node"/>
+  <text x="456" y="335" class="label">swarm_agent_N</text>
+  <rect x="430" y="375" width="260" height="58" class="node"/>
+  <text x="456" y="410" class="label">avoidance_runtime_N</text>
+
+  <rect x="760" y="90" width="320" height="390" class="panel"/>
+  <text x="784" y="126" class="label-light">Operator and evidence</text>
+  <rect x="790" y="155" width="260" height="70" class="node"/>
+  <text x="816" y="184" class="label">PyQt6 Swarm Center</text>
+  <text x="816" y="207" class="small">mission, camera, 3D map, controls</text>
+  <rect x="790" y="255" width="260" height="70" class="node"/>
+  <text x="816" y="284" class="label">Task allocation</text>
+  <text x="816" y="307" class="small">grid cells, sectors, progress</text>
+  <rect x="790" y="355" width="260" height="70" class="node"/>
+  <text x="816" y="384" class="label">Mission report</text>
+  <text x="816" y="407" class="small">HTML evidence and runtime data</text>
+
+  <path d="M330 190 C365 190 385 179 430 179" class="arrow"/>
+  <path d="M330 290 C365 290 385 254 430 254" class="arrow"/>
+  <path d="M330 390 C365 390 385 404 430 404" class="arrow"/>
+  <path d="M690 179 C725 179 745 190 790 190" class="arrow2"/>
+  <path d="M790 290 C745 290 725 254 690 254" class="arrow2"/>
+  <path d="M690 404 C725 404 745 390 790 390" class="arrow2"/>
+
+  <text x="372" y="172" class="small-light">ROS2 topics</text>
+  <text x="716" y="172" class="small-light">TCP bridge</text>
+  <text x="716" y="274" class="small-light">operator intent</text>
+  <text x="372" y="278" class="small-light">PX4 state</text>
+</svg>
