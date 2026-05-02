@@ -280,7 +280,28 @@ Suggested final filenames:
 - `docs/guides/E2E_OPERATOR_GUIDE.md` - operator guide.
 - `docs/topic_contract.md` - ROS2 topic contract.
 - `docs/test_pahes1-5/known_issues.md` - final milestone known issues.
+- `scenarios/README.md` - current vs legacy scenario policy.
 - `swarm_center/README.md` - Swarm Center architecture and operation notes.
+
+## Legacy Policy
+
+Legacy launch scenarios and legacy nodes are kept as archive/debug material, not
+as the current production path. They should stay out of the final E2E launch
+unless revalidated against the current topic contract.
+
+Keep for now:
+
+- `scenarios/legacy/` for isolated node/debug workflows.
+- `src/scout_control/scout_control/legacy/` for reference implementations.
+- older Isaac/Phase 1-3 runbooks for historical context.
+
+Candidate cleanup after the milestone:
+
+- remove legacy nodes that are no longer imported, launched, or useful for
+  comparison,
+- promote only re-tested scenarios back to `scenarios/`,
+- move useful logic from legacy modules into current `core/`, `avoidance/`,
+  `mapping/`, or `vision/` modules with tests.
 
 ## Final Milestone Notes
 
