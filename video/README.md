@@ -15,7 +15,7 @@ Published video assets:
 
 Published release:
 
-- https://github.com/Thomeras/agrone_project/releases/tag/phase-1-5-e2e-milestone
+- https://github.com/Thomeras/AgroSwarm/releases/tag/phase-1-5-e2e-milestone
 
 ## Manual Mapping Setup
 
@@ -23,9 +23,9 @@ Manual mapping setup test through Swarm Center controls. The operator controls
 the drone from the GCS, marks landing pads, captures the field boundary, and
 prepares the generated grid for the autonomous phase.
 
-<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4" title="Manual mapping setup through Swarm Center controls"></video>
+<video controls src="https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4" title="Manual mapping setup through Swarm Center controls"></video>
 
-Fallback link: https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4
+Fallback link: https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/manual_maping.mp4
 
 ## Autonomous Mapping Mission
 
@@ -33,6 +33,6 @@ Autonomous mapping mission evidence. After setup, generated grid cells are
 assigned by the swarm backend and executed through the current
 `obstacle_avoidance_runtime` flight owner while Swarm Center tracks progress.
 
-<video controls src="https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4" title="Autonomous mapping mission"></video>
+<video controls src="https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4" title="Autonomous mapping mission"></video>
 
-Fallback link: https://github.com/Thomeras/agrone_project/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4
+Fallback link: https://github.com/Thomeras/AgroSwarm/releases/download/phase-1-5-e2e-milestone/auto_maping_mission.mp4
